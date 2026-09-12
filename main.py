@@ -178,6 +178,11 @@ LABEL_TO_RESET_DY_RATIO = 131 / 10
 RESET_WIDTH_RATIO       = 247 / 146
 RESET_HEIGHT_RATIO      = 29 / 10
 
+AUTOLOCATE_MOVE_DURATION = 0.25   # seconds to glide the cursor to the Reset button, instead of teleporting
+AUTOLOCATE_MOVE_STEPS    = 30     # interpolation steps across that duration — pydirectinput's own
+                                  # duration/tween params are accepted but silently ignored (always an
+                                  # instant jump), so the easing is done by hand here
+
 # psm 6 = "uniform block of text" — the box may contain the label line above
 # the number, so don't assume a single line. Whitelist keeps OCR focused on
 # the characters a delta number can actually contain. Plain grayscale+upscale
@@ -220,6 +225,22 @@ def read_delta(region, sct=None) -> str | None:
     text = pytesseract.image_to_string(proc, config=OCR_CONFIG)
     m = PLUS_NUMBER_RE.search(text.replace(" ", ""))
     return m.group(0) if m else None
+
+
+def smooth_move_to(target_x, target_y, duration=AUTOLOCATE_MOVE_DURATION, steps=AUTOLOCATE_MOVE_STEPS):
+    """Glide the cursor to (target_x, target_y) instead of teleporting —
+    pydirectinput.moveTo's own duration/tween arguments are accepted but
+    silently ignored (its implementation always jumps instantly), so the
+    interpolation is done by hand: ease-out (fast start, slow finish) reads
+    as a natural mouse move rather than a linear robotic slide."""
+    start_x, start_y = pydirectinput.position()
+    for i in range(1, steps + 1):
+        t = i / steps
+        eased = 1 - (1 - t) ** 2
+        x = round(start_x + (target_x - start_x) * eased)
+        y = round(start_y + (target_y - start_y) * eased)
+        pydirectinput.moveTo(x, y)
+        time.sleep(duration / steps)
 
 
 def beep():
@@ -1017,7 +1038,8 @@ class OverlayApp:
         ry = round(ly + LABEL_TO_RESET_DY_RATIO * sh)
         rw = round(sw * RESET_WIDTH_RATIO)
         rh = round(sh * RESET_HEIGHT_RATIO)
-        pydirectinput.moveTo(rx + rw // 2, ry + rh // 2)
+        threading.Thread(target=smooth_move_to,
+                          args=(rx + rw // 2, ry + rh // 2), daemon=True).start()
 
     def run(self):
         root = self._build_window()
