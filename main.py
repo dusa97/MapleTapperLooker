@@ -196,7 +196,9 @@ AUTOLOCATE_MOVE_JITTER_PX = 4     # max sideways wobble off the straight-line pa
 # strokes of the game's stylized digits.
 OCR_CONFIG = r'--psm 6 -c tessedit_char_whitelist=+-0123456789,'
 
-PLUS_NUMBER_RE = re.compile(r'\+[\d,]{2,}')
+PLUS_NUMBER_RE = re.compile(r'[+-][\d,]{2,}')   # matches "+<number>" and "-<number>" —
+                                                 # negative deltas need catching too now that a wide
+                                                 # auto-locate box can span multiple AFTER panels at once
 
 
 def preprocess_for_ocr(img: Image.Image) -> Image.Image:
@@ -224,7 +226,7 @@ def _grab(region, sct=None) -> Image.Image:
 
 
 def read_delta(region, sct=None) -> str | None:
-    """Screenshot *region* and return the first "+<number>" match found, or None."""
+    """Screenshot *region* and return the first "+<number>"/"-<number>" match found, or None."""
     img = _grab(region, sct=sct)
     proc = preprocess_for_ocr(img)
     text = pytesseract.image_to_string(proc, config=OCR_CONFIG)
@@ -978,11 +980,13 @@ class OverlayApp:
 
     def _auto_locate(self):
         """F7: screenshot the whole desktop, find the 'Combat Power Change'
-        label via multi-scale template matching, snap the box onto the number
-        field beneath it, and move the real cursor onto the Reset button.
-        Both the BEFORE and AFTER panels show this label — see AUTOLOCATE
-        constants above — so among the matches found at the best-scoring
-        scale, the rightmost one (the AFTER panel) is the one used."""
+        label via multi-scale template matching, snap the box onto the AFTER
+        number field(s), and move the real cursor onto the Reset button.
+        Every panel shows this label — BEFORE and however many AFTER panels
+        there are (1 for Reset x1, 3 for Reset x3) — and they always lay out
+        left-to-right with BEFORE first, so the leftmost match is dropped and
+        one box is sized to cover the rest: just the single number on x1, or
+        all of them at once on x3."""
         if not self._autolocate_available or self._selecting:
             return
         self._cancel_start()
@@ -1030,27 +1034,49 @@ class OverlayApp:
             y0, y1 = max(0, y - sh // 2), min(work.shape[0], y + sh // 2)
             work[y0:y1, x0:x1] = -1.0
 
-        lx, ly = max(peaks, key=lambda p: p[0])   # rightmost match = the AFTER panel
-        lx += desktop["left"]
-        ly += desktop["top"]
+        # Panels always lay out left-to-right with BEFORE first, whether it's
+        # a Reset x1 (BEFORE + 1 AFTER = 2 matches) or Reset x3 (BEFORE + 3
+        # AFTER = 4 matches) dialog, so the leftmost match is always BEFORE
+        # and everything else is an AFTER panel that actually carries a
+        # value. One box is sized to cover just the single AFTER number on
+        # x1, or all of them at once (one wide box) on x3.
+        peaks_sorted = sorted(peaks, key=lambda p: p[0])
+        before_x, before_y = peaks_sorted[0]
+        after_peaks = peaks_sorted[1:]
+        if not after_peaks:
+            self._log("Auto-locate: only found the BEFORE panel — AFTER panel(s) not detected.")
+            return
 
-        nx = round(lx + LABEL_TO_NUMBER_DX_RATIO * sw)
-        ny = round(ly + LABEL_TO_NUMBER_DY_RATIO * sh)
-        nw = round(sw * NUMBER_WIDTH_RATIO)
-        nh = round(sh * NUMBER_HEIGHT_RATIO)
-        pad = round(sh * NUMBER_VERTICAL_PAD_RATIO)
-        ny -= pad
-        nh += pad * 2
+        number_rects = []
+        for (px, py) in after_peaks:
+            ax = px + desktop["left"]
+            ay = py + desktop["top"]
+            nx = round(ax + LABEL_TO_NUMBER_DX_RATIO * sw)
+            ny = round(ay + LABEL_TO_NUMBER_DY_RATIO * sh)
+            nw = round(sw * NUMBER_WIDTH_RATIO)
+            nh = round(sh * NUMBER_HEIGHT_RATIO)
+            pad = round(sh * NUMBER_VERTICAL_PAD_RATIO)
+            ny -= pad
+            nh += pad * 2
+            number_rects.append((nx, ny, nw, nh))
 
-        self.region = [nx, ny, nw, nh]
+        left = min(r[0] for r in number_rects)
+        top = min(r[1] for r in number_rects)
+        right = max(r[0] + r[2] for r in number_rects)
+        bottom = max(r[1] + r[3] for r in number_rects)
+
+        self.region = [left, top, right - left, bottom - top]
         save_region(tuple(self.region))
         self._region_revision += 1
         self.hit = self._prev_hit = False
         self.last_value = None
         self.status_text = "paused"
         self._sync_geometry()
-        self._log(f"Auto-locate: found panel ({best_val:.2f} confidence), moved box to {tuple(self.region)}.")
+        self._log(f"Auto-locate: found {len(after_peaks)} AFTER panel(s) "
+                  f"({best_val:.2f} confidence), moved box to {tuple(self.region)}.")
 
+        lx = before_x + desktop["left"]
+        ly = before_y + desktop["top"]
         rx = round(lx + LABEL_TO_RESET_DX_RATIO * sw)
         ry = round(ly + LABEL_TO_RESET_DY_RATIO * sh)
         rw = round(sw * RESET_WIDTH_RATIO)
