@@ -43,7 +43,8 @@ class DetectionBeepTest(unittest.TestCase):
             register.assert_any_call(app.beep_hotkey, app._toggle_beep)
             register.assert_any_call("f8", app._selection_requested.set,
                                      suppress=True, trigger_on_release=True)
-            self.assertEqual(register.call_count, 4)
+            register.assert_any_call(app.enter_hotkey, app._toggle_enter_spam)
+            self.assertEqual(register.call_count, 5)
             app._quit()
             remove.assert_any_call("f8")
             remove.assert_any_call("f11")
@@ -54,11 +55,12 @@ class DetectionBeepTest(unittest.TestCase):
     def test_detection_beep(self):
         cases = [
             # Spam, beep enabled, OCR reads, previous beep, expected beeps.
-            (False, True, ["+123", "+123", "+123"], 0, 1),
+            (False, True, ["+123", "+123", "+123"], 0, 0),
             (True, True, ["+123", "+123"], 0, 1),
             (False, False, ["+123", "+123"], 0, 0),
-            (False, True, ["+123", None], 0, 0),
-            (False, True, ["+123", "+123"], 100, 0),
+            (True, True, ["+123", None], 0, 0),
+            (True, True, ["+123", "+123"], 100, 0),
+            (True, False, ["+123", "+123"], 0, 0),
         ]
         for spam, enabled, values, last_beep, expected in cases:
             with self.subTest(spam=spam, enabled=enabled, values=values,
@@ -76,7 +78,9 @@ class DetectionBeepTest(unittest.TestCase):
                     return value
 
                 with patch("main.mss.MSS"), \
-                     patch.object(app, "_read_with_retry", side_effect=read), \
+                     patch.object(app, "_read_with_retry", side_effect=read) as ocr, \
+                     patch("main.time.sleep", side_effect=lambda _: setattr(app, "_running", False)), \
+                     patch.object(app, "_lock_mouse"), \
                      patch.object(app, "_unlock_mouse"), \
                      patch("main.time.perf_counter", return_value=100 + BEEP_COOLDOWN / 2), \
                      patch("main.threading.Thread") as thread:
@@ -86,8 +90,45 @@ class DetectionBeepTest(unittest.TestCase):
                 if expected:
                     thread.assert_called_once_with(target=app._play_alert, daemon=True)
                     thread.return_value.start.assert_called_once()
-                if spam:
+                if not spam:
+                    ocr.assert_not_called()
+                elif values[-1] is not None:
                     self.assertFalse(app.enter_on)
+                else:
+                    self.assertTrue(app.enter_on)
+
+    def test_disable_during_read_discards_detection(self):
+        for stop_at in (1, 2):
+            with self.subTest(stop_at=stop_at):
+                app = OverlayApp((0, 0, 100, 100))
+                app.enter_on = True
+                calls = 0
+
+                def read(_sct):
+                    nonlocal calls
+                    calls += 1
+                    if calls == stop_at:
+                        app._toggle_enter_spam()
+                        app._running = False
+                    return "+123"
+
+                with patch("main.mss.MSS"), \
+                     patch.object(app, "_unlock_mouse"), \
+                     patch.object(app, "_read_with_retry", side_effect=read), \
+                     patch("main.threading.Thread") as thread:
+                    app._ocr_loop()
+                thread.assert_not_called()
+                self.assertEqual(app.status_text, "paused")
+                self.assertFalse(app.hit)
+
+    def test_f9_restarts_after_detection(self):
+        app = OverlayApp((0, 0, 100, 100))
+        app.hit = app._prev_hit = True
+        with patch.object(app, "_lock_mouse"):
+            app._toggle_enter_spam()
+        self.assertTrue(app.enter_on)
+        self.assertFalse(app.hit)
+        self.assertFalse(app._prev_hit)
 
 
 if __name__ == "__main__":

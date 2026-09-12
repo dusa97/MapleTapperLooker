@@ -226,7 +226,7 @@ class OverlayApp:
                  beep_hotkey: str = BEEP_HOTKEY,
                  min_read_gap: float = MIN_READ_GAP):
         self.region      = list(region)   # [x, y, w, h] — mutable, moved/resized live
-        self.status_text = "watching…"
+        self.status_text = "paused"
         self.hit          = False
         self._prev_hit    = False   # edge-detect found/not-found so beep+stop fires once per detection
         self.last_value    = None
@@ -246,12 +246,13 @@ class OverlayApp:
 
         # Enter+Left-Click spam — starts OFF, F9 toggles it on; a detection
         # beeps once (unless muted) and turns it back off until F9 is pressed
-        # again. Confirmed detections beep even when spam is off.
+        # again. OCR and detection audio run only while F9 is active.
         self.enter_spam_enabled = enter_spam
         self.enter_hotkey       = enter_hotkey
         self.enter_interval     = enter_interval
         self.click_interval     = click_interval
         self.enter_on           = False
+        self._activation        = 0
         self._lock_rect         = None   # active ClipCursor rect while enter_on is True, re-applied by _spam_loop
         self._running           = True
         self._spam_thread       = None
@@ -443,9 +444,7 @@ class OverlayApp:
         self._running = False
         self._unlock_mouse()
         self.alert.close()
-        hotkeys = ["f8", "f11", "f12", self.beep_hotkey]
-        if self.enter_spam_enabled:
-            hotkeys.append(self.enter_hotkey)
+        hotkeys = ["f8", "f11", "f12", self.beep_hotkey, self.enter_hotkey]
         for hk in hotkeys:
             try:
                 keyboard.remove_hotkey(hk)
@@ -503,22 +502,19 @@ class OverlayApp:
         if value == self.enter_on:
             return
         self.enter_on = value
-        if value:
+        self._activation += 1
+        if value and self.enter_spam_enabled:
             self._lock_mouse()
         else:
             self._unlock_mouse()
 
     def _toggle_enter_spam(self):
-        """Hotkey callback (runs on keyboard's own thread) — just flips a flag;
-        the spam thread and the UI poll both pick it up on their next tick.
-        Re-enabling is blocked while a detection is still showing, so F9
-        can't immediately restart spam into the same still-visible popup —
-        it only turns off, then waits for self.hit to clear."""
-        if not self.enter_on and self.hit:
-            print(f"\n  [hotkey {self.enter_hotkey.upper()}] Ignored — a '+' is still showing; "
-                  f"wait for it to clear before re-enabling.\n", flush=True)
-            return
+        """Toggle OCR and automation. Start each activation with a fresh read."""
+        self.hit = False
+        self._prev_hit = False
+        self.last_value = None
         self._set_enter_on(not self.enter_on)
+        self.status_text = "watching…" if self.enter_on else "paused"
         print(f"\n  [hotkey {self.enter_hotkey.upper()}] Enter+Left-Click spam "
               f"{'ON' if self.enter_on else 'OFF'}\n", flush=True)
 
@@ -592,13 +588,15 @@ class OverlayApp:
         """
         with mss.MSS() as sct:
             while self._running:
-                if self._selecting:
+                if self._selecting or not self.enter_on:
                     time.sleep(RENDER_INTERVAL)
                     continue
                 revision = self._region_revision
+                activation = self._activation
                 t0 = time.perf_counter()
                 value = self._read_with_retry(sct)
-                if self._selecting or revision != self._region_revision:
+                if (self._selecting or revision != self._region_revision
+                        or not self.enter_on or activation != self._activation):
                     continue
 
                 if value and not self._prev_hit:
@@ -609,13 +607,13 @@ class OverlayApp:
                     # before believing it — a single stray OCR frame was
                     # producing occasional false positives, so only a second
                     # confirming read earns the beep.
-                    was_spamming = self.enter_on
-                    self._set_enter_on(False)
                     self.hit = True
+                    self._unlock_mouse()
                     self.status_text = "confirming…"
 
                     confirm = self._read_with_retry(sct)
-                    if self._selecting or revision != self._region_revision:
+                    if (self._selecting or revision != self._region_revision
+                            or not self.enter_on or activation != self._activation):
                         continue
                     if confirm:
                         value = confirm
@@ -627,16 +625,17 @@ class OverlayApp:
                             if now - self.last_beep_time >= BEEP_COOLDOWN:
                                 threading.Thread(target=self._play_alert, daemon=True).start()
                                 self.last_beep_time = now
-                        if was_spamming:
-                            print(f"  [enter+click] OFF — detected {value}. "
-                                  f"Press {self.enter_hotkey.upper()} to re-enable.\n", flush=True)
+                        self._set_enter_on(False)
+                        print(f"  [detection] OFF — detected {value}. "
+                              f"Press {self.enter_hotkey.upper()} to re-enable.\n", flush=True)
                     else:
                         print("  [ocr] ignored a one-frame false positive.", flush=True)
                         value = None
                         self.hit = False
                         self.status_text = "watching…"
                         self.last_value = None
-                        self._set_enter_on(was_spamming)
+                        if self.enter_spam_enabled:
+                            self._lock_mouse()
                 elif value:
                     self.hit = True
                     self.status_text = value
@@ -688,12 +687,12 @@ class OverlayApp:
         keyboard.add_hotkey("f12", self._audio_requests.put, args=(self.alert.reset,),
                             suppress=True, trigger_on_release=True)
         keyboard.add_hotkey(self.beep_hotkey, self._toggle_beep)
+        keyboard.add_hotkey(self.enter_hotkey, self._toggle_enter_spam)
         print("[hotkey] F11: start recording; F11 again: save message. "
               "Repeat to replace it. See [audio] messages for recording status.", flush=True)
         print("[hotkey] F12: delete message and restore beep (mute unchanged).", flush=True)
         print(f"[hotkey] {self.beep_hotkey.upper()}: mute/unmute detection audio.", flush=True)
         if self.enter_spam_enabled:
-            keyboard.add_hotkey(self.enter_hotkey, self._toggle_enter_spam)
             print(f"[hotkey] Press {self.enter_hotkey.upper()} to start/stop Enter+Left-Click spam "
                   f"(starts OFF — Enter every {self.enter_interval*1000:.0f}ms, "
                   f"click every {self.click_interval*1000:.0f}ms while nothing is detected; "
