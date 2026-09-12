@@ -44,6 +44,7 @@ import re
 import sys
 import time
 import json
+import math
 import random
 import queue
 import platform
@@ -180,10 +181,12 @@ LABEL_TO_RESET_DY_RATIO = 131 / 10
 RESET_WIDTH_RATIO       = 247 / 146
 RESET_HEIGHT_RATIO      = 29 / 10
 
-AUTOLOCATE_MOVE_DURATION = 0.25   # seconds to glide the cursor to the Reset button, instead of teleporting
-AUTOLOCATE_MOVE_STEPS    = 30     # interpolation steps across that duration — pydirectinput's own
+AUTOLOCATE_MOVE_DURATION = 0.55   # seconds to glide the cursor to the Reset button, instead of teleporting
+AUTOLOCATE_MOVE_STEPS    = 45     # interpolation steps across that duration — pydirectinput's own
                                   # duration/tween params are accepted but silently ignored (always an
                                   # instant jump), so the easing is done by hand here
+AUTOLOCATE_MOVE_JITTER_PX = 4     # max sideways wobble off the straight-line path, shrinking to 0 as it
+                                  # nears the target — reads as a human hand instead of a robotic slide
 
 # psm 6 = "uniform block of text" — the box may contain the label line above
 # the number, so don't assume a single line. Whitelist keeps OCR focused on
@@ -229,18 +232,25 @@ def read_delta(region, sct=None) -> str | None:
     return m.group(0) if m else None
 
 
-def smooth_move_to(target_x, target_y, duration=AUTOLOCATE_MOVE_DURATION, steps=AUTOLOCATE_MOVE_STEPS):
+def smooth_move_to(target_x, target_y, duration=AUTOLOCATE_MOVE_DURATION, steps=AUTOLOCATE_MOVE_STEPS,
+                    jitter_px=AUTOLOCATE_MOVE_JITTER_PX):
     """Glide the cursor to (target_x, target_y) instead of teleporting —
     pydirectinput.moveTo's own duration/tween arguments are accepted but
-    silently ignored (its implementation always jumps instantly), so the
-    interpolation is done by hand: ease-out (fast start, slow finish) reads
-    as a natural mouse move rather than a linear robotic slide."""
+    silently ignored (its implementation always jumps instantly), so this is
+    done by hand: ease-in-out timing (slow to start, fastest in the middle,
+    slow to settle) plus a little random sideways wobble off the straight
+    line — shrinking to zero as it nears the target so it still lands
+    precisely — reads as a human hand rather than a robotic slide."""
     start_x, start_y = pydirectinput.position()
+    dx, dy = target_x - start_x, target_y - start_y
+    dist = math.hypot(dx, dy)
+    perp_x, perp_y = (-dy / dist, dx / dist) if dist > 0 else (0.0, 0.0)
     for i in range(1, steps + 1):
         t = i / steps
-        eased = 1 - (1 - t) ** 2
-        x = round(start_x + (target_x - start_x) * eased)
-        y = round(start_y + (target_y - start_y) * eased)
+        eased = (1 - math.cos(math.pi * t)) / 2
+        wobble = random.uniform(-1, 1) * jitter_px * (1 - t)
+        x = round(start_x + dx * eased + perp_x * wobble)
+        y = round(start_y + dy * eased + perp_y * wobble)
         pydirectinput.moveTo(x, y)
         time.sleep(duration / steps)
 
