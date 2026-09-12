@@ -4,3 +4,6 @@ build/
 dist/
 _internal/
 *.exe
+.idea/
+.codegraph/
+graphify-out/
