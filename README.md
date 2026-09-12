@@ -46,7 +46,9 @@ F12 also stops message playback and cancels an unfinished recording. No restart 
 If deletion fails, the console shows an error; press F12 again after correcting the problem.
 
 **F10** mutes both the message and the beep. F12 does not change this mute setting.
-**F9** toggles Enter and click automation.
+**F9** toggles OCR, detection audio, and Enter/click automation. All start paused.
+A confirmed detection plays one alert and pauses detection until you press F9 again.
+With `--no-enter-spam`, F9 controls detection without Enter/click automation.
 Audio hotkeys also work with `--no-enter-spam`.
 The application blocks F11 and F12 from reaching other programs while it runs.
 

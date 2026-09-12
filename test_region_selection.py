@@ -76,6 +76,7 @@ class RegionSelectionTest(unittest.TestCase):
     def test_inflight_ocr_is_discarded(self):
         for select_on_read in (1, 2):
             app = OverlayApp((0, 0, 100, 100))
+            app.enter_on = True
             calls = []
 
             def read(_sct):
