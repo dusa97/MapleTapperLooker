@@ -227,8 +227,7 @@ class OverlayApp:
 
         # Enter+Left-Click spam — starts OFF, F9 toggles it on; a detection
         # beeps once (unless muted) and turns it back off until F9 is pressed
-        # again. The beep only ever fires while spam was actively running —
-        # a detection while idle (F9 off) is silent.
+        # again. Confirmed detections beep even when spam is off.
         self.enter_spam_enabled = enter_spam
         self.enter_hotkey       = enter_hotkey
         self.enter_interval     = enter_interval
@@ -526,7 +525,7 @@ class OverlayApp:
                         self.status_text = value
                         self.last_value = value
                         print(f"[{time.strftime('%H:%M:%S')}] detected: {value}", flush=True)
-                        if was_spamming and self.beep_enabled:
+                        if self.beep_enabled:
                             now = time.perf_counter()
                             if now - self.last_beep_time >= BEEP_COOLDOWN:
                                 threading.Thread(target=beep, daemon=True).start()
