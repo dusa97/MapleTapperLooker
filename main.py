@@ -26,8 +26,9 @@ F10 mutes both the message and the beep. Recording requires Windows.
 
 Press F7 to auto-locate the "Combat Power Change" panel: screenshots the
 desktop, finds the panel via template matching against
-assets/reference/combat_power_label.png, and snaps the box (and the cursor)
-onto the number field beneath it — no manual dragging needed.
+assets/reference/combat_power_label.png, snaps the box onto the number field
+beneath it, and moves the cursor onto the "Reset x1" button — no manual
+dragging or aiming needed.
 
 Requirements:
     pip install pillow pytesseract mss keyboard pydirectinput opencv-python numpy
@@ -164,6 +165,18 @@ LABEL_TO_NUMBER_DX_RATIO = -11 / 146
 LABEL_TO_NUMBER_DY_RATIO = 27 / 10
 NUMBER_WIDTH_RATIO       = 154 / 146
 NUMBER_HEIGHT_RATIO      = 22 / 10
+# The number field's exact measured height above is a snug fit around the digits, which was clipping
+# their tops/bottoms just enough to hurt OCR — pad it out top and bottom by this fraction of the label's
+# own height on each side.
+NUMBER_VERTICAL_PAD_RATIO = 0.6
+
+# Same idea for the "Reset x1" button beneath the panels — measured the same way (label top-left to
+# button top-left), so the cursor can be moved onto the actual button (center of this rect) instead of
+# onto the number field.
+LABEL_TO_RESET_DX_RATIO = -176 / 146
+LABEL_TO_RESET_DY_RATIO = 131 / 10
+RESET_WIDTH_RATIO       = 247 / 146
+RESET_HEIGHT_RATIO      = 29 / 10
 
 # psm 6 = "uniform block of text" — the box may contain the label line above
 # the number, so don't assume a single line. Whitelist keeps OCR focused on
@@ -927,11 +940,11 @@ class OverlayApp:
 
     def _auto_locate(self):
         """F7: screenshot the whole desktop, find the 'Combat Power Change'
-        label via multi-scale template matching, and snap the box (and the
-        real cursor) onto the number field beneath it. Both the BEFORE and
-        AFTER panels show this label — see AUTOLOCATE constants above — so
-        among the matches found at the best-scoring scale, the rightmost one
-        (the AFTER panel) is the one used."""
+        label via multi-scale template matching, snap the box onto the number
+        field beneath it, and move the real cursor onto the Reset button.
+        Both the BEFORE and AFTER panels show this label — see AUTOLOCATE
+        constants above — so among the matches found at the best-scoring
+        scale, the rightmost one (the AFTER panel) is the one used."""
         if not self._autolocate_available or self._selecting:
             return
         self._cancel_start()
@@ -987,6 +1000,9 @@ class OverlayApp:
         ny = round(ly + LABEL_TO_NUMBER_DY_RATIO * sh)
         nw = round(sw * NUMBER_WIDTH_RATIO)
         nh = round(sh * NUMBER_HEIGHT_RATIO)
+        pad = round(sh * NUMBER_VERTICAL_PAD_RATIO)
+        ny -= pad
+        nh += pad * 2
 
         self.region = [nx, ny, nw, nh]
         save_region(tuple(self.region))
@@ -997,7 +1013,11 @@ class OverlayApp:
         self._sync_geometry()
         self._log(f"Auto-locate: found panel ({best_val:.2f} confidence), moved box to {tuple(self.region)}.")
 
-        pydirectinput.moveTo(nx + nw // 2, ny + nh // 2)
+        rx = round(lx + LABEL_TO_RESET_DX_RATIO * sw)
+        ry = round(ly + LABEL_TO_RESET_DY_RATIO * sh)
+        rw = round(sw * RESET_WIDTH_RATIO)
+        rh = round(sh * RESET_HEIGHT_RATIO)
+        pydirectinput.moveTo(rx + rw // 2, ry + rh // 2)
 
     def run(self):
         root = self._build_window()
