@@ -1,94 +1,209 @@
-# MapleTapperLooker
+<p align="center">
+  <img src="assets/logo.png" alt="MapleTapperLooker logo" width="160">
+</p>
 
-Detect `+<number>` values in a selected screen region with a compact dark Windows control window.
+<h1 align="center">MapleTapperLooker</h1>
 
-## Download the Windows executable
+<p align="center">
+  A Windows screen watcher that detects <code>+&lt;number&gt;</code> values, plays an alert, and stops automated input.
+</p>
 
-Download `MapleTapperLooker.exe` from [GitHub Releases](https://github.com/dusa97/MapleTapperLooker/releases).
-Install [Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki) separately. Python is not required for the executable.
+<p align="center">
+  <a href="https://github.com/dusa97/MapleTapperLooker/releases/latest">Download for Windows</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="https://github.com/dusa97/MapleTapperLooker/issues">Report an issue</a>
+</p>
 
-Each push to `main` runs tests, builds the executable, and publishes a new release.
-You can also run **Windows release** manually from the **Actions** tab on `main`.
-The workflow uses `MapleTapperLooker.spec` and publishes only after tests and the build succeed.
+<p align="center">
+  <a href="https://github.com/dusa97/MapleTapperLooker/actions/workflows/release.yml"><img src="https://github.com/dusa97/MapleTapperLooker/actions/workflows/release.yml/badge.svg" alt="Windows release workflow status"></a>
+</p>
 
-## Run on Windows
+## Overview
 
-Install Tesseract OCR and Python dependencies:
+Select a screen region, such as a game's Combat Power Change field. MapleTapperLooker uses Tesseract OCR to detect positive values such as `+538,683`.
+
+- Move or resize the detection region across multiple monitors.
+- Start and stop detection with global keyboard shortcuts.
+- Automate Enter presses and left-clicks, or use detection alone.
+- Hear a beep or your recorded message when a value is detected.
+- View status and the six most recent detections or errors in a compact dark window.
+
+A confirmed detection plays one alert and pauses detection and automated input. Press **F9** to resume.
+
+### Screenshot
+
+<p align="center">
+  <img src="assets/screenshot.png" alt="MapleTapperLooker paused control window with region selection, recording, mute, reset, and recent activity controls" width="540">
+</p>
+
+*The actual Windows control window, shown with detection paused.*
+
+## Quick start
+
+**Requirements:** Windows and [Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki). The executable does not require Python.
+
+1. Install Tesseract OCR. The application checks `PATH` and `C:\Program Files\Tesseract-OCR\tesseract.exe`.
+2. Download `MapleTapperLooker.exe` from the [latest release](https://github.com/dusa97/MapleTapperLooker/releases/latest).
+3. Put the executable in a folder that permits file writes. Open it; Windows can request administrator permission.
+4. On first launch, click-drag over the number to watch. Release to save the region; detection stays paused.
+5. Click **Start watching**, then click your game target during the three-second countdown. Alternatively, focus the game and press **F9**.
+
+> [!WARNING]
+> By default, starting detection also sends repeated Enter presses and left-clicks.
+> Focus the intended target before starting. Press **F9** to stop, or close the control window to exit.
+> Use automation only where the target application's rules permit it.
+
+For detection without automated input, run this command from the executable's folder:
 
 ```powershell
-python -m pip install -r requirements.txt
-pythonw main.py
+.\MapleTapperLooker.exe --no-enter-spam
 ```
 
-Double-click **MapleTapperLooker.pyw** to open only the application UI and region overlay, without a terminal.
-The packaged **MapleTapperLooker.exe** also runs without a terminal.
-Use `python main.py` only if you want terminal diagnostics.
+The control window cancels a start if it still has focus. Detection and automated input start paused on each launch.
 
-## Select the detection region
+## Controls
 
-1. Press and release **F8** to hide the current box and start a new selection.
-2. Click-drag over the area to detect. Release to save the region. Detection stays paused.
-3. Drag the green corner handles to resize the box, or drag its border to move it.
+Press and release each hotkey.
 
-Each F8 press clears the selection, including an unfinished drag. **Escape** cancels and restores the previous region.
-Selections must be at least 20 × 20 pixels. Smaller drags let you try again.
-The selector covers all monitors. Detection pauses during selection; Enter and click automation stops and stays off.
-Press **F9** to restart automation after selection.
-F8 works globally, including with `--no-enter-spam`, and does not reach other programs.
-On first launch or with `--reselect`, click-drag to select the initial region. Escape exits this initial selector.
+| Key | Action |
+| --- | --- |
+| **F8** | Pause detection and select a new region. |
+| **F9** | Start or stop detection and, unless disabled, automated input. |
+| **F10** | Mute or unmute both the beep and recorded message. |
+| **F11** | Start recording; press again to save the message. |
+| **F12** | Delete the message and restore the beep. Cancel any unfinished recording and stop message playback. |
 
-## Control window
+All five hotkeys work with `--no-enter-spam`. The application blocks F8, F11, and F12 from reaching other programs.
 
-The application opens a normal dark Windows window (not a terminal) with detection status, a safe **Start watching** countdown, region selection, audio controls, and the six most recent detections or errors.
+### Select or adjust a region
 
-- **Start watching** waits three seconds. Click your game target during the countdown to focus the game. Start cancels if the control window still has focus. Press and release **F9** to start/stop. Focus the game before starting.
-- **Choose region** (or **F8**) opens the screen selector. Drag the green overlay border to move it and a corner to resize it.
-- If Tesseract is missing or unavailable, its diagnostic appears in Recent activity instead of a hidden console.
-- Close the control window to exit. Double-clicking the overlay does not close the application.
+1. Click **Choose region** or press **F8** to hide the current box and open the selector.
+2. Click-drag over the number. Select an area of at least 20 × 20 pixels; smaller drags allow another attempt.
+3. Drag the violet border to move the saved box, or drag a corner handle to resize it.
+4. Focus the target application and press **F9** to resume.
 
-## Record a detection message
+Each F8 press clears the current selection attempt, including an unfinished drag. **Escape** cancels selection and restores the previous region.
+On first launch, or with `--reselect`, Escape exits the initial selector instead.
 
-1. Press and release **F11** to start recording from the default microphone.
-2. Speak after Recent activity shows `REC - F11: stop`.
-3. Press and release **F11** again to save the message.
-4. Detect a `+<number>` value to hear the message instead of the beep.
-5. Repeat the recording steps to replace the saved message.
+The selector covers all monitors. Selection pauses detection and stops automated input; neither restarts automatically.
+The region is saved in `last_region.json` beside the script or executable.
+Double-clicking the overlay does not close the application; close the control window instead.
 
-Press and release **F12** to delete the saved message and restore the original beep.
-F12 also stops message playback and cancels an unfinished recording. No restart is needed.
-If deletion fails, Recent activity shows an error; press F12 again after correcting the problem.
+### Record a detection message
 
-**F10** mutes both the message and the beep. F12 does not change this mute setting.
-**F9** toggles OCR, detection audio, and Enter/click automation. All start paused.
-A confirmed detection plays one alert and pauses detection until you press F9 again.
-With `--no-enter-spam`, F9 controls detection without Enter/click automation.
-Audio hotkeys also work with `--no-enter-spam`.
-The application blocks F11 and F12 from reaching other programs while it runs.
+1. Press **F11** to record from the default microphone.
+2. Wait for `REC - F11: stop` in Recent activity, then speak.
+3. Press **F11** again to save the message.
+4. Start detection to hear the message on the next confirmed match.
 
-The recording stays in `detection_message.wav` beside the script or executable, including after restart.
-A failed recording keeps the previous message. Detection audio is silent while recording.
-Before a message is saved, detection uses the original beep.
-Closing the program during recording discards the unfinished replacement.
+Repeat to replace the message. Press **F12** or click **Reset** to restore the beep without restarting.
+Reset does not change the mute setting.
 
-Recording uses Windows audio APIs. No additional Python dependency is required.
-Enable microphone access for desktop applications in Windows Settings if recording fails.
-The application folder must permit file writes.
+The message stays in `detection_message.wav` beside the script or executable, including after restart.
+A failed recording keeps the previous message. Closing the application during recording discards the unfinished replacement.
+Detection audio is silent during recording. Recording uses Windows audio APIs and needs no additional Python dependency.
 
-## Repository layout
+## Run from source
 
-- `main.py`, `recorded_alert.py`, `MapleTapperLooker.pyw`: application and launcher.
-- `assets/`: application icons.
-- `tests/`: Python tests and release-note checks.
-- `.github/workflows/`: release automation.
-- `MapleTapperLooker.spec`, `requirements.txt`: build settings and dependencies.
+Use Windows, Tesseract OCR, and Python. The release workflow builds and tests with **Python 3.11**.
 
-## Check
+1. Clone the repository:
 
-Run from the repository root:
+   ```powershell
+   git clone https://github.com/dusa97/MapleTapperLooker.git
+   cd MapleTapperLooker
+   ```
+
+2. Create a virtual environment and install dependencies:
+
+   ```powershell
+   python -m venv .venv
+   .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+   ```
+
+3. Start the application without a terminal:
+
+   ```powershell
+   .\.venv\Scripts\pythonw.exe main.py
+   ```
+
+Use `.\.venv\Scripts\python.exe main.py` for terminal diagnostics.
+You can also double-click `MapleTapperLooker.pyw` if its associated Python installation has the required dependencies.
+The packaged executable runs without a terminal.
+
+### Command-line options
+
+These options also work with `MapleTapperLooker.exe`.
+
+| Option | Purpose |
+| --- | --- |
+| `--no-enter-spam` | Disable automated input; F9 still controls detection. |
+| `--reselect` | Select a new region instead of loading the saved one. |
+| `--region L T W H` | Set the region's left, top, width, and height in pixels. |
+| `--no-elevate` | Skip the automatic administrator permission request. Hotkeys can fail when an elevated game has focus. |
+| `--help` | List all options, including input intervals and configurable hotkeys. |
+
+Example: select a new region and use detection without automated input.
 
 ```powershell
-python -m unittest discover -v
+.\.venv\Scripts\python.exe main.py --reselect --no-enter-spam
+```
+
+## Troubleshooting
+
+| Problem | Check or action |
+| --- | --- |
+| Tesseract is missing or unavailable | Read the diagnostic in **Recent activity**. Install Tesseract at the standard path or add it to `PATH`, then restart the application. |
+| Start is cancelled | Click the game target during the countdown, or focus the game before pressing F9. |
+| F9 does not work over an elevated game | Allow the application's administrator permission request. Do not use `--no-elevate` for that session. |
+| Recording fails | Enable microphone access for desktop applications in Windows Settings. Check the default microphone and application folder write permissions. |
+| Reset cannot delete the message | Read the error in **Recent activity**, correct the file-access problem, and press F12 again. |
+
+## Development
+
+### Run checks
+
+Run from the repository root after installing dependencies:
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -v
 powershell -NoProfile -File tests/test_release_notes.ps1
 ```
 
-Tests mock audio devices. Check microphone recording and playback manually with the F11 steps above.
+Tests mock audio devices. Check microphone recording and playback manually with the [recording steps](#record-a-detection-message).
+
+### Build and releases
+
+Each push to `main` runs tests, builds the executable with `MapleTapperLooker.spec`, and publishes a release only after success.
+You can also run **Windows release** manually from the repository's **Actions** tab on `main`.
+
+To build locally after installing dependencies:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install pyinstaller==6.16.0
+.\.venv\Scripts\python.exe -m PyInstaller --clean --noconfirm MapleTapperLooker.spec
+```
+
+The executable is written to `dist/MapleTapperLooker.exe`. Tesseract must still be installed separately.
+
+### Repository layout
+
+| Path | Contents |
+| --- | --- |
+| `main.py`, `recorded_alert.py`, `MapleTapperLooker.pyw` | Application, recorded audio support, and launcher. |
+| `assets/` | Application logo, icon, and README screenshot. |
+| `tests/` | Python tests and release-note checks. |
+| `.github/workflows/` | Release automation. |
+| `MapleTapperLooker.spec`, `requirements.txt` | Build settings and dependencies. |
+
+## Support and contributions
+
+[Open an issue](https://github.com/dusa97/MapleTapperLooker/issues) for a bug report or feature request.
+Include your Windows version, application release, reproduction steps, and relevant Recent activity messages.
+Remove private information from screenshots before posting.
+
+For code changes, keep pull requests focused and run the checks above. Include a screenshot when a change affects the control window.
+
+## License
+
+This repository does not currently include a license file. No open-source license is granted here; ask the owner before reuse or redistribution.
