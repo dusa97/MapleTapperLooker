@@ -20,7 +20,9 @@ python -m pip install -r requirements.txt
 pythonw main.py
 ```
 
-Use `python main.py` if you also want terminal diagnostics.
+Double-click **MapleTapperLooker.pyw** to open only the application UI and region overlay, without a terminal.
+The packaged **MapleTapperLooker.exe** also runs without a terminal.
+Use `python main.py` only if you want terminal diagnostics.
 
 ## Select the detection region
 
