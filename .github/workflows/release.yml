@@ -33,6 +33,9 @@ jobs:
         shell: pwsh
         run: ./tests/test_release_notes.ps1
 
+      - name: Install UPX
+        run: choco install upx -y --no-progress
+
       - name: Build executable
         run: python -m PyInstaller --clean --noconfirm MapleTapperLooker.spec
 

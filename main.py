@@ -54,6 +54,26 @@ from tkinter import font as tkfont
 from tkinter import messagebox, ttk
 from pathlib import Path
 
+# ── DPI awareness (Windows) ──────────────────────────────────────────────────
+# Must be set before any window/screen API runs (Tk included), so every
+# screen-coordinate value in this app agrees on physical pixels: mss
+# screenshots, pydirectinput's cursor moves (which read GetSystemMetrics),
+# and Tk's own window geometry. A DPI-unaware process gets a scaled/
+# virtualized view of the screen from Windows for GetSystemMetrics, while mss
+# still captures true physical pixels regardless — so on any display running
+# above 100% scaling, a screenshot-based coordinate and a cursor move to that
+# same coordinate silently disagree, showing up as the cursor landing
+# consistently off to one side of wherever auto-locate aims it.
+if platform.system() == "Windows":
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)   # PROCESS_PER_MONITOR_DPI_AWARE
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
 from recorded_alert import RecordedAlert
 
 try:
@@ -148,11 +168,25 @@ OCR_SCALE_MAX     = 4.0
 BEEP_COOLDOWN     = 1.5    # min seconds between beeps
 
 ENTER_HOTKEY    = "f9"    # toggles Enter+Left-Click spam on/off — starts OFF
-ENTER_INTERVAL  = 0.16    # seconds between spammed Enter presses (160ms)
-CLICK_INTERVAL  = 0.24    # seconds between spammed left-clicks (240ms)
+ENTER_INTERVAL  = 0.16    # seconds between spammed Enter presses (160ms) — this is the Reset x3 speed;
+                          # see SPAM_SIZE_* below for why a narrower box runs faster than this
+CLICK_INTERVAL  = 0.24    # seconds between spammed left-clicks (240ms) — same as above
 SPAM_JITTER     = 0.3     # +/- fraction of randomness applied to each interval above,
                           # so presses/clicks don't land on a perfectly robotic fixed cadence
 BEEP_HOTKEY     = "f10"   # mutes/unmutes the detection beep — starts UNMUTED
+
+# ENTER_INTERVAL/CLICK_INTERVAL above are tuned for a Reset x3 box: it's wide, so OCR takes longer to
+# read it, so spam needs the full interval to stay safely behind that read latency (see
+# OCR_TARGET_HEIGHT for the same latency-vs-race concern). A Reset x1 box only has one number to read,
+# so OCR is faster and spam can safely run up to SPAM_SIZE_MAX_SPEEDUP faster without outracing
+# detection. Scaled by the box's aspect ratio (width/height) rather than raw pixel size, since aspect
+# ratio stays roughly the same regardless of screen resolution/zoom, while raw pixel dimensions don't.
+# The two reference ratios below are the actual x1 and x3 auto-locate box sizes measured earlier
+# (154x34 and 1207x64) — anything narrower than x1's ratio gets the full speedup, anything wider than
+# x3's ratio runs at the unmodified interval, and everything between is linearly interpolated.
+SPAM_SIZE_ASPECT_MIN  = 154 / 34     # at/below this aspect ratio (a single-number box): full speedup
+SPAM_SIZE_ASPECT_MAX  = 1207 / 64    # at/above this aspect ratio (a three-number box): no speedup
+SPAM_SIZE_MAX_SPEEDUP = 0.20         # up to 20% shorter intervals at the narrow end
 
 AUTOLOCATE_HOTKEY = "f7"   # scans the screen for the Combat Power Change panel and snaps the box + cursor to it
 LABEL_TEMPLATE_PATH = Path(__file__).parent / "assets" / "reference" / "combat_power_label.png"
@@ -173,13 +207,22 @@ NUMBER_HEIGHT_RATIO      = 22 / 10
 # own height on each side.
 NUMBER_VERTICAL_PAD_RATIO = 0.6
 
-# Same idea for the "Reset x1" button beneath the panels — measured the same way (label top-left to
-# button top-left), so the cursor can be moved onto the actual button (center of this rect) instead of
-# onto the number field.
-LABEL_TO_RESET_DX_RATIO = -176 / 146
-LABEL_TO_RESET_DY_RATIO = 131 / 10
-RESET_WIDTH_RATIO       = 247 / 146
-RESET_HEIGHT_RATIO      = 29 / 10
+# Same idea for the Reset button(s) beneath the panels — measured the same way (BEFORE label
+# top-left to button top-left), so the cursor can be moved onto the actual button (center of this
+# rect) instead of onto the number field. The button row is centered under the WHOLE dialog rather
+# than fixed relative to the BEFORE panel, so its offset from BEFORE's label genuinely differs
+# between a Reset x1 dialog (2 panels wide, measured from assets/reference/combat_power_label.png's
+# own screenshot) and a Reset x3 dialog (4 panels wide, measured from a Reset x3 screenshot) — one
+# set of ratios does not work for both, so _auto_locate() picks between them by detected layout.
+LABEL_TO_RESET_X1_DX_RATIO = 68 / 146
+LABEL_TO_RESET_X1_DY_RATIO = 131 / 10
+RESET_X1_WIDTH_RATIO       = 247 / 146
+RESET_X1_HEIGHT_RATIO      = 29 / 10
+
+LABEL_TO_RESET_X3_DX_RATIO = 825 / 277
+LABEL_TO_RESET_X3_DY_RATIO = 246 / 19
+RESET_X3_WIDTH_RATIO       = 344 / 277
+RESET_X3_HEIGHT_RATIO      = 55 / 19
 
 AUTOLOCATE_MOVE_DURATION = 0.55   # seconds to glide the cursor to the Reset button, instead of teleporting
 AUTOLOCATE_MOVE_STEPS    = 45     # interpolation steps across that duration — pydirectinput's own
@@ -196,7 +239,12 @@ AUTOLOCATE_MOVE_JITTER_PX = 4     # max sideways wobble off the straight-line pa
 # strokes of the game's stylized digits.
 OCR_CONFIG = r'--psm 6 -c tessedit_char_whitelist=+-0123456789,'
 
-PLUS_NUMBER_RE = re.compile(r'\+[\d,]{2,}')
+PLUS_NUMBER_RE = re.compile(r'\+[\d,]{2,}')   # "+<number>" only, by design: a negative/bad reset
+                                               # result should NOT count as detected, so the spam
+                                               # keeps re-rolling through it — only a positive result
+                                               # stops it. (A wide auto-locate box spanning multiple
+                                               # AFTER panels still works fine with this: .search()
+                                               # finds the first "+" among them, if any appear.)
 
 
 def preprocess_for_ocr(img: Image.Image) -> Image.Image:
@@ -284,6 +332,19 @@ def load_region() -> tuple | None:
             pass
     return None
 
+
+def default_region() -> tuple:
+    """A harmless starting box for first launch (nothing saved yet), so the
+    control window opens immediately instead of blocking behind a full-screen
+    click-drag prompt — the user sets the real region afterward via 'Choose
+    region' (F8) or 'Auto-locate' (F7), both of which stay inside the app."""
+    with mss.MSS() as sct:
+        desktop = sct.monitors[0]
+    w, h = 200, 60
+    x = desktop["left"] + (desktop["width"] - w) // 2
+    y = desktop["top"] + (desktop["height"] - h) // 2
+    return (x, y, w, h)
+
 # ── Persistent overlay rectangle ────────────────────────────────────────────
 
 class OverlayApp:
@@ -302,8 +363,10 @@ class OverlayApp:
                  enter_interval: float = ENTER_INTERVAL,
                  click_interval: float = CLICK_INTERVAL,
                  beep_hotkey: str = BEEP_HOTKEY,
-                 min_read_gap: float = MIN_READ_GAP):
+                 min_read_gap: float = MIN_READ_GAP,
+                 is_placeholder_region: bool = False):
         self.region      = list(region)   # [x, y, w, h] — mutable, moved/resized live
+        self._is_placeholder_region = is_placeholder_region   # True until the user sets a real region
         self.status_text = "paused"
         self.hit          = False
         self._prev_hit    = False   # edge-detect found/not-found so beep+stop fires once per detection
@@ -356,6 +419,8 @@ class OverlayApp:
         self._autolocate_requested = threading.Event()
         self._label_template_gray = None
         self._autolocate_available = True
+        self._box_visible = True
+        self._box_toggle_button = None
 
     def _build_window(self):
         """Build the normal taskbar window plus the capture-safe screen overlay."""
@@ -408,6 +473,9 @@ class OverlayApp:
                      UI_BUTTON, UI_TEXT).pack(side="left", padx=(10, 0))
         self._button(buttons, "Auto-locate  (F7)", self._request_autolocate,
                      UI_BUTTON, UI_TEXT).pack(side="left", padx=(10, 0))
+        self._box_toggle_button = self._button(buttons, "Hide box", self._toggle_box_visibility,
+                                               UI_BUTTON, UI_TEXT)
+        self._box_toggle_button.pack(side="left", padx=(10, 0))
         tk.Label(status, text="Auto-locate currently only recognizes the Combat Power reset dialog.",
                  fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 8), anchor="center",
                  justify="center", wraplength=450).pack(fill="x", padx=16, pady=(0, 12))
@@ -463,7 +531,10 @@ class OverlayApp:
         scroll.pack(side="right", fill="y", pady=(0, 12))
         self._activity_list.config(yscrollcommand=scroll.set)
         self._activity_list.pack(fill="both", expand=True, padx=12, pady=(0, 12))
-        self._log("Ready. Select the number region, then start watching.")
+        if self._is_placeholder_region:
+            self._log("No saved region yet — press 'Choose region' (F8) or 'Auto-locate' (F7) to set one.")
+        else:
+            self._log("Ready. Select the number region, then start watching.")
 
         overlay = tk.Toplevel(root)
         overlay.overrideredirect(True)
@@ -520,6 +591,17 @@ class OverlayApp:
 
     def _request_autolocate(self):
         self._autolocate_requested.set()
+
+    def _toggle_box_visibility(self):
+        """Show/hide the on-screen overlay box, purely visual — OCR keeps
+        reading self.region either way, since it screenshots the region
+        directly and never depends on the overlay window being shown."""
+        self._box_visible = not self._box_visible
+        if self._box_visible and not self._selecting:
+            self.overlay.deiconify()
+        else:
+            self.overlay.withdraw()
+        self._box_toggle_button.config(text="Show box" if not self._box_visible else "Hide box")
 
     def _request_audio(self, action):
         self._audio_requests.put(action)
@@ -637,6 +719,7 @@ class OverlayApp:
         if region is not None:
             self.region = list(region)
             save_region(region)
+            self._is_placeholder_region = False
         self._selector = None
         self._region_revision += 1
         self.hit = self._prev_hit = False
@@ -645,7 +728,8 @@ class OverlayApp:
         self._log("Region selected. Press Start or F9 to begin.")
         self._sync_geometry()
         self.root.deiconify()
-        self.overlay.deiconify()
+        if self._box_visible:
+            self.overlay.deiconify()
         self._selecting = False
 
     def _quit(self):
@@ -711,6 +795,10 @@ class OverlayApp:
         detection, false-positive resume) changes the state."""
         if value and (self._selecting or not self._ocr_available):
             return
+        if value and self._is_placeholder_region:
+            self.status_text = "No region set — press 'Choose region' (F8) or 'Auto-locate' (F7) first."
+            self._log(self.status_text)
+            return
         if (value and self.enter_spam_enabled and self.root is not None
                 and self.root.focus_displayof() is not None):
             self.status_text = "Focus the game, then press F9."
@@ -757,6 +845,23 @@ class OverlayApp:
         land on a perfectly even, obviously-scripted cadence."""
         return interval * random.uniform(1 - spread, 1 + spread)
 
+    def _spam_speed_factor(self):
+        """Multiplier (<=1.0) applied to enter_interval/click_interval based
+        on the current box's aspect ratio — see SPAM_SIZE_* for why a
+        narrower box (watching one AFTER panel) can safely run faster than a
+        wider one (watching all three). Linearly interpolated between the
+        two reference ratios and clamped, so a manually-resized box outside
+        the normal x1..x3 range never goes faster than the 20%-faster floor
+        or slower than the unmodified interval."""
+        w, h = self.region[2], self.region[3]
+        if h <= 0:
+            return 1.0
+        aspect = w / h
+        span = SPAM_SIZE_ASPECT_MAX - SPAM_SIZE_ASPECT_MIN
+        t = (aspect - SPAM_SIZE_ASPECT_MIN) / span if span else 1.0
+        t = max(0.0, min(1.0, t))
+        return 1.0 - SPAM_SIZE_MAX_SPEEDUP * (1.0 - t)
+
     def _spam_loop(self):
         """
         Runs on its own thread so the millisecond-scale Enter/click cadence
@@ -771,8 +876,8 @@ class OverlayApp:
         last_enter_time = 0.0
         last_click_time = 0.0
         last_lock_refresh = 0.0
-        next_enter_gap = self._jittered(self.enter_interval)
-        next_click_gap = self._jittered(self.click_interval)
+        next_enter_gap = self._jittered(self.enter_interval * self._spam_speed_factor())
+        next_click_gap = self._jittered(self.click_interval * self._spam_speed_factor())
         while self._running:
             if self.enter_on and not self.hit and not self._selecting:
                 now = time.perf_counter()
@@ -786,11 +891,11 @@ class OverlayApp:
                 if now - last_enter_time >= next_enter_gap:
                     pydirectinput.press("enter")
                     last_enter_time = now
-                    next_enter_gap = self._jittered(self.enter_interval)
+                    next_enter_gap = self._jittered(self.enter_interval * self._spam_speed_factor())
                 if now - last_click_time >= next_click_gap:
                     pydirectinput.click()
                     last_click_time = now
-                    next_click_gap = self._jittered(self.click_interval)
+                    next_click_gap = self._jittered(self.click_interval * self._spam_speed_factor())
             time.sleep(0.001)
 
     def _read_with_retry(self, sct):
@@ -978,11 +1083,17 @@ class OverlayApp:
 
     def _auto_locate(self):
         """F7: screenshot the whole desktop, find the 'Combat Power Change'
-        label via multi-scale template matching, snap the box onto the number
-        field beneath it, and move the real cursor onto the Reset button.
-        Both the BEFORE and AFTER panels show this label — see AUTOLOCATE
-        constants above — so among the matches found at the best-scoring
-        scale, the rightmost one (the AFTER panel) is the one used."""
+        label via multi-scale template matching, snap the box onto the AFTER
+        number field(s), and move the real cursor onto the matching Reset
+        button. Every panel shows this label — BEFORE and however many AFTER
+        panels there are (1 for Reset x1, 3 for Reset x3) — and they always
+        lay out left-to-right with BEFORE first, so the leftmost match is
+        dropped and one box is sized to cover the rest: just the single
+        number on x1, or all of them at once on x3. The detected panel count
+        also picks which Reset button (x1 or x3) the cursor goes to — the
+        button row is centered under the whole dialog rather than fixed
+        relative to BEFORE, so its offset genuinely differs between the two
+        dialog widths."""
         if not self._autolocate_available or self._selecting:
             return
         self._cancel_start()
@@ -1030,31 +1141,64 @@ class OverlayApp:
             y0, y1 = max(0, y - sh // 2), min(work.shape[0], y + sh // 2)
             work[y0:y1, x0:x1] = -1.0
 
-        lx, ly = max(peaks, key=lambda p: p[0])   # rightmost match = the AFTER panel
-        lx += desktop["left"]
-        ly += desktop["top"]
+        # Panels always lay out left-to-right with BEFORE first, whether it's
+        # a Reset x1 (BEFORE + 1 AFTER = 2 matches) or Reset x3 (BEFORE + 3
+        # AFTER = 4 matches) dialog, so the leftmost match is always BEFORE
+        # and everything else is an AFTER panel that actually carries a
+        # value. One box is sized to cover just the single AFTER number on
+        # x1, or all of them at once (one wide box) on x3.
+        peaks_sorted = sorted(peaks, key=lambda p: p[0])
+        before_x, before_y = peaks_sorted[0]
+        after_peaks = peaks_sorted[1:]
+        if not after_peaks:
+            self._log("Auto-locate: only found the BEFORE panel — AFTER panel(s) not detected.")
+            return
 
-        nx = round(lx + LABEL_TO_NUMBER_DX_RATIO * sw)
-        ny = round(ly + LABEL_TO_NUMBER_DY_RATIO * sh)
-        nw = round(sw * NUMBER_WIDTH_RATIO)
-        nh = round(sh * NUMBER_HEIGHT_RATIO)
-        pad = round(sh * NUMBER_VERTICAL_PAD_RATIO)
-        ny -= pad
-        nh += pad * 2
+        number_rects = []
+        for (px, py) in after_peaks:
+            ax = px + desktop["left"]
+            ay = py + desktop["top"]
+            nx = round(ax + LABEL_TO_NUMBER_DX_RATIO * sw)
+            ny = round(ay + LABEL_TO_NUMBER_DY_RATIO * sh)
+            nw = round(sw * NUMBER_WIDTH_RATIO)
+            nh = round(sh * NUMBER_HEIGHT_RATIO)
+            pad = round(sh * NUMBER_VERTICAL_PAD_RATIO)
+            ny -= pad
+            nh += pad * 2
+            number_rects.append((nx, ny, nw, nh))
 
-        self.region = [nx, ny, nw, nh]
+        left = min(r[0] for r in number_rects)
+        top = min(r[1] for r in number_rects)
+        right = max(r[0] + r[2] for r in number_rects)
+        bottom = max(r[1] + r[3] for r in number_rects)
+
+        self.region = [left, top, right - left, bottom - top]
         save_region(tuple(self.region))
+        self._is_placeholder_region = False
         self._region_revision += 1
         self.hit = self._prev_hit = False
         self.last_value = None
         self.status_text = "paused"
         self._sync_geometry()
-        self._log(f"Auto-locate: found panel ({best_val:.2f} confidence), moved box to {tuple(self.region)}.")
+        self._log(f"Auto-locate: found {len(after_peaks)} AFTER panel(s) "
+                  f"({best_val:.2f} confidence), moved box to {tuple(self.region)}.")
 
-        rx = round(lx + LABEL_TO_RESET_DX_RATIO * sw)
-        ry = round(ly + LABEL_TO_RESET_DY_RATIO * sh)
-        rw = round(sw * RESET_WIDTH_RATIO)
-        rh = round(sh * RESET_HEIGHT_RATIO)
+        if len(after_peaks) == 1:
+            dx_ratio, dy_ratio = LABEL_TO_RESET_X1_DX_RATIO, LABEL_TO_RESET_X1_DY_RATIO
+            w_ratio, h_ratio = RESET_X1_WIDTH_RATIO, RESET_X1_HEIGHT_RATIO
+            button_name = "Reset x1"
+        else:
+            dx_ratio, dy_ratio = LABEL_TO_RESET_X3_DX_RATIO, LABEL_TO_RESET_X3_DY_RATIO
+            w_ratio, h_ratio = RESET_X3_WIDTH_RATIO, RESET_X3_HEIGHT_RATIO
+            button_name = "Reset x3"
+
+        lx = before_x + desktop["left"]
+        ly = before_y + desktop["top"]
+        rx = round(lx + dx_ratio * sw)
+        ry = round(ly + dy_ratio * sh)
+        rw = round(sw * w_ratio)
+        rh = round(sh * h_ratio)
+        self._log(f"Auto-locate: moving cursor to {button_name}.")
         threading.Thread(target=smooth_move_to,
                           args=(rx + rw // 2, ry + rh // 2), daemon=True).start()
 
@@ -1254,11 +1398,18 @@ if __name__ == "__main__":
     else:
         region = load_region()
 
-    if region is None or args.reselect:
+    # --reselect is an explicit ask, and --once has no GUI to fall back on, so
+    # both still get the blocking full-screen selector. A first launch with
+    # nothing saved yet does NOT — that used to drop straight into a
+    # full-screen click-drag prompt before the control window ever appeared,
+    # which read as the app randomly launching a screenshot tool. It now
+    # starts with a harmless placeholder box instead, so the window opens
+    # immediately and region selection stays an in-app action (F8/F7).
+    if args.reselect or (region is None and args.once):
         print("  Opening region selector...")
         print()
         region = _open_selector()
-    else:
+    elif region is not None:
         print(f"  Last region: left={region[0]}  top={region[1]}  width={region[2]}  height={region[3]}")
 
     if args.once:
@@ -1266,9 +1417,15 @@ if __name__ == "__main__":
         print(f"detected: {value}" if value else "no '+<number>' found")
         sys.exit(0 if value else 1)
 
+    is_placeholder = region is None
+    if is_placeholder:
+        region = default_region()
+        print(f"  No saved region yet — starting with a placeholder box at {region}. "
+              "Use 'Choose region' (F8) or 'Auto-locate' (F7) in the app to set the real one.")
+
     print(f"\n  Watching region={region} — drag the box to reposition, drag a corner to resize.")
     print("  Close the control window to quit.\n")
-    OverlayApp(region, enter_spam=not args.no_enter_spam,
+    OverlayApp(region, is_placeholder_region=is_placeholder, enter_spam=not args.no_enter_spam,
                enter_hotkey=args.enter_hotkey,
                enter_interval=args.enter_interval,
                click_interval=args.click_interval,
