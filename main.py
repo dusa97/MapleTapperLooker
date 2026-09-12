@@ -28,7 +28,9 @@ Press F7 to auto-locate the "Combat Power Change" panel: screenshots the
 desktop, finds the panel via template matching against
 assets/reference/combat_power_label.png, snaps the box onto the number field
 beneath it, and moves the cursor onto the "Reset x1" button — no manual
-dragging or aiming needed.
+dragging or aiming needed. For now this only recognizes that one specific
+reset dialog (the template is a crop of its exact label) — it won't find
+any other popup/reset screen.
 
 Requirements:
     pip install pillow pytesseract mss keyboard pydirectinput opencv-python numpy
@@ -396,6 +398,9 @@ class OverlayApp:
                      UI_BUTTON, UI_TEXT).pack(side="left", padx=(10, 0))
         self._button(buttons, "Auto-locate  (F7)", self._request_autolocate,
                      UI_BUTTON, UI_TEXT).pack(side="left", padx=(10, 0))
+        tk.Label(status, text="Auto-locate currently only recognizes the Combat Power reset dialog.",
+                 fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 8), anchor="center",
+                 justify="center", wraplength=450).pack(fill="x", padx=16, pady=(0, 12))
 
         audio = self._card(outer)
         audio.pack(fill="x", pady=(14, 0))
@@ -958,6 +963,8 @@ class OverlayApp:
         except Exception as error:
             self._autolocate_available = False
             self._log(f"Auto-locate unavailable: {error}")
+        else:
+            self._log("Auto-locate ready (currently recognizes only the Combat Power reset dialog).")
 
     def _auto_locate(self):
         """F7: screenshot the whole desktop, find the 'Combat Power Change'
