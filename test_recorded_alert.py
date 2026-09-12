@@ -82,6 +82,42 @@ class RecordedAlertTest(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), b"previous message")
         self.assertFalse(self.alert.recording)
 
+    def test_reset_deletes_message_cancels_recording_and_restores_beep(self):
+        self.path.write_bytes(b"previous message")
+        self.alert.recording = True
+        with patch.object(self.alert, "_command") as command:
+            self.alert.reset()
+            command.assert_called_once_with("close maple_message")
+        self.sound.PlaySound.assert_called_with(None, 0)
+        self.assertFalse(self.alert.recording)
+        self.assertFalse(self.path.exists())
+        fallback = Mock()
+        self.alert.play(fallback)
+        fallback.assert_called_once()
+        self.alert.reset()  # No saved message is also a successful reset.
+        self.assertIn("Beep restored", self.alert.status)
+        with patch.object(self.alert, "_command"):
+            self.alert.toggle()
+        self.assertTrue(self.alert.recording)
+
+    def test_reset_failure_preserves_message_and_allows_retry(self):
+        self.path.write_bytes(b"previous message")
+        with patch.object(Path, "unlink", side_effect=PermissionError("Access denied")):
+            self.alert.reset()
+        self.assertEqual(self.path.read_bytes(), b"previous message")
+        self.assertIn("Reset failed", self.alert.status)
+        self.alert.reset()
+        self.assertFalse(self.path.exists())
+
+    def test_reset_close_failure_keeps_recording_state(self):
+        self.path.write_bytes(b"previous message")
+        self.alert.recording = True
+        with patch.object(self.alert, "_command", side_effect=RuntimeError("Device busy")):
+            self.alert.reset()
+        self.assertTrue(self.alert.recording)
+        self.assertTrue(self.path.exists())
+        self.assertIn("Reset failed", self.alert.status)
+
     def test_playback_failure_and_shutdown(self):
         fallback = Mock()
         self.path.write_bytes(b"audio")

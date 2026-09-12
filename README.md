@@ -19,9 +19,14 @@ python main.py
 4. Detect a `+<number>` value to hear the message instead of the beep.
 5. Repeat the recording steps to replace the saved message.
 
-**F10** mutes both the message and the beep. **F9** toggles Enter and click automation.
+Press and release **F12** to delete the saved message and restore the original beep.
+F12 also stops message playback and cancels an unfinished recording. No restart is needed.
+If deletion fails, the console shows an error; press F12 again after correcting the problem.
+
+**F10** mutes both the message and the beep. F12 does not change this mute setting.
+**F9** toggles Enter and click automation.
 Audio hotkeys also work with `--no-enter-spam`.
-The application blocks F11 from reaching other programs, so it does not toggle their fullscreen mode.
+The application blocks F11 and F12 from reaching other programs while it runs.
 
 The recording stays in `detection_message.wav` beside the script or executable, including after restart.
 A failed recording keeps the previous message. Detection audio is silent while recording.

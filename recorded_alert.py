@@ -66,6 +66,26 @@ class RecordedAlert:
                     print(f"[audio] Could not remove temporary recording: {error}", flush=True)
             print(f"[audio] {self.status}", flush=True)
 
+    def reset(self):
+        """Delete the message and cancel any unfinished recording."""
+        with self._lock:
+            if self._closed:
+                return
+            try:
+                if platform.system() == "Windows":
+                    import winsound
+                    winsound.PlaySound(None, 0)
+                    if self.recording:
+                        self._command("close maple_message")
+                        self.recording = False
+                self.path.unlink(missing_ok=True)
+            except Exception as error:
+                self.status = "Reset failed - retry F12"
+                print(f"[audio] Could not restore beep: {error}", flush=True)
+            else:
+                self.status = "Beep restored - F11: record"
+            print(f"[audio] {self.status}", flush=True)
+
     def play(self, fallback):
         with self._lock:
             if self._closed or self.recording:
