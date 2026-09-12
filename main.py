@@ -6,11 +6,10 @@ bold white text with a black outline on a dark green/olive panel).
 
 Position the box over the number, and it's continuously screenshotted,
 preprocessed (upscaled + grayscaled), and OCR'd with Tesseract. Whenever a
-"+<digits>" match appears, a separate draggable status panel (off to the
-side, so it never covers the box or gets OCR'd itself) shows it and it's
-printed to the console; a beep fires once per new value (not every frame
-the popup happens to still be on screen). The OCR loop runs on its own
-background thread, back-to-back
+"+<digits>" match appears, the control window shows it in its status and
+recent activity list; a beep fires once per new value (not every frame the
+popup happens to still be on screen). The OCR loop runs on its own background
+thread, back-to-back
 with no artificial delay between reads, so detection latency is bounded only
 by how fast screen-capture + Tesseract actually are (~150ms/read) instead of
 also waiting out a fixed poll interval on top of that.
@@ -43,6 +42,7 @@ import platform
 import threading
 import tkinter as tk
 from tkinter import font as tkfont
+from tkinter import messagebox
 from pathlib import Path
 
 from recorded_alert import RecordedAlert
@@ -54,8 +54,8 @@ try:
     import keyboard        # global hotkey to start/stop Enter+click spam — works even while the game has focus
     import pydirectinput   # DirectInput-style key injection — see the spam-loop comment below
 except ImportError as e:
-    print(f"Missing dependency: {e}")
-    print("Run: pip install pillow pytesseract mss keyboard pydirectinput")
+    tk.Tk().withdraw()
+    messagebox.showerror("Maple Tapper Looker", f"Missing dependency: {e}\n\nRun:\npip install -r requirements.txt")
     sys.exit(1)
 
 pydirectinput.FAILSAFE = False   # don't abort if the mouse happens to be at a screen corner
@@ -112,6 +112,14 @@ if getattr(sys, "frozen", False):
     _BASE_DIR = Path(sys.executable).parent
 else:
     _BASE_DIR = Path(__file__).parent
+UI_BG = "#10151D"
+UI_SURFACE = "#1A2330"
+UI_BORDER = "#344256"
+UI_TEXT = "#EDF3FA"
+UI_MUTED = "#B4C2D3"
+UI_PRIMARY = "#5EEAD4"
+UI_PRIMARY_ACTIVE = "#99F6E4"
+
 REGION_FILE     = _BASE_DIR / "last_region.json"
 MIN_READ_GAP      = 0.0    # optional extra delay between OCR reads (0 = back-to-back, as fast as possible)
 RENDER_INTERVAL   = 0.05   # seconds between UI repaints — independent of the OCR read cadence
@@ -238,11 +246,17 @@ class OverlayApp:
         self._handle_ids  = {}
         self._drag        = {}
         self._ocr_thread  = None
-        self._panel        = None
-        self._panel_status = None
-        self._panel_enter  = None
-        self._panel_beep   = None
-        self._panel_drag   = None
+        self.overlay       = None
+        self._status_label = None
+        self._detail_label = None
+        self._start_button = None
+        self._mute_button = None
+        self._record_button = None
+        self._activity_list = None
+        self._activity_pending = queue.SimpleQueue()
+        self._activity_lines = []
+        self._start_after = None
+        self._ocr_available = True
 
         # Enter+Left-Click spam — starts OFF, F9 toggles it on; a detection
         # beeps once (unless muted) and turns it back off until F9 is pressed
@@ -262,84 +276,167 @@ class OverlayApp:
         self.beep_enabled = True
         self.alert = RecordedAlert(_BASE_DIR / "detection_message.wav")
         self._audio_requests = queue.SimpleQueue()
+        self._toggle_requests = queue.SimpleQueue()
         self._selection_requested = threading.Event()
         self._selector = None
         self._selecting = False
         self._region_revision = 0
 
     def _build_window(self):
-        b = self.BORDER
+        """Build the normal taskbar window plus the capture-safe screen overlay."""
         root = tk.Tk()
-        root.overrideredirect(True)
-        root.attributes("-topmost", True)
-        root.attributes("-transparentcolor", "black")
-        root.configure(bg="black")
-        root.resizable(False, False)
-        canvas = tk.Canvas(root, bg="black", highlightthickness=0)
+        root.title("Maple Tapper Looker")
+        root.configure(bg=UI_BG)
+        root.geometry("540x610")
+        root.minsize(500, 560)
+        root.protocol("WM_DELETE_WINDOW", self._quit)
+        root.option_add("*Font", ("Segoe UI", 10))
+
+        outer = tk.Frame(root, bg=UI_BG, padx=24, pady=20)
+        outer.pack(fill="both", expand=True)
+        tk.Label(outer, text="Maple Tapper Looker", fg=UI_TEXT, bg=UI_BG,
+                 font=("Segoe UI", 20, "bold"), anchor="w").pack(fill="x")
+        tk.Label(outer, text="OCR and input automation control", fg=UI_MUTED, bg=UI_BG,
+                 font=("Segoe UI", 10), anchor="w").pack(fill="x", pady=(2, 18))
+
+        status = self._card(outer)
+        status.pack(fill="x")
+        self._status_label = tk.Label(status, text="PAUSED", fg=UI_PRIMARY, bg=UI_SURFACE,
+                                      font=("Segoe UI", 15, "bold"), anchor="w")
+        self._status_label.pack(fill="x", padx=16, pady=(14, 2))
+        self._detail_label = tk.Label(status, text="Press Start or F9 to begin detection.",
+                                      fg=UI_MUTED, bg=UI_SURFACE, anchor="w", justify="left",
+                                      wraplength=450)
+        self._detail_label.pack(fill="x", padx=16, pady=(0, 12))
+        buttons = tk.Frame(status, bg=UI_SURFACE)
+        buttons.pack(fill="x", padx=16, pady=(0, 14))
+        self._start_button = self._button(buttons, "Start watching", self._start_or_stop,
+                                          UI_PRIMARY, "#042F2E")
+        self._start_button.pack(side="left", fill="x", expand=True)
+        self._button(buttons, "Choose region  (F8)", self._request_selection,
+                     UI_SURFACE, UI_TEXT).pack(side="left", padx=(10, 0))
+
+        audio = self._card(outer)
+        audio.pack(fill="x", pady=(14, 0))
+        tk.Label(audio, text="Detection audio", fg=UI_TEXT, bg=UI_SURFACE,
+                 font=("Segoe UI", 12, "bold"), anchor="w").pack(fill="x", padx=16, pady=(14, 3))
+        tk.Label(audio, text="Record a message or use the built-in beep.", fg=UI_MUTED,
+                 bg=UI_SURFACE, anchor="w").pack(fill="x", padx=16, pady=(0, 10))
+        audio_buttons = tk.Frame(audio, bg=UI_SURFACE)
+        audio_buttons.pack(fill="x", padx=16, pady=(0, 14))
+        self._record_button = self._button(audio_buttons, "Record  (F11)",
+                                           lambda: self._request_audio(self.alert.toggle), UI_SURFACE, UI_TEXT)
+        self._record_button.pack(side="left")
+        self._mute_button = self._button(audio_buttons, "Mute  (F10)", self._toggle_beep,
+                                         UI_SURFACE, UI_TEXT)
+        self._mute_button.pack(side="left", padx=8)
+        self._button(audio_buttons, "Reset  (F12)", lambda: self._request_audio(self.alert.reset),
+                     UI_SURFACE, UI_TEXT).pack(side="left")
+
+        activity = self._card(outer)
+        activity.pack(fill="both", expand=True, pady=(14, 0))
+        tk.Label(activity, text="Recent activity", fg=UI_TEXT, bg=UI_SURFACE,
+                 font=("Segoe UI", 12, "bold"), anchor="w").pack(fill="x", padx=16, pady=(14, 6))
+        self._activity_list = tk.Text(activity, bg=UI_SURFACE, fg=UI_MUTED,
+                                      selectbackground=UI_BORDER, selectforeground=UI_TEXT,
+                                      highlightthickness=0, borderwidth=0, wrap="word",
+                                      height=6, width=1, font=("Segoe UI", 10), state="disabled")
+        scroll = tk.Scrollbar(activity, command=self._activity_list.yview)
+        scroll.pack(side="right", fill="y", pady=(0, 12))
+        self._activity_list.config(yscrollcommand=scroll.set)
+        self._activity_list.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        self._log("Ready. Select the number region, then start watching.")
+
+        overlay = tk.Toplevel(root)
+        overlay.overrideredirect(True)
+        overlay.attributes("-topmost", True)
+        overlay.attributes("-transparentcolor", "black")
+        overlay.configure(bg="black")
+        overlay.resizable(False, False)
+        canvas = tk.Canvas(overlay, bg="black", highlightthickness=0)
         canvas.pack()
         self._rect_id = canvas.create_rectangle(0, 0, 0, 0, outline=self.COLOR,
-                                                 width=b * 2, fill="black", tags="border")
+                                                 width=self.BORDER * 2, fill="black", tags="border")
         for corner in ("nw", "ne", "sw", "se"):
-            hid = canvas.create_rectangle(0, 0, 0, 0, fill=self.COLOR, outline="",
-                                           tags=("handle", f"handle_{corner}"))
-            self._handle_ids[corner] = hid
-
-        canvas.tag_bind("border", "<ButtonPress-1>",   self._on_move_press)
-        canvas.tag_bind("border", "<B1-Motion>",       self._on_move_drag)
+            self._handle_ids[corner] = canvas.create_rectangle(0, 0, 0, 0, fill=self.COLOR,
+                                                                 outline="", tags=("handle", f"handle_{corner}"))
+        canvas.tag_bind("border", "<ButtonPress-1>", self._on_move_press)
+        canvas.tag_bind("border", "<B1-Motion>", self._on_move_drag)
         canvas.tag_bind("border", "<ButtonRelease-1>", self._on_release)
-        canvas.tag_bind("border", "<Double-Button-1>", lambda e: self._quit())
+        canvas.tag_bind("border", "<Double-Button-1>", lambda _e: self._quit())
         for corner in ("nw", "ne", "sw", "se"):
             canvas.tag_bind(f"handle_{corner}", "<ButtonPress-1>",
-                             lambda e, c=corner: self._on_resize_press(e, c))
-            canvas.tag_bind(f"handle_{corner}", "<B1-Motion>",       self._on_resize_drag)
+                            lambda e, c=corner: self._on_resize_press(e, c))
+            canvas.tag_bind(f"handle_{corner}", "<B1-Motion>", self._on_resize_drag)
             canvas.tag_bind(f"handle_{corner}", "<ButtonRelease-1>", self._on_release)
-
-        root.bind("<Escape>", lambda e: self._quit())
-
-        self._canvas = canvas
-        self.root    = root
+        self.root, self.overlay, self._canvas = root, overlay, canvas
         self._sync_geometry()
         self._exclude_from_capture()
-        self._build_status_panel(root)
+        root.update_idletasks()
+        width = max(540, root.winfo_reqwidth())
+        height = max(610, root.winfo_reqheight())
+        root.geometry(f"{width}x{height}")
+        root.minsize(width, height)
         return root
 
-    def _build_status_panel(self, root):
-        """A small always-on-top panel off to the side showing run status —
-        separate from the box itself, which now stays a plain colored
-        rectangle. Drag anywhere on the panel to reposition it."""
-        panel = tk.Toplevel(root)
-        panel.overrideredirect(True)
-        panel.attributes("-topmost", True)
-        panel.configure(bg="#1a1a1a")
-        panel.geometry("240x104+20+20")
+    @staticmethod
+    def _card(parent):
+        return tk.Frame(parent, bg=UI_SURFACE, highlightbackground=UI_BORDER,
+                        highlightthickness=1)
 
-        self._panel_status = tk.Label(panel, text=self.status_text, fg=self.COLOR,
-                                       bg="#1a1a1a", font=("Segoe UI", 13, "bold"),
-                                       anchor="w")
-        self._panel_status.pack(fill="x", padx=12, pady=(12, 6))
-        self._panel_enter = tk.Label(panel, text="", fg="#AAAAAA", bg="#1a1a1a",
-                                      font=("Segoe UI", 10), anchor="w")
-        self._panel_enter.pack(fill="x", padx=12)
-        self._panel_beep = tk.Label(panel, text="", fg="#AAAAAA", bg="#1a1a1a",
-                                     font=("Segoe UI", 10), anchor="w")
-        self._panel_beep.pack(fill="x", padx=12, pady=(0, 12))
+    @staticmethod
+    def _button(parent, text, command, bg, fg):
+        return tk.Button(parent, text=text, command=command, bg=bg, fg=fg,
+                         activebackground=UI_PRIMARY_ACTIVE, activeforeground="#042F2E",
+                         disabledforeground=UI_MUTED, relief="flat", bd=0, padx=14, pady=10,
+                         cursor="hand2", font=("Segoe UI", 10, "bold"), takefocus=True)
 
-        for widget in (panel, self._panel_status, self._panel_enter, self._panel_beep):
-            widget.bind("<ButtonPress-1>", self._on_panel_drag_press)
-            widget.bind("<B1-Motion>",     self._on_panel_drag_move)
+    def _log(self, message):
+        self._activity_pending.put(f"{time.strftime('%H:%M:%S')}  {message}")
 
-        self._panel = panel
+    def _request_selection(self):
+        self._selection_requested.set()
 
-    def _on_panel_drag_press(self, event):
-        self._panel_drag = (event.x_root, event.y_root,
-                             self._panel.winfo_x(), self._panel.winfo_y())
+    def _request_audio(self, action):
+        self._audio_requests.put(action)
 
-    def _on_panel_drag_move(self, event):
-        if not self._panel_drag:
+    def _start_or_stop(self):
+        if not self._ocr_available or self._selecting:
             return
-        sx, sy, ox, oy = self._panel_drag
-        dx, dy = event.x_root - sx, event.y_root - sy
-        self._panel.geometry(f"+{ox + dx}+{oy + dy}")
+        if self.enter_on or self._start_after is not None:
+            self._cancel_start()
+            self._set_enter_on(False)
+            self.status_text = "paused"
+            self._log("Detection paused.")
+            return
+        self._countdown_start(3)
+
+    def _countdown_start(self, seconds):
+        self.status_text = f"Starting in {seconds}… click your game target now."
+        self._log(self.status_text)
+        self._start_button.config(text="Cancel start")
+        self._start_after = self.root.after(1000, self._finish_countdown, seconds - 1)
+
+    def _finish_countdown(self, seconds):
+        self._start_after = None
+        if seconds:
+            self._countdown_start(seconds)
+            return
+        if self.enter_spam_enabled and self.root.focus_displayof() is not None:
+            self.status_text = "Start cancelled. Focus the game, then press F9."
+            self._log(self.status_text)
+            return
+        self.hit = self._prev_hit = False
+        self.last_value = None
+        self._set_enter_on(True)
+        if self.enter_on:
+            self.status_text = "watching…"
+            self._log("Detection started.")
+
+    def _cancel_start(self):
+        if self._start_after is not None:
+            self.root.after_cancel(self._start_after)
+            self._start_after = None
 
     def _exclude_from_capture(self):
         """Hide this overlay window from screen-capture APIs (mss included)
@@ -350,7 +447,7 @@ class OverlayApp:
         try:
             import ctypes
             self.root.update_idletasks()
-            hwnd = self.root.winfo_id()
+            hwnd = self.overlay.winfo_id()
             parent = ctypes.windll.user32.GetParent(hwnd)
             if parent:
                 hwnd = parent
@@ -366,7 +463,7 @@ class OverlayApp:
         x, y, w, h = self.region
         b, hs = self.BORDER, self.HANDLE_SIZE
         W, H = w + b * 2, h + b * 2
-        self.root.geometry(f"{W}x{H}+{x - b}+{y - b}")
+        self.overlay.geometry(f"{W}x{H}+{x - b}+{y - b}")
         self._canvas.config(width=W, height=H)
         self._canvas.coords(self._rect_id, 0, 0, W - 1, H - 1)
         for corner, (hx, hy) in {"nw": (0, 0), "ne": (W, 0), "sw": (0, H), "se": (W, H)}.items():
@@ -384,7 +481,7 @@ class OverlayApp:
         ox, oy, w, h = d["orig"]
         self.region = [ox + dx, oy + dy, w, h]
         b = self.BORDER
-        self.root.geometry(f"+{self.region[0] - b}+{self.region[1] - b}")
+        self.overlay.geometry(f"+{self.region[0] - b}+{self.region[1] - b}")
 
     def _on_resize_press(self, event, corner):
         self._drag = {"mode": "resize", "corner": corner, "sx": event.x_root, "sy": event.y_root,
@@ -410,6 +507,7 @@ class OverlayApp:
         save_region(tuple(self.region))
 
     def _start_selection(self):
+        self._cancel_start()
         self._region_revision += 1
         self._selecting = True
         self._set_enter_on(False)
@@ -418,8 +516,7 @@ class OverlayApp:
         self.last_value = None
         self.status_text = "Drag to select a region"
         self._drag = {}
-        self.root.withdraw()
-        self._panel.withdraw()
+        self.overlay.withdraw()
         if self._selector is not None:
             self._selector.reset()
         else:
@@ -433,10 +530,11 @@ class OverlayApp:
         self._region_revision += 1
         self.hit = self._prev_hit = False
         self.last_value = None
-        self.status_text = "watching…"
+        self.status_text = "paused"
+        self._log("Region selected. Press Start or F9 to begin.")
         self._sync_geometry()
         self.root.deiconify()
-        self._panel.deiconify()
+        self.overlay.deiconify()
         self._selecting = False
 
     def _quit(self):
@@ -450,6 +548,9 @@ class OverlayApp:
                 keyboard.remove_hotkey(hk)
             except (KeyError, ValueError):
                 pass
+        self._cancel_start()
+        if self.overlay is not None:
+            self.overlay.destroy()
         self.root.destroy()
 
     def _lock_mouse(self):
@@ -497,7 +598,7 @@ class OverlayApp:
         """Single place that flips enter_on so the mouse lock always tracks
         it, no matter which of the several call sites (hotkey, auto-stop on
         detection, false-positive resume) changes the state."""
-        if value and self._selecting:
+        if value and (self._selecting or not self._ocr_available):
             return
         if value == self.enter_on:
             return
@@ -510,20 +611,24 @@ class OverlayApp:
 
     def _toggle_enter_spam(self):
         """Toggle OCR and automation. Start each activation with a fresh read."""
+        if not self._ocr_available or self._selecting:
+            return
+        if self._start_after is not None:
+            self._cancel_start()
+            self.status_text = "paused"
+            return
         self.hit = False
         self._prev_hit = False
         self.last_value = None
         self._set_enter_on(not self.enter_on)
         self.status_text = "watching…" if self.enter_on else "paused"
-        print(f"\n  [hotkey {self.enter_hotkey.upper()}] Enter+Left-Click spam "
-              f"{'ON' if self.enter_on else 'OFF'}\n", flush=True)
+        self._log(f"F9: {'started' if self.enter_on else 'paused'}.")
 
     def _toggle_beep(self):
         """Hotkey callback — mutes/unmutes the detection beep, independent of
         the Enter+Click spam state."""
         self.beep_enabled = not self.beep_enabled
-        print(f"\n  [hotkey {self.beep_hotkey.upper()}] Beep "
-              f"{'UNMUTED' if self.beep_enabled else 'MUTED'}\n", flush=True)
+        self._log(f"Audio {'unmuted' if self.beep_enabled else 'muted'}.")
 
     def _play_alert(self):
         self.alert.play(beep)
@@ -574,7 +679,9 @@ class OverlayApp:
         try:
             return read_delta(tuple(self.region), sct=sct)
         except Exception as e:
-            print(f"  [ocr error] {e}", flush=True)
+            self._set_enter_on(False)
+            self.status_text = "OCR error - see activity"
+            self._log(f"OCR stopped: {e}")
             return None
 
     def _ocr_loop(self):
@@ -588,7 +695,7 @@ class OverlayApp:
         """
         with mss.MSS() as sct:
             while self._running:
-                if self._selecting or not self.enter_on:
+                if self._selecting or not self.enter_on or not self._ocr_available:
                     time.sleep(RENDER_INTERVAL)
                     continue
                 revision = self._region_revision
@@ -619,17 +726,16 @@ class OverlayApp:
                         value = confirm
                         self.status_text = value
                         self.last_value = value
-                        print(f"[{time.strftime('%H:%M:%S')}] detected: {value}", flush=True)
+                        self._log(f"Detected {value}.")
                         if self.beep_enabled:
                             now = time.perf_counter()
                             if now - self.last_beep_time >= BEEP_COOLDOWN:
                                 threading.Thread(target=self._play_alert, daemon=True).start()
                                 self.last_beep_time = now
                         self._set_enter_on(False)
-                        print(f"  [detection] OFF — detected {value}. "
-                              f"Press {self.enter_hotkey.upper()} to re-enable.\n", flush=True)
+                        self._log("Detection paused after confirmed value.")
                     else:
-                        print("  [ocr] ignored a one-frame false positive.", flush=True)
+                        self._log("Ignored one-frame OCR false positive.")
                         value = None
                         self.hit = False
                         self.status_text = "watching…"
@@ -655,6 +761,9 @@ class OverlayApp:
     def _render(self):
         """Fast, OCR-free UI repaint tick — just reflects whatever state the
         background OCR loop (or the spam loop) last wrote."""
+        while not self._toggle_requests.empty():
+            self._toggle_requests.get_nowait()
+            self._toggle_enter_spam()
         if self._selection_requested.is_set():
             self._selection_requested.clear()
             self._start_selection()
@@ -665,20 +774,58 @@ class OverlayApp:
             pass
         else:
             action()
+            self._log(self.alert.status)
         color = self.COLOR_HIT if self.hit else self.COLOR
         if self._canvas:
             self._canvas.itemconfig("border", outline=color)
             for hid in self._handle_ids.values():
                 self._canvas.itemconfig(hid, fill=color)
-        if self._panel_status:
-            self._panel_status.config(text=self.status_text, fg=color)
-            if self.enter_spam_enabled:
-                self._panel_enter.config(text=f"Enter+Click: {'ON' if self.enter_on else 'OFF'}")
-                self._panel_beep.config(text=f"Beep: {'ON' if self.beep_enabled else 'MUTED'}")
+        if self._status_label:
+            active = self.enter_on and not self.hit
+            heading = "WATCHING" if active else ("DETECTED" if self.hit else "PAUSED")
+            self._status_label.config(text=heading, fg=color if active or self.hit else UI_MUTED)
+            detail = ("Press Start or F9 to watch the selected region."
+                      if self.status_text == "paused" else self.status_text)
+            if self.enter_spam_enabled and active:
+                detail += "  Enter and click automation is active."
+            self._detail_label.config(text=detail)
+            button_text = ("Cancel start" if self._start_after is not None else
+                           "Stop watching" if self.enter_on else "Start watching")
+            self._start_button.config(text=button_text,
+                                      state="normal" if self._ocr_available and not self._selecting else "disabled")
+            self._mute_button.config(text=("Unmute" if not self.beep_enabled else "Mute") + "  (F10)")
+            self._record_button.config(text=("Save message" if self.alert.recording else "Record") + "  (F11)")
+        activity_changed = False
+        for _ in range(100):
+            try:
+                line = self._activity_pending.get_nowait()
+            except queue.Empty:
+                break
+            self._activity_lines.append(line)
+            activity_changed = True
+        self._activity_lines = self._activity_lines[-6:]
+        if self._activity_list and activity_changed:
+            self._activity_list.config(state="normal")
+            self._activity_list.delete("1.0", tk.END)
+            for line in self._activity_lines:
+                self._activity_list.insert(tk.END, line + "\n")
+            self._activity_list.config(state="disabled")
+            self._activity_list.yview_moveto(1)
         self.root.after(int(RENDER_INTERVAL * 1000), self._render)
+
+    def _check_tesseract(self):
+        try:
+            pytesseract.get_tesseract_version()
+        except Exception as error:
+            self._ocr_available = False
+            self.status_text = "Tesseract is unavailable - see activity"
+            self._log(f"Tesseract unavailable: {error}")
+        else:
+            self._log("Tesseract ready.")
 
     def run(self):
         root = self._build_window()
+        self._check_tesseract()
         keyboard.add_hotkey("f8", self._selection_requested.set,
                             suppress=True, trigger_on_release=True)
         print("[hotkey] F8: draw a new region; Escape: cancel selection.", flush=True)
@@ -687,7 +834,7 @@ class OverlayApp:
         keyboard.add_hotkey("f12", self._audio_requests.put, args=(self.alert.reset,),
                             suppress=True, trigger_on_release=True)
         keyboard.add_hotkey(self.beep_hotkey, self._toggle_beep)
-        keyboard.add_hotkey(self.enter_hotkey, self._toggle_enter_spam)
+        keyboard.add_hotkey(self.enter_hotkey, self._toggle_requests.put, args=(True,))
         print("[hotkey] F11: start recording; F11 again: save message. "
               "Repeat to replace it. See [audio] messages for recording status.", flush=True)
         print("[hotkey] F12: delete message and restore beep (mute unchanged).", flush=True)
@@ -842,7 +989,7 @@ if __name__ == "__main__":
                          help="extra delay in seconds between OCR reads on top of screenshot+OCR time "
                               "(default: 0.0 = back-to-back, as fast as possible)")
     parser.add_argument("--reselect", action="store_true", help="re-open the region selector even if a region is saved")
-    parser.add_argument("--no-enter-spam", action="store_true", help="disable the F9 Enter+Left-Click spam feature entirely (no hotkey, no presses/clicks)")
+    parser.add_argument("--no-enter-spam", action="store_true", help="disable automated Enter/click input; F9 still controls OCR")
     parser.add_argument("--enter-interval", type=float, default=ENTER_INTERVAL, help="seconds between spammed Enter presses (default: 0.16 = 160ms)")
     parser.add_argument("--click-interval", type=float, default=CLICK_INTERVAL, help="seconds between spammed left-clicks (default: 0.24 = 240ms)")
     parser.add_argument("--enter-hotkey", default=ENTER_HOTKEY, help="global Enter-spam on/off hotkey (default: f9)")

@@ -1,6 +1,6 @@
 """Check detection beeps without screen capture or keyboard input."""
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from main import BEEP_COOLDOWN, OverlayApp, beep
 
@@ -43,7 +43,7 @@ class DetectionBeepTest(unittest.TestCase):
             register.assert_any_call(app.beep_hotkey, app._toggle_beep)
             register.assert_any_call("f8", app._selection_requested.set,
                                      suppress=True, trigger_on_release=True)
-            register.assert_any_call(app.enter_hotkey, app._toggle_enter_spam)
+            register.assert_any_call(app.enter_hotkey, app._toggle_requests.put, args=(True,))
             self.assertEqual(register.call_count, 5)
             app._quit()
             remove.assert_any_call("f8")
@@ -129,6 +129,30 @@ class DetectionBeepTest(unittest.TestCase):
         self.assertTrue(app.enter_on)
         self.assertFalse(app.hit)
         self.assertFalse(app._prev_hit)
+
+    def test_window_start_waits_for_countdown_before_automation(self):
+        app = OverlayApp((0, 0, 100, 100))
+        app.root = Mock()
+        app.root.after.return_value = "countdown"
+        app.root.focus_displayof.return_value = None
+        app._start_button = Mock()
+        with patch.object(app, "_lock_mouse") as lock:
+            app._start_or_stop()
+            self.assertFalse(app.enter_on)
+            self.assertIn("Starting in 3", app.status_text)
+            app._finish_countdown(0)
+        self.assertTrue(app.enter_on)
+        lock.assert_called_once()
+
+    def test_activity_is_bounded_in_mocked_window_render(self):
+        app = OverlayApp((0, 0, 100, 100))
+        app.root = Mock()
+        app._activity_list = Mock()
+        for index in range(8):
+            app._log(f"event {index}")
+        app._render()
+        self.assertEqual(len(app._activity_lines), 6)
+        self.assertEqual(app._activity_list.insert.call_count, 6)
 
 
 if __name__ == "__main__":
