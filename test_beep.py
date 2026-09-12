@@ -6,6 +6,29 @@ from main import BEEP_COOLDOWN, OverlayApp, beep
 
 
 class DetectionBeepTest(unittest.TestCase):
+    def test_alert_uses_recording_with_beep_fallback(self):
+        app = OverlayApp((0, 0, 100, 100))
+        with patch.object(app.alert, "play") as play:
+            app._play_alert()
+        play.assert_called_once_with(beep)
+
+    def test_audio_hotkeys_without_spam_and_cleanup(self):
+        app = OverlayApp((0, 0, 100, 100), enter_spam=False)
+        with patch.object(app, "_build_window") as window, \
+             patch("main.keyboard.add_hotkey") as register, \
+             patch("main.threading.Thread"), \
+             patch("main.keyboard.remove_hotkey") as remove, \
+             patch.object(app.alert, "close") as close:
+            app.root = window.return_value
+            app.run()
+            register.assert_any_call("f11", app.alert.toggle, trigger_on_release=True)
+            register.assert_any_call(app.beep_hotkey, app._toggle_beep)
+            self.assertEqual(register.call_count, 2)
+            app._quit()
+            remove.assert_any_call("f11")
+            remove.assert_any_call(app.beep_hotkey)
+            close.assert_called_once()
+
     def test_detection_beep(self):
         cases = [
             # Spam, beep enabled, OCR reads, previous beep, expected beeps.
@@ -39,7 +62,7 @@ class DetectionBeepTest(unittest.TestCase):
 
                 self.assertEqual(thread.call_count, expected)
                 if expected:
-                    thread.assert_called_once_with(target=beep, daemon=True)
+                    thread.assert_called_once_with(target=app._play_alert, daemon=True)
                     thread.return_value.start.assert_called_once()
                 if spam:
                     self.assertFalse(app.enter_on)

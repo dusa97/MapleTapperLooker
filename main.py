@@ -20,6 +20,10 @@ Enter + left-click. It keeps spamming until the box detects a "+<number>",
 at which point it beeps once and stops spamming on its own — press F9 again
 to resume.
 
+Press F11 to record a microphone message. Press F11 again to save it.
+The saved message replaces the detection beep. Repeat to replace the message.
+F10 mutes both the message and the beep. Recording requires Windows.
+
 Requirements:
     pip install pillow pytesseract mss keyboard pydirectinput
 Tesseract OCR engine:
@@ -38,6 +42,8 @@ import threading
 import tkinter as tk
 from tkinter import font as tkfont
 from pathlib import Path
+
+from recorded_alert import RecordedAlert
 
 try:
     import mss              # screen capture — ~2x faster and far more consistent than pyautogui.screenshot
@@ -253,6 +259,7 @@ class OverlayApp:
         # F10 mutes/unmutes the beep entirely — starts unmuted.
         self.beep_hotkey  = beep_hotkey
         self.beep_enabled = True
+        self.alert = RecordedAlert(_BASE_DIR / "detection_message.wav")
 
     def _build_window(self):
         b = self.BORDER
@@ -400,12 +407,15 @@ class OverlayApp:
         print("\nStopped.")
         self._running = False
         self._unlock_mouse()
+        self.alert.close()
+        hotkeys = ["f11", self.beep_hotkey]
         if self.enter_spam_enabled:
-            for hk in (self.enter_hotkey, self.beep_hotkey):
-                try:
-                    keyboard.remove_hotkey(hk)
-                except (KeyError, ValueError):
-                    pass
+            hotkeys.append(self.enter_hotkey)
+        for hk in hotkeys:
+            try:
+                keyboard.remove_hotkey(hk)
+            except (KeyError, ValueError):
+                pass
         self.root.destroy()
 
     def _lock_mouse(self):
@@ -481,6 +491,9 @@ class OverlayApp:
         self.beep_enabled = not self.beep_enabled
         print(f"\n  [hotkey {self.beep_hotkey.upper()}] Beep "
               f"{'UNMUTED' if self.beep_enabled else 'MUTED'}\n", flush=True)
+
+    def _play_alert(self):
+        self.alert.play(beep)
 
     @staticmethod
     def _jittered(interval, spread=SPAM_JITTER):
@@ -567,7 +580,7 @@ class OverlayApp:
                         if self.beep_enabled:
                             now = time.perf_counter()
                             if now - self.last_beep_time >= BEEP_COOLDOWN:
-                                threading.Thread(target=beep, daemon=True).start()
+                                threading.Thread(target=self._play_alert, daemon=True).start()
                                 self.last_beep_time = now
                         if was_spamming:
                             print(f"  [enter+click] OFF — detected {value}. "
@@ -612,6 +625,11 @@ class OverlayApp:
 
     def run(self):
         root = self._build_window()
+        keyboard.add_hotkey("f11", self.alert.toggle, trigger_on_release=True)
+        keyboard.add_hotkey(self.beep_hotkey, self._toggle_beep)
+        print("[hotkey] F11: start recording; F11 again: save message. "
+              "Repeat to replace it. See [audio] messages for recording status.", flush=True)
+        print(f"[hotkey] {self.beep_hotkey.upper()}: mute/unmute detection audio.", flush=True)
         if self.enter_spam_enabled:
             keyboard.add_hotkey(self.enter_hotkey, self._toggle_enter_spam)
             print(f"[hotkey] Press {self.enter_hotkey.upper()} to start/stop Enter+Left-Click spam "
@@ -619,9 +637,6 @@ class OverlayApp:
                   f"click every {self.click_interval*1000:.0f}ms while nothing is detected; "
                   f"stops automatically — with one beep — the instant a '+<number>' is detected).\n",
                   flush=True)
-            keyboard.add_hotkey(self.beep_hotkey, self._toggle_beep)
-            print(f"[hotkey] Press {self.beep_hotkey.upper()} to mute/unmute the detection beep "
-                  f"(starts unmuted).\n", flush=True)
             self._spam_thread = threading.Thread(target=self._spam_loop, daemon=True)
             self._spam_thread.start()
         self._ocr_thread = threading.Thread(target=self._ocr_loop, daemon=True)
@@ -630,8 +645,7 @@ class OverlayApp:
         try:
             root.mainloop()
         except KeyboardInterrupt:
-            print("\nStopped.")
-            self._running = False
+            self._quit()
 
 # ── Visual region selector (initial placement) ──────────────────────────────
 
