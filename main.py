@@ -42,7 +42,7 @@ import platform
 import threading
 import tkinter as tk
 from tkinter import font as tkfont
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 from pathlib import Path
 
 from recorded_alert import RecordedAlert
@@ -50,7 +50,7 @@ from recorded_alert import RecordedAlert
 try:
     import mss              # screen capture — ~2x faster and far more consistent than pyautogui.screenshot
     import pytesseract
-    from PIL import Image
+    from PIL import Image, ImageDraw, ImageTk
     import keyboard        # global hotkey to start/stop Enter+click spam — works even while the game has focus
     import pydirectinput   # DirectInput-style key injection — see the spam-loop comment below
 except ImportError as e:
@@ -112,13 +112,15 @@ if getattr(sys, "frozen", False):
     _BASE_DIR = Path(sys.executable).parent
 else:
     _BASE_DIR = Path(__file__).parent
-UI_BG = "#10151D"
-UI_SURFACE = "#1A2330"
-UI_BORDER = "#344256"
-UI_TEXT = "#EDF3FA"
-UI_MUTED = "#B4C2D3"
-UI_PRIMARY = "#5EEAD4"
-UI_PRIMARY_ACTIVE = "#99F6E4"
+UI_BG = "#09070D"
+UI_SURFACE = "#17111F"
+UI_BORDER = "#654575"
+UI_BUTTON = "#654384"
+UI_TEXT = "#FAF4FF"
+UI_MUTED = "#CBBBD8"
+UI_PRIMARY = "#F078CF"
+UI_PRIMARY_ACTIVE = "#FFA6E8"
+UI_ACCENT = "#A997FF"
 
 REGION_FILE     = _BASE_DIR / "last_region.json"
 MIN_READ_GAP      = 0.0    # optional extra delay between OCR reads (0 = back-to-back, as fast as possible)
@@ -218,12 +220,12 @@ def load_region() -> tuple | None:
 
 class OverlayApp:
     """
-    A green detection box with a click-through center and four resize handles.
+    A violet detection box with a click-through center and four resize handles.
     F8 opens a new selection. A background thread reads the selected region.
     """
     BORDER      = 3
-    COLOR       = "#00FF88"
-    COLOR_HIT   = "#FF4444"
+    COLOR       = UI_ACCENT
+    COLOR_HIT   = UI_PRIMARY
     HANDLE_SIZE = 8
     MIN_SIZE    = 20
 
@@ -286,6 +288,13 @@ class OverlayApp:
         """Build the normal taskbar window plus the capture-safe screen overlay."""
         root = tk.Tk()
         root.title("Maple Tapper Looker")
+        with Image.open(Path(__file__).parent / "assets" / "logo.png") as image:
+            self._logo_image = ImageTk.PhotoImage(
+                image.resize((72, 72), Image.Resampling.LANCZOS), master=root)
+            self._icon_image = ImageTk.PhotoImage(
+                image.resize((256, 256), Image.Resampling.LANCZOS), master=root)
+        root.iconphoto(True, self._icon_image)
+        root.resizable(False, False)
         root.configure(bg=UI_BG)
         root.geometry("540x610")
         root.minsize(500, 560)
@@ -294,54 +303,85 @@ class OverlayApp:
 
         outer = tk.Frame(root, bg=UI_BG, padx=24, pady=20)
         outer.pack(fill="both", expand=True)
-        tk.Label(outer, text="Maple Tapper Looker", fg=UI_TEXT, bg=UI_BG,
-                 font=("Segoe UI", 20, "bold"), anchor="w").pack(fill="x")
-        tk.Label(outer, text="OCR and input automation control", fg=UI_MUTED, bg=UI_BG,
-                 font=("Segoe UI", 10), anchor="w").pack(fill="x", pady=(2, 18))
+        header = tk.Frame(outer, bg=UI_BG)
+        header.pack(fill="x", pady=(0, 14))
+        tk.Label(header, image=self._logo_image, bg=UI_BG).pack(pady=(0, 10))
+        heading = tk.Frame(header, bg=UI_BG)
+        heading.pack()
+        tk.Label(heading, text="MAPLE / TAPPER LOOKER", fg=UI_TEXT, bg=UI_BG,
+                 font=("Segoe UI", 16, "bold"), anchor="center").pack(fill="x")
+        tk.Label(heading, text="OCR and input automation control", fg=UI_MUTED, bg=UI_BG,
+                 font=("Segoe UI", 10), anchor="center").pack(fill="x", pady=(4, 0))
+        accent = tk.Frame(outer, bg=UI_BORDER, height=2)
+        accent.pack(pady=(0, 18))
+        tk.Frame(accent, bg=UI_PRIMARY, width=80, height=2).pack(side="left")
+        tk.Frame(accent, bg=UI_ACCENT, width=40, height=2).pack(side="left")
 
         status = self._card(outer)
         status.pack(fill="x")
         self._status_label = tk.Label(status, text="PAUSED", fg=UI_PRIMARY, bg=UI_SURFACE,
-                                      font=("Segoe UI", 15, "bold"), anchor="w")
+                                      font=("Segoe UI", 15, "bold"), anchor="center")
         self._status_label.pack(fill="x", padx=16, pady=(14, 2))
         self._detail_label = tk.Label(status, text="Press Start or F9 to begin detection.",
-                                      fg=UI_MUTED, bg=UI_SURFACE, anchor="w", justify="left",
+                                      fg=UI_MUTED, bg=UI_SURFACE, anchor="center", justify="center",
                                       wraplength=450)
         self._detail_label.pack(fill="x", padx=16, pady=(0, 12))
         buttons = tk.Frame(status, bg=UI_SURFACE)
-        buttons.pack(fill="x", padx=16, pady=(0, 14))
-        self._start_button = self._button(buttons, "Start watching", self._start_or_stop,
-                                          UI_PRIMARY, "#042F2E")
-        self._start_button.pack(side="left", fill="x", expand=True)
+        buttons.pack(padx=16, pady=(0, 14))
+        self._start_button = self._button(buttons, f"Start watching  ({self.enter_hotkey.upper()})", self._start_or_stop,
+                                          UI_PRIMARY, UI_BG)
+        self._start_button.pack(side="left")
         self._button(buttons, "Choose region  (F8)", self._request_selection,
-                     UI_SURFACE, UI_TEXT).pack(side="left", padx=(10, 0))
+                     UI_BUTTON, UI_TEXT).pack(side="left", padx=(10, 0))
 
         audio = self._card(outer)
         audio.pack(fill="x", pady=(14, 0))
         tk.Label(audio, text="Detection audio", fg=UI_TEXT, bg=UI_SURFACE,
-                 font=("Segoe UI", 12, "bold"), anchor="w").pack(fill="x", padx=16, pady=(14, 3))
+                 font=("Segoe UI", 12, "bold"), anchor="center").pack(fill="x", padx=16, pady=(14, 3))
         tk.Label(audio, text="Record a message or use the built-in beep.", fg=UI_MUTED,
-                 bg=UI_SURFACE, anchor="w").pack(fill="x", padx=16, pady=(0, 10))
+                 bg=UI_SURFACE, anchor="center").pack(fill="x", padx=16, pady=(0, 10))
         audio_buttons = tk.Frame(audio, bg=UI_SURFACE)
-        audio_buttons.pack(fill="x", padx=16, pady=(0, 14))
+        audio_buttons.pack(padx=16, pady=(0, 14))
         self._record_button = self._button(audio_buttons, "Record  (F11)",
-                                           lambda: self._request_audio(self.alert.toggle), UI_SURFACE, UI_TEXT)
+                                           lambda: self._request_audio(self.alert.toggle), UI_BUTTON, UI_TEXT)
         self._record_button.pack(side="left")
-        self._mute_button = self._button(audio_buttons, "Mute  (F10)", self._toggle_beep,
-                                         UI_SURFACE, UI_TEXT)
+        self._mute_images = []
+        for selected in (False, True):
+            image = Image.new("RGB", (168, 84), UI_SURFACE)
+            draw = ImageDraw.Draw(image)
+            draw.rounded_rectangle((0, 0, 167, 83), radius=42,
+                                   fill=UI_PRIMARY if selected else UI_BORDER)
+            x = 87 if selected else 6
+            draw.ellipse((x, 6, x + 75, 77), fill="white")
+            self._mute_images.append(ImageTk.PhotoImage(
+                image.resize((56, 28), Image.Resampling.LANCZOS), master=root))
+        self._mute_button = tk.Checkbutton(
+            audio_buttons, text="Mute  (F10)", command=self._toggle_beep,
+            image=self._mute_images[0], selectimage=self._mute_images[1],
+            indicatoron=False, compound="left", relief="flat", offrelief="flat",
+            borderwidth=0, bg=UI_SURFACE, fg=UI_TEXT, selectcolor=UI_SURFACE,
+            activebackground=UI_SURFACE, activeforeground=UI_TEXT,
+            highlightbackground=UI_SURFACE, highlightcolor=UI_PRIMARY,
+            highlightthickness=1, takefocus=True, padx=6, pady=5, cursor="hand2")
         self._mute_button.pack(side="left", padx=8)
         self._button(audio_buttons, "Reset  (F12)", lambda: self._request_audio(self.alert.reset),
-                     UI_SURFACE, UI_TEXT).pack(side="left")
+                     UI_BUTTON, UI_TEXT).pack(side="left")
 
         activity = self._card(outer)
         activity.pack(fill="both", expand=True, pady=(14, 0))
         tk.Label(activity, text="Recent activity", fg=UI_TEXT, bg=UI_SURFACE,
-                 font=("Segoe UI", 12, "bold"), anchor="w").pack(fill="x", padx=16, pady=(14, 6))
+                 font=("Segoe UI", 12, "bold"), anchor="center").pack(fill="x", padx=16, pady=(14, 6))
         self._activity_list = tk.Text(activity, bg=UI_SURFACE, fg=UI_MUTED,
                                       selectbackground=UI_BORDER, selectforeground=UI_TEXT,
                                       highlightthickness=0, borderwidth=0, wrap="word",
                                       height=6, width=1, font=("Segoe UI", 10), state="disabled")
-        scroll = tk.Scrollbar(activity, command=self._activity_list.yview)
+        style = ttk.Style(root)
+        style.theme_use("clam")
+        style.configure("Vertical.TScrollbar", background=UI_BUTTON,
+                        troughcolor=UI_SURFACE, arrowcolor=UI_TEXT,
+                        bordercolor=UI_SURFACE, lightcolor=UI_BUTTON, darkcolor=UI_BUTTON)
+        style.map("Vertical.TScrollbar", background=[("active", UI_PRIMARY_ACTIVE)])
+        scroll = ttk.Scrollbar(activity, command=self._activity_list.yview)
         scroll.pack(side="right", fill="y", pady=(0, 12))
         self._activity_list.config(yscrollcommand=scroll.set)
         self._activity_list.pack(fill="both", expand=True, padx=12, pady=(0, 12))
@@ -386,7 +426,9 @@ class OverlayApp:
     @staticmethod
     def _button(parent, text, command, bg, fg):
         return tk.Button(parent, text=text, command=command, bg=bg, fg=fg,
-                         activebackground=UI_PRIMARY_ACTIVE, activeforeground="#042F2E",
+                         activebackground=UI_PRIMARY_ACTIVE, activeforeground=UI_BG,
+                         highlightbackground=UI_BORDER, highlightcolor=UI_ACCENT,
+                         highlightthickness=1,
                          disabledforeground=UI_MUTED, relief="flat", bd=0, padx=14, pady=10,
                          cursor="hand2", font=("Segoe UI", 10, "bold"), takefocus=True)
 
@@ -413,7 +455,7 @@ class OverlayApp:
     def _countdown_start(self, seconds):
         self.status_text = f"Starting in {seconds}… click your game target now."
         self._log(self.status_text)
-        self._start_button.config(text="Cancel start")
+        self._start_button.config(text=f"Cancel start  ({self.enter_hotkey.upper()})")
         self._start_after = self.root.after(1000, self._finish_countdown, seconds - 1)
 
     def _finish_countdown(self, seconds):
@@ -797,9 +839,12 @@ class OverlayApp:
             self._detail_label.config(text=detail)
             button_text = ("Cancel start" if self._start_after is not None else
                            "Stop watching" if self.enter_on else "Start watching")
-            self._start_button.config(text=button_text,
+            self._start_button.config(text=f"{button_text}  ({self.enter_hotkey.upper()})",
                                       state="normal" if self._ocr_available and not self._selecting else "disabled")
-            self._mute_button.config(text=("Unmute" if not self.beep_enabled else "Mute") + "  (F10)")
+            if self.beep_enabled:
+                self._mute_button.deselect()
+            else:
+                self._mute_button.select()
             self._record_button.config(text=("Save message" if self.alert.recording else "Record") + "  (F11)")
         activity_changed = False
         for _ in range(100):
@@ -864,7 +909,7 @@ class OverlayApp:
 
 # ── Visual region selector (initial placement) ──────────────────────────────
 
-BORDER_COLOR = "#00FF88"
+BORDER_COLOR = UI_ACCENT
 
 
 class RegionSelector:

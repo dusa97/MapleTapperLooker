@@ -3,7 +3,7 @@ import platform
 import unittest
 from unittest.mock import Mock, patch
 
-from main import OverlayApp
+from main import OverlayApp, UI_BG, UI_BUTTON, UI_PRIMARY, UI_SURFACE
 
 
 class ControlWindowTest(unittest.TestCase):
@@ -104,7 +104,38 @@ class ControlWindowTest(unittest.TestCase):
             app._render()
             root.update_idletasks()
             self.assertGreaterEqual(root.winfo_width(), 540)
-            self.assertEqual(app._start_button.cget("text"), "Start watching")
+            self.assertEqual(root.resizable(), (0, 0))
+            self.assertEqual(root.cget("bg"), UI_BG)
+            self.assertEqual(app._logo_image.width(), 72)
+            self.assertEqual(app._icon_image.width(), 256)
+            self.assertEqual(app._activity_list.cget("bg"), UI_SURFACE)
+            self.assertEqual(app._start_button.cget("bg"), UI_PRIMARY)
+            self.assertEqual(app._record_button.cget("bg"), UI_BUTTON)
+            self.assertEqual(app._start_button.cget("text"), "Start watching  (F9)")
+            self.assertEqual(app._status_label.cget("anchor"), "center")
+            self.assertEqual(app._detail_label.cget("justify"), "center")
+            self.assertNotIn("center", app._activity_list.tag_names("1.0"))
+            for row in (app._start_button.master, app._record_button.master):
+                self.assertAlmostEqual(row.winfo_x() + row.winfo_width() / 2,
+                                       row.master.winfo_width() / 2, delta=1)
+            for button in (app._start_button, app._record_button):
+                for sibling in button.master.winfo_children():
+                    if sibling.winfo_class() == "Button":
+                        self.assertNotEqual(sibling.cget("bg"), sibling.master.cget("bg"))
+            mute = app._mute_button
+            self.assertEqual(mute.winfo_class(), "Checkbutton")
+            self.assertFalse(int(mute.cget("indicatoron")))
+            self.assertEqual(mute.cget("image"), str(app._mute_images[0]))
+            self.assertEqual(mute.cget("selectimage"), str(app._mute_images[1]))
+            self.assertEqual(int(root.getvar(mute.cget("variable"))), 0)
+            mute.invoke()
+            app._render()
+            self.assertFalse(app.beep_enabled)
+            self.assertEqual(int(root.getvar(mute.cget("variable"))), 1)
+            app._toggle_beep()  # F10 uses the same callback.
+            app._render()
+            self.assertTrue(app.beep_enabled)
+            self.assertEqual(int(root.getvar(mute.cget("variable"))), 0)
             self.assertEqual(app._activity_list.cget("state"), "disabled")
             self.assertTrue(app.overlay.winfo_exists())
             self.assertFalse(app._canvas.tag_bind("border", "<Double-Button-1>"))
