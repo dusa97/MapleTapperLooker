@@ -168,11 +168,25 @@ OCR_SCALE_MAX     = 4.0
 BEEP_COOLDOWN     = 1.5    # min seconds between beeps
 
 ENTER_HOTKEY    = "f9"    # toggles Enter+Left-Click spam on/off — starts OFF
-ENTER_INTERVAL  = 0.16    # seconds between spammed Enter presses (160ms)
-CLICK_INTERVAL  = 0.24    # seconds between spammed left-clicks (240ms)
+ENTER_INTERVAL  = 0.16    # seconds between spammed Enter presses (160ms) — this is the Reset x3 speed;
+                          # see SPAM_SIZE_* below for why a narrower box runs faster than this
+CLICK_INTERVAL  = 0.24    # seconds between spammed left-clicks (240ms) — same as above
 SPAM_JITTER     = 0.3     # +/- fraction of randomness applied to each interval above,
                           # so presses/clicks don't land on a perfectly robotic fixed cadence
 BEEP_HOTKEY     = "f10"   # mutes/unmutes the detection beep — starts UNMUTED
+
+# ENTER_INTERVAL/CLICK_INTERVAL above are tuned for a Reset x3 box: it's wide, so OCR takes longer to
+# read it, so spam needs the full interval to stay safely behind that read latency (see
+# OCR_TARGET_HEIGHT for the same latency-vs-race concern). A Reset x1 box only has one number to read,
+# so OCR is faster and spam can safely run up to SPAM_SIZE_MAX_SPEEDUP faster without outracing
+# detection. Scaled by the box's aspect ratio (width/height) rather than raw pixel size, since aspect
+# ratio stays roughly the same regardless of screen resolution/zoom, while raw pixel dimensions don't.
+# The two reference ratios below are the actual x1 and x3 auto-locate box sizes measured earlier
+# (154x34 and 1207x64) — anything narrower than x1's ratio gets the full speedup, anything wider than
+# x3's ratio runs at the unmodified interval, and everything between is linearly interpolated.
+SPAM_SIZE_ASPECT_MIN  = 154 / 34     # at/below this aspect ratio (a single-number box): full speedup
+SPAM_SIZE_ASPECT_MAX  = 1207 / 64    # at/above this aspect ratio (a three-number box): no speedup
+SPAM_SIZE_MAX_SPEEDUP = 0.20         # up to 20% shorter intervals at the narrow end
 
 AUTOLOCATE_HOTKEY = "f7"   # scans the screen for the Combat Power Change panel and snaps the box + cursor to it
 LABEL_TEMPLATE_PATH = Path(__file__).parent / "assets" / "reference" / "combat_power_label.png"
@@ -808,6 +822,23 @@ class OverlayApp:
         land on a perfectly even, obviously-scripted cadence."""
         return interval * random.uniform(1 - spread, 1 + spread)
 
+    def _spam_speed_factor(self):
+        """Multiplier (<=1.0) applied to enter_interval/click_interval based
+        on the current box's aspect ratio — see SPAM_SIZE_* for why a
+        narrower box (watching one AFTER panel) can safely run faster than a
+        wider one (watching all three). Linearly interpolated between the
+        two reference ratios and clamped, so a manually-resized box outside
+        the normal x1..x3 range never goes faster than the 20%-faster floor
+        or slower than the unmodified interval."""
+        w, h = self.region[2], self.region[3]
+        if h <= 0:
+            return 1.0
+        aspect = w / h
+        span = SPAM_SIZE_ASPECT_MAX - SPAM_SIZE_ASPECT_MIN
+        t = (aspect - SPAM_SIZE_ASPECT_MIN) / span if span else 1.0
+        t = max(0.0, min(1.0, t))
+        return 1.0 - SPAM_SIZE_MAX_SPEEDUP * (1.0 - t)
+
     def _spam_loop(self):
         """
         Runs on its own thread so the millisecond-scale Enter/click cadence
@@ -822,8 +853,8 @@ class OverlayApp:
         last_enter_time = 0.0
         last_click_time = 0.0
         last_lock_refresh = 0.0
-        next_enter_gap = self._jittered(self.enter_interval)
-        next_click_gap = self._jittered(self.click_interval)
+        next_enter_gap = self._jittered(self.enter_interval * self._spam_speed_factor())
+        next_click_gap = self._jittered(self.click_interval * self._spam_speed_factor())
         while self._running:
             if self.enter_on and not self.hit and not self._selecting:
                 now = time.perf_counter()
@@ -837,11 +868,11 @@ class OverlayApp:
                 if now - last_enter_time >= next_enter_gap:
                     pydirectinput.press("enter")
                     last_enter_time = now
-                    next_enter_gap = self._jittered(self.enter_interval)
+                    next_enter_gap = self._jittered(self.enter_interval * self._spam_speed_factor())
                 if now - last_click_time >= next_click_gap:
                     pydirectinput.click()
                     last_click_time = now
-                    next_click_gap = self._jittered(self.click_interval)
+                    next_click_gap = self._jittered(self.click_interval * self._spam_speed_factor())
             time.sleep(0.001)
 
     def _read_with_retry(self, sct):
