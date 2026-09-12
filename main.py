@@ -196,9 +196,12 @@ AUTOLOCATE_MOVE_JITTER_PX = 4     # max sideways wobble off the straight-line pa
 # strokes of the game's stylized digits.
 OCR_CONFIG = r'--psm 6 -c tessedit_char_whitelist=+-0123456789,'
 
-PLUS_NUMBER_RE = re.compile(r'[+-][\d,]{2,}')   # matches "+<number>" and "-<number>" —
-                                                 # negative deltas need catching too now that a wide
-                                                 # auto-locate box can span multiple AFTER panels at once
+PLUS_NUMBER_RE = re.compile(r'\+[\d,]{2,}')   # "+<number>" only, by design: a negative/bad reset
+                                               # result should NOT count as detected, so the spam
+                                               # keeps re-rolling through it — only a positive result
+                                               # stops it. (A wide auto-locate box spanning multiple
+                                               # AFTER panels still works fine with this: .search()
+                                               # finds the first "+" among them, if any appear.)
 
 
 def preprocess_for_ocr(img: Image.Image) -> Image.Image:
@@ -226,7 +229,7 @@ def _grab(region, sct=None) -> Image.Image:
 
 
 def read_delta(region, sct=None) -> str | None:
-    """Screenshot *region* and return the first "+<number>"/"-<number>" match found, or None."""
+    """Screenshot *region* and return the first "+<number>" match found, or None."""
     img = _grab(region, sct=sct)
     proc = preprocess_for_ocr(img)
     text = pytesseract.image_to_string(proc, config=OCR_CONFIG)
