@@ -32,6 +32,7 @@ import re
 import sys
 import time
 import json
+import random
 import platform
 import threading
 import tkinter as tk
@@ -112,6 +113,8 @@ BEEP_COOLDOWN   = 1.5    # min seconds between beeps
 ENTER_HOTKEY    = "f9"    # toggles Enter+Left-Click spam on/off — starts OFF
 ENTER_INTERVAL  = 0.16    # seconds between spammed Enter presses (160ms)
 CLICK_INTERVAL  = 0.24    # seconds between spammed left-clicks (240ms)
+SPAM_JITTER     = 0.3     # +/- fraction of randomness applied to each interval above,
+                          # so presses/clicks don't land on a perfectly robotic fixed cadence
 BEEP_HOTKEY     = "f10"   # mutes/unmutes the detection beep — starts UNMUTED
 
 # psm 6 = "uniform block of text" — the box may contain the label line above
@@ -412,6 +415,12 @@ class OverlayApp:
         print(f"\n  [hotkey {self.beep_hotkey.upper()}] Beep "
               f"{'UNMUTED' if self.beep_enabled else 'MUTED'}\n", flush=True)
 
+    @staticmethod
+    def _jittered(interval, spread=SPAM_JITTER):
+        """Randomize *interval* by +/- spread so spammed presses/clicks don't
+        land on a perfectly even, obviously-scripted cadence."""
+        return interval * random.uniform(1 - spread, 1 + spread)
+
     def _spam_loop(self):
         """
         Runs on its own thread so the millisecond-scale Enter/click cadence
@@ -419,19 +428,25 @@ class OverlayApp:
         built specifically for games that read DirectInput device state rather
         than the Windows message queue or global keyboard hooks — both
         pyautogui's VK press and keyboard's scan-code SendInput can be invisible
-        to those games. Enter and click run on independent cadences.
+        to those games. Enter and click run on independent cadences, each
+        re-randomized after every press so the gap itself varies over time
+        rather than just being offset by a fixed amount.
         """
         last_enter_time = 0.0
         last_click_time = 0.0
+        next_enter_gap = self._jittered(self.enter_interval)
+        next_click_gap = self._jittered(self.click_interval)
         while self._running:
             if self.enter_on and not self.hit:
                 now = time.perf_counter()
-                if now - last_enter_time >= self.enter_interval:
+                if now - last_enter_time >= next_enter_gap:
                     pydirectinput.press("enter")
                     last_enter_time = now
-                if now - last_click_time >= self.click_interval:
+                    next_enter_gap = self._jittered(self.enter_interval)
+                if now - last_click_time >= next_click_gap:
                     pydirectinput.click()
                     last_click_time = now
+                    next_click_gap = self._jittered(self.click_interval)
             time.sleep(0.001)
 
     def _read_with_retry(self, sct):
