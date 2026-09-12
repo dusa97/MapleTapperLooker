@@ -31,7 +31,7 @@ jobs:
 
       - name: Test release notes
         shell: pwsh
-        run: ./test_release_notes.ps1
+        run: ./tests/test_release_notes.ps1
 
       - name: Build executable
         run: python -m PyInstaller --clean --noconfirm MapleTapperLooker.spec
