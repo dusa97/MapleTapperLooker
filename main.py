@@ -210,10 +210,8 @@ def load_region() -> tuple | None:
 
 class OverlayApp:
     """
-    A green, always-on-top, click-through-in-the-middle box: only its border
-    and the four corner handles receive mouse events, so drag the border to
-    move it, drag a corner to resize it. Runs its own OCR poll loop via
-    root.after() ticks on the main thread (no background thread needed).
+    A green detection box with a click-through center and four resize handles.
+    F8 opens a new selection. A background thread reads the selected region.
     """
     BORDER      = 3
     COLOR       = "#00FF88"
@@ -263,6 +261,10 @@ class OverlayApp:
         self.beep_enabled = True
         self.alert = RecordedAlert(_BASE_DIR / "detection_message.wav")
         self._audio_requests = queue.SimpleQueue()
+        self._selection_requested = threading.Event()
+        self._selector = None
+        self._selecting = False
+        self._region_revision = 0
 
     def _build_window(self):
         b = self.BORDER
@@ -406,12 +408,42 @@ class OverlayApp:
         self._drag = {}
         save_region(tuple(self.region))
 
+    def _start_selection(self):
+        self._region_revision += 1
+        self._selecting = True
+        self._set_enter_on(False)
+        self._unlock_mouse()
+        self.hit = self._prev_hit = False
+        self.last_value = None
+        self.status_text = "Drag to select a region"
+        self._drag = {}
+        self.root.withdraw()
+        self._panel.withdraw()
+        if self._selector is not None:
+            self._selector.reset()
+        else:
+            self._selector = RegionSelector(parent=self.root, on_done=self._finish_selection)
+
+    def _finish_selection(self, region):
+        if region is not None:
+            self.region = list(region)
+            save_region(region)
+        self._selector = None
+        self._region_revision += 1
+        self.hit = self._prev_hit = False
+        self.last_value = None
+        self.status_text = "watching…"
+        self._sync_geometry()
+        self.root.deiconify()
+        self._panel.deiconify()
+        self._selecting = False
+
     def _quit(self):
         print("\nStopped.")
         self._running = False
         self._unlock_mouse()
         self.alert.close()
-        hotkeys = ["f11", "f12", self.beep_hotkey]
+        hotkeys = ["f8", "f11", "f12", self.beep_hotkey]
         if self.enter_spam_enabled:
             hotkeys.append(self.enter_hotkey)
         for hk in hotkeys:
@@ -466,6 +498,8 @@ class OverlayApp:
         """Single place that flips enter_on so the mouse lock always tracks
         it, no matter which of the several call sites (hotkey, auto-stop on
         detection, false-positive resume) changes the state."""
+        if value and self._selecting:
+            return
         if value == self.enter_on:
             return
         self.enter_on = value
@@ -521,7 +555,7 @@ class OverlayApp:
         next_enter_gap = self._jittered(self.enter_interval)
         next_click_gap = self._jittered(self.click_interval)
         while self._running:
-            if self.enter_on and not self.hit:
+            if self.enter_on and not self.hit and not self._selecting:
                 now = time.perf_counter()
                 # Re-assert the mouse lock a few times a second — Windows
                 # clears ClipCursor on focus changes, which happen
@@ -558,8 +592,14 @@ class OverlayApp:
         """
         with mss.MSS() as sct:
             while self._running:
+                if self._selecting:
+                    time.sleep(RENDER_INTERVAL)
+                    continue
+                revision = self._region_revision
                 t0 = time.perf_counter()
                 value = self._read_with_retry(sct)
+                if self._selecting or revision != self._region_revision:
+                    continue
 
                 if value and not self._prev_hit:
                     # New detection (edge-triggered, so a popup that stays on
@@ -575,6 +615,8 @@ class OverlayApp:
                     self.status_text = "confirming…"
 
                     confirm = self._read_with_retry(sct)
+                    if self._selecting or revision != self._region_revision:
+                        continue
                     if confirm:
                         value = confirm
                         self.status_text = value
@@ -614,6 +656,9 @@ class OverlayApp:
     def _render(self):
         """Fast, OCR-free UI repaint tick — just reflects whatever state the
         background OCR loop (or the spam loop) last wrote."""
+        if self._selection_requested.is_set():
+            self._selection_requested.clear()
+            self._start_selection()
         # Keep microphone operations outside the Windows keyboard hook.
         try:
             action = self._audio_requests.get_nowait()
@@ -635,6 +680,9 @@ class OverlayApp:
 
     def run(self):
         root = self._build_window()
+        keyboard.add_hotkey("f8", self._selection_requested.set,
+                            suppress=True, trigger_on_release=True)
+        print("[hotkey] F8: draw a new region; Escape: cancel selection.", flush=True)
         keyboard.add_hotkey("f11", self._audio_requests.put, args=(self.alert.toggle,),
                             suppress=True, trigger_on_release=True)
         keyboard.add_hotkey("f12", self._audio_requests.put, args=(self.alert.reset,),
@@ -663,138 +711,106 @@ class OverlayApp:
 
 # ── Visual region selector (initial placement) ──────────────────────────────
 
-HANDLE_SIZE  = 10
 BORDER_COLOR = "#00FF88"
-HANDLE_COLOR = "#FFFFFF"
-DIM_COLOR    = "#000000"
 
 
 class RegionSelector:
     MIN_SIZE = 20
 
-    def __init__(self, initial_region=None):
+    def __init__(self, parent=None, on_done=None):
         self.result = None
-
-        self.root = tk.Tk()
+        self.on_done = on_done
+        self.root = tk.Toplevel(parent) if parent else tk.Tk()
         self.root.title("Select Region")
-        self.root.attributes("-fullscreen", True)
+        self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
         self.root.resizable(False, False)
 
-        sw = self.root.winfo_screenwidth()
-        sh = self.root.winfo_screenheight()
-
-        if platform.system() == "Windows":
-            self.root.attributes("-transparentcolor", "black")
-            self.root.configure(bg="black")
-        elif platform.system() == "Darwin":
-            self.root.attributes("-transparent", True)
-            self.root.configure(bg="systemTransparent")
-        else:
-            self.root.attributes("-alpha", 0.85)
-            self.root.configure(bg="#1a1a1a")
+        with mss.MSS() as sct:
+            desktop = sct.monitors[0]
+        self.left, self.top = desktop["left"], desktop["top"]
+        sw, sh = desktop["width"], desktop["height"]
+        self.root.geometry(f"{sw}x{sh}+{self.left}+{self.top}")
+        # Alpha keeps the desktop visible without making the canvas click-through.
+        self.root.attributes("-alpha", 0.3)
+        self.root.configure(bg="black")
 
         self.canvas = tk.Canvas(self.root, bg="black",
                                  highlightthickness=0, cursor="crosshair")
         self.canvas.pack(fill="both", expand=True)
 
-        if initial_region:
-            lx, ty, rw, rh = initial_region
-            self.rx1, self.ry1 = lx, ty
-            self.rx2, self.ry2 = lx + rw, ty + rh
-        else:
-            cx, cy = sw // 2, sh // 2
-            self.rx1, self.ry1 = cx - 200, cy - 60
-            self.rx2, self.ry2 = cx + 200, cy + 60
-
-        self._drag_data = {}
-        self._info_font = tkfont.Font(family="Courier", size=11, weight="bold")
+        self._info_font = tkfont.Font(root=self.root, family="Courier", size=11, weight="bold")
         self._bind_events()
-        self._draw()
+        if parent is None:
+            self.root.bind("<KeyRelease-F8>", lambda e: self.reset())
+        self.reset()
+
+    def reset(self):
+        self.rx1 = self.ry1 = self.rx2 = self.ry2 = 0
+        self._drag_data = {}
+        self.canvas.delete("all")
+        self.canvas.create_text(24, 24, anchor="nw", fill="white", font=self._info_font,
+                                text="Drag to select | F8: restart | Esc: cancel")
+        self.root.lift()
+        self.root.focus_force()
 
     def _draw(self):
         c = self.canvas
-        sw = self.root.winfo_screenwidth()
-        sh = self.root.winfo_screenheight()
         x1, y1, x2, y2 = self.rx1, self.ry1, self.rx2, self.ry2
         c.delete("all")
-        c.create_rectangle(0,  0,  sw, y1, fill=DIM_COLOR, outline="")
-        c.create_rectangle(0,  y2, sw, sh, fill=DIM_COLOR, outline="")
-        c.create_rectangle(0,  y1, x1, y2, fill=DIM_COLOR, outline="")
-        c.create_rectangle(x2, y1, sw, y2, fill=DIM_COLOR, outline="")
         c.create_rectangle(x1, y1, x2, y2, outline=BORDER_COLOR, width=2)
-        for hx, hy, _ in self._handle_positions():
-            c.create_rectangle(hx - HANDLE_SIZE, hy - HANDLE_SIZE,
-                                hx + HANDLE_SIZE, hy + HANDLE_SIZE,
-                                fill=HANDLE_COLOR, outline=BORDER_COLOR, width=1)
         w, h = x2 - x1, y2 - y1
-        label = f"  {w}x{h}px  |  ({x1},{y1})  |  Enter=Confirm  Esc=Quit  "
+        label = f"  {w}x{h}px  |  Release to select  |  F8=Restart  Esc=Cancel  "
         lx = x1 + w // 2
         ly = y1 - 18 if y1 > 30 else y2 + 18
         c.create_text(lx + 1, ly + 1, text=label, font=self._info_font, fill="black", anchor="center")
         c.create_text(lx,     ly,     text=label, font=self._info_font, fill=BORDER_COLOR, anchor="center")
 
-    def _handle_positions(self):
-        x1, y1, x2, y2 = self.rx1, self.ry1, self.rx2, self.ry2
-        mx, my = (x1 + x2) // 2, (y1 + y2) // 2
-        return [(x1, y1, "h_nw"), (mx, y1, "h_n"), (x2, y1, "h_ne"),
-                (x1, my, "h_w"),                    (x2, my, "h_e"),
-                (x1, y2, "h_sw"), (mx, y2, "h_s"), (x2, y2, "h_se")]
-
     def _bind_events(self):
         self.canvas.bind("<ButtonPress-1>",   self._on_press)
         self.canvas.bind("<B1-Motion>",       self._on_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_release)
-        self.canvas.bind("<Double-Button-1>", lambda e: self._confirm())
-        self.root.bind("<Return>",   lambda e: self._confirm())
-        self.root.bind("<KP_Enter>", lambda e: self._confirm())
         self.root.bind("<Escape>",   lambda e: self._quit())
-
-    def _hit_handle(self, ex, ey):
-        for hx, hy, tag in self._handle_positions():
-            if hx - HANDLE_SIZE <= ex <= hx + HANDLE_SIZE and hy - HANDLE_SIZE <= ey <= hy + HANDLE_SIZE:
-                return tag
-        return None
 
     def _on_press(self, event):
         ex, ey = event.x, event.y
-        handle = self._hit_handle(ex, ey)
-        if handle:
-            self._drag_data = {"mode": "resize", "handle": handle}
-        elif self.rx1 <= ex <= self.rx2 and self.ry1 <= ey <= self.ry2:
-            self._drag_data = {"mode": "move", "ox": ex - self.rx1, "oy": ey - self.ry1}
-        else:
-            self._drag_data = {}
+        self._drag_data = {"sx": ex, "sy": ey}
+        self.rx1 = self.rx2 = ex
+        self.ry1 = self.ry2 = ey
 
     def _on_drag(self, event):
         ex, ey = event.x, event.y
         d = self._drag_data
         if not d:
             return
-        if d["mode"] == "move":
-            w, h = self.rx2 - self.rx1, self.ry2 - self.ry1
-            self.rx1, self.ry1 = ex - d["ox"], ey - d["oy"]
-            self.rx2, self.ry2 = self.rx1 + w, self.ry1 + h
-        elif d["mode"] == "resize":
-            tag = d["handle"]
-            if "w" in tag: self.rx1 = min(ex, self.rx2 - self.MIN_SIZE)
-            if "e" in tag: self.rx2 = max(ex, self.rx1 + self.MIN_SIZE)
-            if "n" in tag: self.ry1 = min(ey, self.ry2 - self.MIN_SIZE)
-            if "s" in tag: self.ry2 = max(ey, self.ry1 + self.MIN_SIZE)
+        ex = max(0, min(ex, self.canvas.winfo_width()))
+        ey = max(0, min(ey, self.canvas.winfo_height()))
+        self.rx1, self.rx2 = sorted((d["sx"], ex))
+        self.ry1, self.ry2 = sorted((d["sy"], ey))
         self._draw()
 
-    def _on_release(self, _): self._drag_data = {}
+    def _on_release(self, event):
+        if not self._drag_data:
+            return
+        self._on_drag(event)
+        self._drag_data = {}
+        self._confirm()
 
     def _confirm(self):
         x1, y1 = min(self.rx1, self.rx2), min(self.ry1, self.ry2)
         x2, y2 = max(self.rx1, self.rx2), max(self.ry1, self.ry2)
-        self.result = (x1, y1, x2 - x1, y2 - y1)
+        if x2 - x1 < self.MIN_SIZE or y2 - y1 < self.MIN_SIZE:
+            self.reset()
+            return
+        self.result = (x1 + self.left, y1 + self.top, x2 - x1, y2 - y1)
         self.root.destroy()
+        if self.on_done:
+            self.on_done(self.result)
 
     def _quit(self):
         self.root.destroy()
-        print("Cancelled.")
-        sys.exit(0)
+        if self.on_done:
+            self.on_done(None)
 
     def run(self) -> tuple:
         self.root.mainloop()
@@ -802,13 +818,13 @@ class RegionSelector:
 
 # ── Entry point ──────────────────────────────────────────────────────────────
 
-def _open_selector(initial_region=None) -> tuple:
-    print("  • Drag inside the box to move it")
-    print("  • Drag corners/edges to resize")
-    print("  • Press Enter or double-click to confirm")
+def _open_selector() -> tuple:
+    print("  • Click-drag to select a region; release to confirm")
+    print("  • Press F8 to clear the selection and draw again")
+    print("  • Resize the green box afterward with its corner handles")
     print("  • Press Escape to quit")
     print()
-    sel = RegionSelector(initial_region=initial_region)
+    sel = RegionSelector()
     region = sel.run()
     if region is None:
         print("No region selected.")
@@ -855,7 +871,7 @@ if __name__ == "__main__":
     if region is None or args.reselect:
         print("  Opening region selector...")
         print()
-        region = _open_selector(initial_region=region)
+        region = _open_selector()
     else:
         print(f"  Last region: left={region[0]}  top={region[1]}  width={region[2]}  height={region[3]}")
 
