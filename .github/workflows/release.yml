@@ -1,0 +1,45 @@
+name: Windows release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pyinstaller==6.16.0
+
+      - name: Run tests
+        run: python -m unittest -v test_beep test_recorded_alert
+
+      - name: Build executable
+        run: python -m PyInstaller --clean --noconfirm MapleTapperLooker.spec
+
+      - name: Check executable
+        shell: pwsh
+        run: |
+          $exe = Get-Item dist/MapleTapperLooker.exe
+          if ($exe.Length -eq 0) { throw 'Executable is empty.' }
+
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "build-$env:GITHUB_RUN_NUMBER-$env:GITHUB_RUN_ATTEMPT"
+          gh release create $tag dist/MapleTapperLooker.exe --target $env:GITHUB_SHA --title "Windows build $env:GITHUB_RUN_NUMBER.$env:GITHUB_RUN_ATTEMPT" --notes "Built from commit $env:GITHUB_SHA. Requires Tesseract OCR installed separately."

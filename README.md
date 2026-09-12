@@ -2,6 +2,15 @@
 
 Detect `+<number>` values in a selected screen region.
 
+## Download the Windows executable
+
+Download `MapleTapperLooker.exe` from [GitHub Releases](https://github.com/dusa97/MapleTapperLooker/releases).
+Install [Tesseract OCR](https://github.com/UB-Mannheim/tesseract/wiki) separately. Python is not required for the executable.
+
+Each push to `main` runs tests, builds the executable, and publishes a new release.
+You can also run **Windows release** manually from the **Actions** tab on `main`.
+The workflow uses `MapleTapperLooker.spec` and publishes only after tests and the build succeed.
+
 ## Run on Windows
 
 Install Tesseract OCR and Python dependencies:
