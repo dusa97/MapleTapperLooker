@@ -105,10 +105,18 @@ if getattr(sys, "frozen", False):
 else:
     _BASE_DIR = Path(__file__).parent
 REGION_FILE     = _BASE_DIR / "last_region.json"
-MIN_READ_GAP    = 0.0    # optional extra delay between OCR reads (0 = back-to-back, as fast as possible)
-RENDER_INTERVAL = 0.05   # seconds between UI repaints — independent of the OCR read cadence
-OCR_SCALE       = 3      # upscale factor before OCR — small popup text needs this
-BEEP_COOLDOWN   = 1.5    # min seconds between beeps
+MIN_READ_GAP      = 0.0    # optional extra delay between OCR reads (0 = back-to-back, as fast as possible)
+RENDER_INTERVAL   = 0.05   # seconds between UI repaints — independent of the OCR read cadence
+OCR_TARGET_HEIGHT = 100    # preprocess_for_ocr upscales toward this fixed output height instead of a fixed
+                           # multiplier — on a higher-resolution screen the same UI renders at more raw pixels,
+                           # so a fixed multiplier (the old OCR_SCALE) blew the image up further and slowed
+                           # every read down, widening the window where a spammed click could still land
+                           # between the "+" appearing and this loop noticing it. Capping the target keeps
+                           # per-read latency roughly constant across screen sizes/regions. Never downscales
+                           # (min scale 1.0) or upscales past 4x (min-caps overhead on an already-huge region).
+OCR_SCALE_MIN     = 1.0
+OCR_SCALE_MAX     = 4.0
+BEEP_COOLDOWN     = 1.5    # min seconds between beeps
 
 ENTER_HOTKEY    = "f9"    # toggles Enter+Left-Click spam on/off — starts OFF
 ENTER_INTERVAL  = 0.16    # seconds between spammed Enter presses (160ms)
@@ -129,8 +137,13 @@ PLUS_NUMBER_RE = re.compile(r'\+[\d,]{2,}')
 
 
 def preprocess_for_ocr(img: Image.Image) -> Image.Image:
-    """Upscale + grayscale — small popup text needs the extra resolution."""
-    big = img.resize((img.width * OCR_SCALE, img.height * OCR_SCALE), Image.LANCZOS)
+    """Upscale + grayscale — small popup text needs the extra resolution.
+    Scales toward OCR_TARGET_HEIGHT rather than a fixed multiplier, so a
+    larger raw region (e.g. from a higher screen resolution) doesn't balloon
+    processing time — see OCR_TARGET_HEIGHT for why that matters here."""
+    scale = OCR_TARGET_HEIGHT / img.height
+    scale = max(OCR_SCALE_MIN, min(scale, OCR_SCALE_MAX))
+    big = img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))), Image.LANCZOS)
     return big.convert("L")
 
 
