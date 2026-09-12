@@ -21,19 +21,30 @@ class DetectionBeepTest(unittest.TestCase):
              patch.object(app.alert, "close") as close:
             app.root = window.return_value
             app.run()
-            register.assert_any_call("f11", app._record_requests.put, args=(None,),
+            register.assert_any_call("f11", app._audio_requests.put, args=(app.alert.toggle,),
+                                     suppress=True, trigger_on_release=True)
+            register.assert_any_call("f12", app._audio_requests.put, args=(app.alert.reset,),
                                      suppress=True, trigger_on_release=True)
             # The hook queues work; the UI processes each key release once.
-            with patch.object(app.alert, "toggle") as toggle:
-                app._record_requests.put(None)
+            with patch.object(app.alert, "toggle") as toggle, \
+                 patch.object(app.alert, "reset") as reset:
+                app.beep_enabled = False
+                app._audio_requests.put(toggle)
+                app._audio_requests.put(reset)
                 toggle.assert_not_called()
-                app._render()
+                reset.assert_not_called()
                 app._render()
                 toggle.assert_called_once()
+                reset.assert_not_called()
+                app._render()
+                app._render()
+                reset.assert_called_once()
+                self.assertFalse(app.beep_enabled)
             register.assert_any_call(app.beep_hotkey, app._toggle_beep)
-            self.assertEqual(register.call_count, 2)
+            self.assertEqual(register.call_count, 3)
             app._quit()
             remove.assert_any_call("f11")
+            remove.assert_any_call("f12")
             remove.assert_any_call(app.beep_hotkey)
             close.assert_called_once()
 

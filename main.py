@@ -22,6 +22,7 @@ to resume.
 
 Press F11 to record a microphone message. Press F11 again to save it.
 The saved message replaces the detection beep. Repeat to replace the message.
+F12 deletes the saved message and restores the beep.
 F10 mutes both the message and the beep. Recording requires Windows.
 
 Requirements:
@@ -261,7 +262,7 @@ class OverlayApp:
         self.beep_hotkey  = beep_hotkey
         self.beep_enabled = True
         self.alert = RecordedAlert(_BASE_DIR / "detection_message.wav")
-        self._record_requests = queue.SimpleQueue()
+        self._audio_requests = queue.SimpleQueue()
 
     def _build_window(self):
         b = self.BORDER
@@ -410,7 +411,7 @@ class OverlayApp:
         self._running = False
         self._unlock_mouse()
         self.alert.close()
-        hotkeys = ["f11", self.beep_hotkey]
+        hotkeys = ["f11", "f12", self.beep_hotkey]
         if self.enter_spam_enabled:
             hotkeys.append(self.enter_hotkey)
         for hk in hotkeys:
@@ -615,11 +616,11 @@ class OverlayApp:
         background OCR loop (or the spam loop) last wrote."""
         # Keep microphone operations outside the Windows keyboard hook.
         try:
-            self._record_requests.get_nowait()
+            action = self._audio_requests.get_nowait()
         except queue.Empty:
             pass
         else:
-            self.alert.toggle()
+            action()
         color = self.COLOR_HIT if self.hit else self.COLOR
         if self._canvas:
             self._canvas.itemconfig("border", outline=color)
@@ -634,11 +635,14 @@ class OverlayApp:
 
     def run(self):
         root = self._build_window()
-        keyboard.add_hotkey("f11", self._record_requests.put, args=(None,),
+        keyboard.add_hotkey("f11", self._audio_requests.put, args=(self.alert.toggle,),
+                            suppress=True, trigger_on_release=True)
+        keyboard.add_hotkey("f12", self._audio_requests.put, args=(self.alert.reset,),
                             suppress=True, trigger_on_release=True)
         keyboard.add_hotkey(self.beep_hotkey, self._toggle_beep)
         print("[hotkey] F11: start recording; F11 again: save message. "
               "Repeat to replace it. See [audio] messages for recording status.", flush=True)
+        print("[hotkey] F12: delete message and restore beep (mute unchanged).", flush=True)
         print(f"[hotkey] {self.beep_hotkey.upper()}: mute/unmute detection audio.", flush=True)
         if self.enter_spam_enabled:
             keyboard.add_hotkey(self.enter_hotkey, self._toggle_enter_spam)
