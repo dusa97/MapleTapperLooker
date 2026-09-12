@@ -415,7 +415,6 @@ class OverlayApp:
             canvas.tag_bind(f"handle_{corner}", "<ButtonRelease-1>", self._on_release)
         self.root, self.overlay, self._canvas = root, overlay, canvas
         self._sync_geometry()
-        self._exclude_from_capture()
         root.update_idletasks()
         width = max(540, root.winfo_reqwidth())
         height = max(610, root.winfo_reqheight())
@@ -483,27 +482,6 @@ class OverlayApp:
         if self._start_after is not None:
             self.root.after_cancel(self._start_after)
             self._start_after = None
-
-    def _exclude_from_capture(self):
-        """Hide this overlay window from screen-capture APIs (mss included)
-        so the box's own border/text never gets OCR'd as part of the region
-        it's watching."""
-        if platform.system() != "Windows":
-            return
-        try:
-            import ctypes
-            self.root.update_idletasks()
-            hwnd = self.overlay.winfo_id()
-            parent = ctypes.windll.user32.GetParent(hwnd)
-            if parent:
-                hwnd = parent
-            WDA_EXCLUDEFROMCAPTURE = 0x11
-            ok = ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
-            if not ok:
-                print("  [warning] Could not exclude overlay from screen capture — "
-                      "the box's own border/text may interfere with OCR.", flush=True)
-        except Exception as e:
-            print(f"  [warning] Could not exclude overlay from screen capture: {e}", flush=True)
 
     def _sync_geometry(self):
         x, y, w, h = self.region
