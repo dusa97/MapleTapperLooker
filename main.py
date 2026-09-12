@@ -386,6 +386,7 @@ class OverlayApp:
     def _quit(self):
         print("\nStopped.")
         self._running = False
+        self._unlock_mouse()
         if self.enter_spam_enabled:
             for hk in (self.enter_hotkey, self.beep_hotkey):
                 try:
@@ -393,6 +394,42 @@ class OverlayApp:
                 except (KeyError, ValueError):
                     pass
         self.root.destroy()
+
+    def _lock_mouse(self):
+        """Pin the cursor to its current on-screen position (Windows only) so
+        it can't drift off the click target while spam is running."""
+        if platform.system() != "Windows":
+            return
+        try:
+            import ctypes
+            from ctypes import wintypes
+            pt = wintypes.POINT()
+            ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+            rect = wintypes.RECT(pt.x, pt.y, pt.x + 1, pt.y + 1)
+            ctypes.windll.user32.ClipCursor(ctypes.byref(rect))
+        except Exception as e:
+            print(f"  [warning] Could not lock mouse position: {e}", flush=True)
+
+    def _unlock_mouse(self):
+        if platform.system() != "Windows":
+            return
+        try:
+            import ctypes
+            ctypes.windll.user32.ClipCursor(None)
+        except Exception:
+            pass
+
+    def _set_enter_on(self, value: bool):
+        """Single place that flips enter_on so the mouse lock always tracks
+        it, no matter which of the several call sites (hotkey, auto-stop on
+        detection, false-positive resume) changes the state."""
+        if value == self.enter_on:
+            return
+        self.enter_on = value
+        if value:
+            self._lock_mouse()
+        else:
+            self._unlock_mouse()
 
     def _toggle_enter_spam(self):
         """Hotkey callback (runs on keyboard's own thread) — just flips a flag;
@@ -404,7 +441,7 @@ class OverlayApp:
             print(f"\n  [hotkey {self.enter_hotkey.upper()}] Ignored — a '+' is still showing; "
                   f"wait for it to clear before re-enabling.\n", flush=True)
             return
-        self.enter_on = not self.enter_on
+        self._set_enter_on(not self.enter_on)
         print(f"\n  [hotkey {self.enter_hotkey.upper()}] Enter+Left-Click spam "
               f"{'ON' if self.enter_on else 'OFF'}\n", flush=True)
 
@@ -479,7 +516,7 @@ class OverlayApp:
                     # producing occasional false positives, so only a second
                     # confirming read earns the beep.
                     was_spamming = self.enter_on
-                    self.enter_on = False
+                    self._set_enter_on(False)
                     self.hit = True
                     self.status_text = "confirming…"
 
@@ -503,7 +540,7 @@ class OverlayApp:
                         self.hit = False
                         self.status_text = "watching…"
                         self.last_value = None
-                        self.enter_on = was_spamming
+                        self._set_enter_on(was_spamming)
                 elif value:
                     self.hit = True
                     self.status_text = value
