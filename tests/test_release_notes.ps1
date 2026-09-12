@@ -1,6 +1,6 @@
-# Run with: powershell -NoProfile -File test_release_notes.ps1
+# Run with: powershell -NoProfile -File tests/test_release_notes.ps1
 $ErrorActionPreference = 'Stop'
-$workflow = Get-Content "$PSScriptRoot/.github/workflows/release.yml" -Raw
+$workflow = Get-Content "$PSScriptRoot/../.github/workflows/release.yml" -Raw
 $start = $workflow.IndexOf('          $previous =')
 $end = $workflow.IndexOf('          gh release create', $start)
 $script = [scriptblock]::Create($workflow.Substring($start, $end - $start))

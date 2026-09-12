@@ -74,10 +74,21 @@ Recording uses Windows audio APIs. No additional Python dependency is required.
 Enable microphone access for desktop applications in Windows Settings if recording fails.
 The application folder must permit file writes.
 
+## Repository layout
+
+- `main.py`, `recorded_alert.py`, `MapleTapperLooker.pyw`: application and launcher.
+- `assets/`: application icons.
+- `tests/`: Python tests and release-note checks.
+- `.github/workflows/`: release automation.
+- `MapleTapperLooker.spec`, `requirements.txt`: build settings and dependencies.
+
 ## Check
 
+Run from the repository root:
+
 ```powershell
-python -m unittest -v
+python -m unittest discover -v
+powershell -NoProfile -File tests/test_release_notes.ps1
 ```
 
 Tests mock audio devices. Check microphone recording and playback manually with the F11 steps above.
