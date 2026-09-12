@@ -1,5 +1,6 @@
 pillow
 pytesseract
+mss
 pyautogui
 opencv-python
 numpy
