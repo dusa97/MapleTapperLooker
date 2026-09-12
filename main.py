@@ -93,7 +93,15 @@ def _relaunch_as_admin():
 
 # ── Config ───────────────────────────────────────────────────────────────────
 
-REGION_FILE     = Path(__file__).parent / "last_region.json"
+# When frozen by PyInstaller, __file__ resolves inside the bundle's internal/
+# temp extraction path (not next to the .exe), so last_region.json would never
+# be found (or persisted) between runs — always forcing the region selector
+# open. Anchor to the .exe's own directory in that case instead.
+if getattr(sys, "frozen", False):
+    _BASE_DIR = Path(sys.executable).parent
+else:
+    _BASE_DIR = Path(__file__).parent
+REGION_FILE     = _BASE_DIR / "last_region.json"
 MIN_READ_GAP    = 0.0    # optional extra delay between OCR reads (0 = back-to-back, as fast as possible)
 RENDER_INTERVAL = 0.05   # seconds between UI repaints — independent of the OCR read cadence
 OCR_SCALE       = 3      # upscale factor before OCR — small popup text needs this
