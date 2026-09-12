@@ -390,6 +390,8 @@ class OverlayApp:
         self._autolocate_requested = threading.Event()
         self._label_template_gray = None
         self._autolocate_available = True
+        self._box_visible = True
+        self._box_toggle_button = None
 
     def _build_window(self):
         """Build the normal taskbar window plus the capture-safe screen overlay."""
@@ -442,6 +444,9 @@ class OverlayApp:
                      UI_BUTTON, UI_TEXT).pack(side="left", padx=(10, 0))
         self._button(buttons, "Auto-locate  (F7)", self._request_autolocate,
                      UI_BUTTON, UI_TEXT).pack(side="left", padx=(10, 0))
+        self._box_toggle_button = self._button(buttons, "Hide box", self._toggle_box_visibility,
+                                               UI_BUTTON, UI_TEXT)
+        self._box_toggle_button.pack(side="left", padx=(10, 0))
         tk.Label(status, text="Auto-locate currently only recognizes the Combat Power reset dialog.",
                  fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 8), anchor="center",
                  justify="center", wraplength=450).pack(fill="x", padx=16, pady=(0, 12))
@@ -554,6 +559,17 @@ class OverlayApp:
 
     def _request_autolocate(self):
         self._autolocate_requested.set()
+
+    def _toggle_box_visibility(self):
+        """Show/hide the on-screen overlay box, purely visual — OCR keeps
+        reading self.region either way, since it screenshots the region
+        directly and never depends on the overlay window being shown."""
+        self._box_visible = not self._box_visible
+        if self._box_visible and not self._selecting:
+            self.overlay.deiconify()
+        else:
+            self.overlay.withdraw()
+        self._box_toggle_button.config(text="Show box" if not self._box_visible else "Hide box")
 
     def _request_audio(self, action):
         self._audio_requests.put(action)
@@ -679,7 +695,8 @@ class OverlayApp:
         self._log("Region selected. Press Start or F9 to begin.")
         self._sync_geometry()
         self.root.deiconify()
-        self.overlay.deiconify()
+        if self._box_visible:
+            self.overlay.deiconify()
         self._selecting = False
 
     def _quit(self):
