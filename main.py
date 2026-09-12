@@ -223,10 +223,10 @@ class OverlayApp:
     A violet detection box with a click-through center and four resize handles.
     F8 opens a new selection. A background thread reads the selected region.
     """
-    BORDER      = 3
+    BORDER      = 12
     COLOR       = UI_ACCENT
     COLOR_HIT   = UI_PRIMARY
-    HANDLE_SIZE = 8
+    HANDLE_SIZE = 20
     MIN_SIZE    = 20
 
     def __init__(self, region: tuple, enter_spam: bool = True,
@@ -245,6 +245,8 @@ class OverlayApp:
         self.root         = None
         self._canvas      = None
         self._rect_id     = None
+        self._wave_ids    = []
+        self._wave_phase  = 0.0
         self._handle_ids  = {}
         self._drag        = {}
         self._ocr_thread  = None
@@ -397,6 +399,9 @@ class OverlayApp:
         canvas.pack()
         self._rect_id = canvas.create_rectangle(0, 0, 0, 0, outline=self.COLOR,
                                                  width=self.BORDER * 2, fill="black", tags="border")
+        self._wave_ids = [canvas.create_line(0, 0, 0, 0, fill=self.COLOR,
+                                             width=self.BORDER * 2, tags="border")
+                          for _ in range(64)]
         for corner in ("nw", "ne", "sw", "se"):
             self._handle_ids[corner] = canvas.create_rectangle(0, 0, 0, 0, fill=self.COLOR,
                                                                  outline="", tags=("handle", f"handle_{corner}"))
@@ -507,6 +512,14 @@ class OverlayApp:
         self.overlay.geometry(f"{W}x{H}+{x - b}+{y - b}")
         self._canvas.config(width=W, height=H)
         self._canvas.coords(self._rect_id, 0, 0, W - 1, H - 1)
+        points = ((0, 0), (W - 1, 0), (W - 1, H - 1), (0, H - 1), (0, 0))
+        for i, item in enumerate(self._wave_ids):
+            side, step = divmod(i, 16)
+            x1, y1 = points[side]
+            x2, y2 = points[side + 1]
+            dx, dy = (x2 - x1) / 16, (y2 - y1) / 16
+            self._canvas.coords(item, x1 + step * dx, y1 + step * dy,
+                                x1 + (step + 1) * dx, y1 + (step + 1) * dy)
         for corner, (hx, hy) in {"nw": (0, 0), "ne": (W, 0), "sw": (0, H), "se": (W, H)}.items():
             self._canvas.coords(self._handle_ids[corner], hx - hs, hy - hs, hx + hs, hy + hs)
 
@@ -806,6 +819,19 @@ class OverlayApp:
                     if remaining > 0:
                         time.sleep(remaining)
 
+    @staticmethod
+    def _wave_color(phase, detected=False):
+        """Blend red shades after detection; use the control colors otherwise."""
+        palette = (("#FF3030", "#FF9090", "#A81818", "#FF3030") if detected else
+                   (UI_PRIMARY, UI_ACCENT, UI_BUTTON, UI_PRIMARY))
+        position = (phase % 1) * 3
+        index = int(position)
+        blend = position - index
+        start, end = palette[index:index + 2]
+        rgb = [round(int(start[i:i + 2], 16) * (1 - blend)
+                     + int(end[i:i + 2], 16) * blend) for i in (1, 3, 5)]
+        return "#" + "".join(f"{channel:02x}" for channel in rgb)
+
     def _render(self):
         """Fast, OCR-free UI repaint tick — just reflects whatever state the
         background OCR loop (or the spam loop) last wrote."""
@@ -825,9 +851,16 @@ class OverlayApp:
             self._log(self.alert.status)
         color = self.COLOR_HIT if self.hit else self.COLOR
         if self._canvas:
-            self._canvas.itemconfig("border", outline=color)
-            for hid in self._handle_ids.values():
-                self._canvas.itemconfig(hid, fill=color)
+            detected = self.hit
+            if not detected:
+                self._wave_phase = time.monotonic() / 8
+            phase = self._wave_phase
+            self._canvas.itemconfig(self._rect_id, outline=self._wave_color(phase, detected))
+            for i, item in enumerate(self._wave_ids):
+                self._canvas.itemconfig(item, fill=self._wave_color(phase - i / 64, detected))
+            for corner, offset in {"nw": 0, "ne": 0.25, "se": 0.5, "sw": 0.75}.items():
+                self._canvas.itemconfig(self._handle_ids[corner],
+                                        fill=self._wave_color(phase - offset + 0.5, detected))
         if self._status_label:
             active = self.enter_on and not self.hit
             heading = "WATCHING" if active else ("DETECTED" if self.hit else "PAUSED")

@@ -3,7 +3,7 @@ import platform
 import unittest
 from unittest.mock import Mock, patch
 
-from main import OverlayApp, UI_BG, UI_BUTTON, UI_PRIMARY, UI_SURFACE
+from main import OverlayApp, UI_ACCENT, UI_BG, UI_BUTTON, UI_PRIMARY, UI_SURFACE
 
 
 class ControlWindowTest(unittest.TestCase):
@@ -14,6 +14,45 @@ class ControlWindowTest(unittest.TestCase):
         app.overlay = Mock()
         app._start_button = Mock()
         return app
+
+    def test_wave_uses_control_window_palette(self):
+        for phase, color in ((0, UI_PRIMARY), (1 / 3, UI_ACCENT),
+                             (2 / 3, UI_BUTTON), (1, UI_PRIMARY), (-1, UI_PRIMARY)):
+            self.assertEqual(OverlayApp._wave_color(phase), color.lower())
+        self.assertEqual(OverlayApp._wave_color(1 / 6), "#cc88e7")
+        self.assertEqual(OverlayApp._wave_color(1 - 1e-8), UI_PRIMARY.lower())
+
+    def test_detection_turns_wave_red_and_freezes_until_restart(self):
+        app = self.app()
+        app._canvas = Mock()
+        app._rect_id = "rectangle"
+        app._wave_ids = list(range(64))
+        app._handle_ids = {corner: corner for corner in ("nw", "ne", "se", "sw")}
+
+        def render_at(seconds):
+            app._canvas.reset_mock()
+            with patch("main.time.monotonic", return_value=seconds):
+                app._render()
+            return [next(iter(call.kwargs.values()))
+                    for call in app._canvas.itemconfig.call_args_list]
+
+        normal = render_at(2)
+        app.hit = True
+        stopped = render_at(3)
+        self.assertEqual(len(stopped), 69)
+        self.assertNotEqual(stopped, normal)
+        for color in stopped:
+            red, green, blue = (int(color[i:i + 2], 16) for i in (1, 3, 5))
+            self.assertGreater(red, green)
+            self.assertEqual(green, blue)
+        self.assertEqual(render_at(20), stopped)
+        self.assertEqual(app._wave_phase, 0.25)
+        app._toggle_enter_spam()
+        resumed = render_at(22)
+        self.assertFalse(app.hit)
+        self.assertNotEqual(resumed, stopped)
+        self.assertNotEqual(render_at(23), resumed)
+        self.assertEqual(app.region, [0, 0, 100, 100])
 
     def test_missing_ocr_blocks_start_and_f9(self):
         app = self.app()
@@ -139,7 +178,37 @@ class ControlWindowTest(unittest.TestCase):
             self.assertEqual(int(root.getvar(mute.cget("variable"))), 0)
             self.assertEqual(app._activity_list.cget("state"), "disabled")
             self.assertTrue(app.overlay.winfo_exists())
+            self.assertEqual(app.region, [0, 0, 100, 100])
+            self.assertEqual(int(app._canvas.cget("width")), 124)
+            self.assertEqual(int(app._canvas.cget("height")), 124)
+            # Check the wider border and the visible part of each corner handle.
+            for x, y in ((10, 62), (114, 62), (62, 10), (62, 114)):
+                self.assertIn(app._rect_id, app._canvas.find_overlapping(x, y, x, y))
+            for corner, (x, y) in {"nw": (18, 18), "ne": (106, 18),
+                                   "sw": (18, 106), "se": (106, 106)}.items():
+                self.assertEqual(app._canvas.find_overlapping(x, y, x, y)[-1],
+                                 app._handle_ids[corner])
+            self.assertEqual(app._canvas.itemcget(app._rect_id, "fill"), "black")
+            self.assertEqual(app.overlay.attributes("-transparentcolor"), "black")
             self.assertFalse(app._canvas.tag_bind("border", "<Double-Button-1>"))
+            with patch("main.time.monotonic", return_value=0):
+                app._render()
+            wave = [app._canvas.itemcget(item, "fill") for item in app._wave_ids]
+            self.assertEqual(len(set(wave)), 64)
+            self.assertEqual(wave[0], UI_PRIMARY.lower())
+            for corner, index in {"nw": 0, "ne": 16, "se": 32, "sw": 48}.items():
+                fill = app._canvas.itemcget(app._handle_ids[corner], "fill")
+                self.assertEqual(fill, wave[(index + 32) % 64])
+                self.assertNotEqual(fill, wave[index])
+            positions = [app._canvas.coords(item) for item in app._wave_ids]
+            with patch("main.time.monotonic", return_value=2):
+                app._render()
+            self.assertEqual(app._canvas.itemcget(app._wave_ids[16], "fill"), wave[0])
+            self.assertNotEqual(app._canvas.itemcget(app._wave_ids[0], "fill"), wave[0])
+            self.assertEqual([app._canvas.coords(item) for item in app._wave_ids], positions)
+            for item in app._wave_ids:
+                self.assertIn("border", app._canvas.gettags(item))
+            self.assertEqual(app.region, [0, 0, 100, 100])
         finally:
             if app.root is not None:
                 app.root.destroy()
