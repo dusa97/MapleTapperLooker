@@ -39,9 +39,10 @@ On first launch or with `--reselect`, click-drag to select the initial region. E
 
 The application opens a normal dark Windows window (not a terminal) with detection status, a safe **Start watching** countdown, region selection, audio controls, and the six most recent detections or errors.
 
-- **Start watching** waits three seconds. Click your game target during the countdown to focus the game. Start cancels if the control window still has focus. **F9** starts/stops immediately.
+- **Start watching** waits three seconds. Click your game target during the countdown to focus the game. Start cancels if the control window still has focus. Press and release **F9** to start/stop. Focus the game before starting.
 - **Choose region** (or **F8**) opens the screen selector. Drag the green overlay border to move it and a corner to resize it.
 - If Tesseract is missing or unavailable, its diagnostic appears in Recent activity instead of a hidden console.
+- Close the control window to exit. Double-clicking the overlay does not close the application.
 
 ## Record a detection message
 

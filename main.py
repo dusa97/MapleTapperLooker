@@ -363,7 +363,6 @@ class OverlayApp:
         canvas.tag_bind("border", "<ButtonPress-1>", self._on_move_press)
         canvas.tag_bind("border", "<B1-Motion>", self._on_move_drag)
         canvas.tag_bind("border", "<ButtonRelease-1>", self._on_release)
-        canvas.tag_bind("border", "<Double-Button-1>", lambda _e: self._quit())
         for corner in ("nw", "ne", "sw", "se"):
             canvas.tag_bind(f"handle_{corner}", "<ButtonPress-1>",
                             lambda e, c=corner: self._on_resize_press(e, c))
@@ -600,6 +599,11 @@ class OverlayApp:
         detection, false-positive resume) changes the state."""
         if value and (self._selecting or not self._ocr_available):
             return
+        if (value and self.enter_spam_enabled and self.root is not None
+                and self.root.focus_displayof() is not None):
+            self.status_text = "Focus the game, then press F9."
+            self._log(self.status_text)
+            return
         if value == self.enter_on:
             return
         self.enter_on = value
@@ -620,8 +624,10 @@ class OverlayApp:
         self.hit = False
         self._prev_hit = False
         self.last_value = None
-        self._set_enter_on(not self.enter_on)
-        self.status_text = "watching…" if self.enter_on else "paused"
+        requested = not self.enter_on
+        self._set_enter_on(requested)
+        if self.enter_on == requested:
+            self.status_text = "watching…" if self.enter_on else "paused"
         self._log(f"F9: {'started' if self.enter_on else 'paused'}.")
 
     def _toggle_beep(self):
@@ -834,7 +840,8 @@ class OverlayApp:
         keyboard.add_hotkey("f12", self._audio_requests.put, args=(self.alert.reset,),
                             suppress=True, trigger_on_release=True)
         keyboard.add_hotkey(self.beep_hotkey, self._toggle_beep)
-        keyboard.add_hotkey(self.enter_hotkey, self._toggle_requests.put, args=(True,))
+        keyboard.add_hotkey(self.enter_hotkey, self._toggle_requests.put, args=(True,),
+                            suppress=True, trigger_on_release=True)
         print("[hotkey] F11: start recording; F11 again: save message. "
               "Repeat to replace it. See [audio] messages for recording status.", flush=True)
         print("[hotkey] F12: delete message and restore beep (mute unchanged).", flush=True)
@@ -1027,7 +1034,7 @@ if __name__ == "__main__":
         sys.exit(0 if value else 1)
 
     print(f"\n  Watching region={region} — drag the box to reposition, drag a corner to resize.")
-    print("  Double-click the border or press Escape to quit.\n")
+    print("  Close the control window to quit.\n")
     OverlayApp(region, enter_spam=not args.no_enter_spam,
                enter_hotkey=args.enter_hotkey,
                enter_interval=args.enter_interval,

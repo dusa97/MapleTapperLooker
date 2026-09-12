@@ -63,6 +63,30 @@ class ControlWindowTest(unittest.TestCase):
         lock.assert_not_called()
         self.assertIn("Start cancelled", app.status_text)
 
+    def test_repeated_f9_does_not_start_input_in_control_window(self):
+        app = self.app()
+        app.root.focus_displayof.return_value = app._start_button
+        with patch.object(app, "_lock_mouse") as lock:
+            for _ in range(10):
+                app._toggle_enter_spam()
+        self.assertFalse(app.enter_on)
+        self.assertTrue(app._running)
+        lock.assert_not_called()
+        app.root.destroy.assert_not_called()
+        self.assertIn("Focus the game", app.status_text)
+
+    def test_repeated_f9_starts_and_stops_outside_app(self):
+        app = self.app()
+        with patch.object(app, "_lock_mouse"), patch.object(app, "_unlock_mouse"):
+            for _ in range(5):
+                app._toggle_enter_spam()
+                self.assertTrue(app.enter_on)
+                app._toggle_enter_spam()
+                self.assertFalse(app.enter_on)
+        self.assertTrue(app._running)
+        self.assertEqual(app.status_text, "paused")
+        app.root.destroy.assert_not_called()
+
     def test_ocr_error_stops_automation(self):
         app = self.app()
         app.enter_on = True
@@ -83,6 +107,7 @@ class ControlWindowTest(unittest.TestCase):
             self.assertEqual(app._start_button.cget("text"), "Start watching")
             self.assertEqual(app._activity_list.cget("state"), "disabled")
             self.assertTrue(app.overlay.winfo_exists())
+            self.assertFalse(app._canvas.tag_bind("border", "<Double-Button-1>"))
         finally:
             if app.root is not None:
                 app.root.destroy()

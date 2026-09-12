@@ -43,7 +43,8 @@ class DetectionBeepTest(unittest.TestCase):
             register.assert_any_call(app.beep_hotkey, app._toggle_beep)
             register.assert_any_call("f8", app._selection_requested.set,
                                      suppress=True, trigger_on_release=True)
-            register.assert_any_call(app.enter_hotkey, app._toggle_requests.put, args=(True,))
+            register.assert_any_call(app.enter_hotkey, app._toggle_requests.put, args=(True,),
+                                     suppress=True, trigger_on_release=True)
             self.assertEqual(register.call_count, 5)
             app._quit()
             remove.assert_any_call("f8")
