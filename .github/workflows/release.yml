@@ -27,7 +27,7 @@ jobs:
         run: python -m pip install -r requirements.txt pyinstaller==6.16.0
 
       - name: Run tests
-        run: python -m unittest -v test_beep test_recorded_alert
+        run: python -m unittest discover -v
 
       - name: Test release notes
         shell: pwsh

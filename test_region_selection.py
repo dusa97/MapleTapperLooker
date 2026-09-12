@@ -50,7 +50,7 @@ class RegionSelectionTest(unittest.TestCase):
 
     def test_reselection_stops_spam_and_reuses_selector(self):
         app = OverlayApp((0, 0, 100, 100))
-        app.root, app._panel = Mock(), Mock()
+        app.root, app.overlay = Mock(), Mock()
         app.enter_on = True
         with patch("main.RegionSelector") as selector, \
              patch.object(app, "_unlock_mouse") as unlock, \
