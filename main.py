@@ -234,6 +234,7 @@ class OverlayApp:
         self.enter_interval     = enter_interval
         self.click_interval     = click_interval
         self.enter_on           = False
+        self._lock_rect         = None   # active ClipCursor rect while enter_on is True, re-applied by _spam_loop
         self._running           = True
         self._spam_thread       = None
 
@@ -397,7 +398,11 @@ class OverlayApp:
 
     def _lock_mouse(self):
         """Pin the cursor to its current on-screen position (Windows only) so
-        it can't drift off the click target while spam is running."""
+        it can't drift off the click target while spam is running. Windows
+        silently clears ClipCursor on focus changes — which happens
+        constantly here since the game, not this overlay, is the foreground
+        window while playing — so the spam loop calls _reassert_mouse_lock()
+        on a short timer to keep re-applying the same rect."""
         if platform.system() != "Windows":
             return
         try:
@@ -405,10 +410,22 @@ class OverlayApp:
             from ctypes import wintypes
             pt = wintypes.POINT()
             ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
-            rect = wintypes.RECT(pt.x, pt.y, pt.x + 1, pt.y + 1)
-            ctypes.windll.user32.ClipCursor(ctypes.byref(rect))
+            self._lock_rect = wintypes.RECT(pt.x, pt.y, pt.x + 1, pt.y + 1)
+            ctypes.windll.user32.ClipCursor(ctypes.byref(self._lock_rect))
         except Exception as e:
             print(f"  [warning] Could not lock mouse position: {e}", flush=True)
+
+    def _reassert_mouse_lock(self):
+        """Re-apply the already-captured clip rect (does NOT re-read the
+        current cursor position, so a reset-then-drift window can't shift
+        the locked point)."""
+        if platform.system() != "Windows" or self._lock_rect is None:
+            return
+        try:
+            import ctypes
+            ctypes.windll.user32.ClipCursor(ctypes.byref(self._lock_rect))
+        except Exception:
+            pass
 
     def _unlock_mouse(self):
         if platform.system() != "Windows":
@@ -418,6 +435,7 @@ class OverlayApp:
             ctypes.windll.user32.ClipCursor(None)
         except Exception:
             pass
+        self._lock_rect = None
 
     def _set_enter_on(self, value: bool):
         """Single place that flips enter_on so the mouse lock always tracks
@@ -471,11 +489,19 @@ class OverlayApp:
         """
         last_enter_time = 0.0
         last_click_time = 0.0
+        last_lock_refresh = 0.0
         next_enter_gap = self._jittered(self.enter_interval)
         next_click_gap = self._jittered(self.click_interval)
         while self._running:
             if self.enter_on and not self.hit:
                 now = time.perf_counter()
+                # Re-assert the mouse lock a few times a second — Windows
+                # clears ClipCursor on focus changes, which happen
+                # continuously while the game (not this overlay) holds
+                # foreground focus during actual play.
+                if now - last_lock_refresh >= 0.05:
+                    self._reassert_mouse_lock()
+                    last_lock_refresh = now
                 if now - last_enter_time >= next_enter_gap:
                     pydirectinput.press("enter")
                     last_enter_time = now
