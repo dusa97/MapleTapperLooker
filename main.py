@@ -332,6 +332,19 @@ def load_region() -> tuple | None:
             pass
     return None
 
+
+def default_region() -> tuple:
+    """A harmless starting box for first launch (nothing saved yet), so the
+    control window opens immediately instead of blocking behind a full-screen
+    click-drag prompt — the user sets the real region afterward via 'Choose
+    region' (F8) or 'Auto-locate' (F7), both of which stay inside the app."""
+    with mss.MSS() as sct:
+        desktop = sct.monitors[0]
+    w, h = 200, 60
+    x = desktop["left"] + (desktop["width"] - w) // 2
+    y = desktop["top"] + (desktop["height"] - h) // 2
+    return (x, y, w, h)
+
 # ── Persistent overlay rectangle ────────────────────────────────────────────
 
 class OverlayApp:
@@ -350,8 +363,10 @@ class OverlayApp:
                  enter_interval: float = ENTER_INTERVAL,
                  click_interval: float = CLICK_INTERVAL,
                  beep_hotkey: str = BEEP_HOTKEY,
-                 min_read_gap: float = MIN_READ_GAP):
+                 min_read_gap: float = MIN_READ_GAP,
+                 is_placeholder_region: bool = False):
         self.region      = list(region)   # [x, y, w, h] — mutable, moved/resized live
+        self._is_placeholder_region = is_placeholder_region   # True until the user sets a real region
         self.status_text = "paused"
         self.hit          = False
         self._prev_hit    = False   # edge-detect found/not-found so beep+stop fires once per detection
@@ -516,7 +531,10 @@ class OverlayApp:
         scroll.pack(side="right", fill="y", pady=(0, 12))
         self._activity_list.config(yscrollcommand=scroll.set)
         self._activity_list.pack(fill="both", expand=True, padx=12, pady=(0, 12))
-        self._log("Ready. Select the number region, then start watching.")
+        if self._is_placeholder_region:
+            self._log("No saved region yet — press 'Choose region' (F8) or 'Auto-locate' (F7) to set one.")
+        else:
+            self._log("Ready. Select the number region, then start watching.")
 
         overlay = tk.Toplevel(root)
         overlay.overrideredirect(True)
@@ -701,6 +719,7 @@ class OverlayApp:
         if region is not None:
             self.region = list(region)
             save_region(region)
+            self._is_placeholder_region = False
         self._selector = None
         self._region_revision += 1
         self.hit = self._prev_hit = False
@@ -775,6 +794,10 @@ class OverlayApp:
         it, no matter which of the several call sites (hotkey, auto-stop on
         detection, false-positive resume) changes the state."""
         if value and (self._selecting or not self._ocr_available):
+            return
+        if value and self._is_placeholder_region:
+            self.status_text = "No region set — press 'Choose region' (F8) or 'Auto-locate' (F7) first."
+            self._log(self.status_text)
             return
         if (value and self.enter_spam_enabled and self.root is not None
                 and self.root.focus_displayof() is not None):
@@ -1151,6 +1174,7 @@ class OverlayApp:
 
         self.region = [left, top, right - left, bottom - top]
         save_region(tuple(self.region))
+        self._is_placeholder_region = False
         self._region_revision += 1
         self.hit = self._prev_hit = False
         self.last_value = None
@@ -1374,11 +1398,18 @@ if __name__ == "__main__":
     else:
         region = load_region()
 
-    if region is None or args.reselect:
+    # --reselect is an explicit ask, and --once has no GUI to fall back on, so
+    # both still get the blocking full-screen selector. A first launch with
+    # nothing saved yet does NOT — that used to drop straight into a
+    # full-screen click-drag prompt before the control window ever appeared,
+    # which read as the app randomly launching a screenshot tool. It now
+    # starts with a harmless placeholder box instead, so the window opens
+    # immediately and region selection stays an in-app action (F8/F7).
+    if args.reselect or (region is None and args.once):
         print("  Opening region selector...")
         print()
         region = _open_selector()
-    else:
+    elif region is not None:
         print(f"  Last region: left={region[0]}  top={region[1]}  width={region[2]}  height={region[3]}")
 
     if args.once:
@@ -1386,9 +1417,15 @@ if __name__ == "__main__":
         print(f"detected: {value}" if value else "no '+<number>' found")
         sys.exit(0 if value else 1)
 
+    is_placeholder = region is None
+    if is_placeholder:
+        region = default_region()
+        print(f"  No saved region yet — starting with a placeholder box at {region}. "
+              "Use 'Choose region' (F8) or 'Auto-locate' (F7) in the app to set the real one.")
+
     print(f"\n  Watching region={region} — drag the box to reposition, drag a corner to resize.")
     print("  Close the control window to quit.\n")
-    OverlayApp(region, enter_spam=not args.no_enter_spam,
+    OverlayApp(region, is_placeholder_region=is_placeholder, enter_spam=not args.no_enter_spam,
                enter_hotkey=args.enter_hotkey,
                enter_interval=args.enter_interval,
                click_interval=args.click_interval,
