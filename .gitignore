@@ -7,3 +7,5 @@ _internal/
 .idea/
 .codegraph/
 graphify-out/
+detection_message.wav
+detection_message.tmp.wav
