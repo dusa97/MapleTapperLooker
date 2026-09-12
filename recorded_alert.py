@@ -33,6 +33,7 @@ class RecordedAlert:
             temporary = self.path.with_suffix(".tmp.wav")
             try:
                 if not self.recording:
+                    print("[audio] F11 received. Opening microphone...", flush=True)
                     import winsound
                     winsound.PlaySound(None, 0)
                     self._command("open new type waveaudio alias maple_message")
@@ -40,6 +41,7 @@ class RecordedAlert:
                     self.recording = True
                     self.status = "REC - F11: stop"
                 else:
+                    print("[audio] F11 received. Saving message...", flush=True)
                     self._command("stop maple_message")
                     self._command(f'save maple_message "{temporary}"')
                     self._command("close maple_message")

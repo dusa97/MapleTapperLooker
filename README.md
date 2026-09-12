@@ -21,6 +21,7 @@ python main.py
 
 **F10** mutes both the message and the beep. **F9** toggles Enter and click automation.
 Audio hotkeys also work with `--no-enter-spam`.
+The application blocks F11 from reaching other programs, so it does not toggle their fullscreen mode.
 
 The recording stays in `detection_message.wav` beside the script or executable, including after restart.
 A failed recording keeps the previous message. Detection audio is silent while recording.

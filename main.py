@@ -37,6 +37,7 @@ import sys
 import time
 import json
 import random
+import queue
 import platform
 import threading
 import tkinter as tk
@@ -260,6 +261,7 @@ class OverlayApp:
         self.beep_hotkey  = beep_hotkey
         self.beep_enabled = True
         self.alert = RecordedAlert(_BASE_DIR / "detection_message.wav")
+        self._record_requests = queue.SimpleQueue()
 
     def _build_window(self):
         b = self.BORDER
@@ -611,6 +613,13 @@ class OverlayApp:
     def _render(self):
         """Fast, OCR-free UI repaint tick — just reflects whatever state the
         background OCR loop (or the spam loop) last wrote."""
+        # Keep microphone operations outside the Windows keyboard hook.
+        try:
+            self._record_requests.get_nowait()
+        except queue.Empty:
+            pass
+        else:
+            self.alert.toggle()
         color = self.COLOR_HIT if self.hit else self.COLOR
         if self._canvas:
             self._canvas.itemconfig("border", outline=color)
@@ -625,7 +634,8 @@ class OverlayApp:
 
     def run(self):
         root = self._build_window()
-        keyboard.add_hotkey("f11", self.alert.toggle, trigger_on_release=True)
+        keyboard.add_hotkey("f11", self._record_requests.put, args=(None,),
+                            suppress=True, trigger_on_release=True)
         keyboard.add_hotkey(self.beep_hotkey, self._toggle_beep)
         print("[hotkey] F11: start recording; F11 again: save message. "
               "Repeat to replace it. See [audio] messages for recording status.", flush=True)
