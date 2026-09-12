@@ -24,8 +24,16 @@ The saved message replaces the detection beep. Repeat to replace the message.
 F12 deletes the saved message and restores the beep.
 F10 mutes both the message and the beep. Recording requires Windows.
 
+Press F7 to auto-locate the "Combat Power Change" panel: screenshots the
+desktop, finds the panel via template matching against
+assets/reference/combat_power_label.png, snaps the box onto the number field
+beneath it, and moves the cursor onto the "Reset x1" button — no manual
+dragging or aiming needed. For now this only recognizes that one specific
+reset dialog (the template is a crop of its exact label) — it won't find
+any other popup/reset screen.
+
 Requirements:
-    pip install pillow pytesseract mss keyboard pydirectinput
+    pip install pillow pytesseract mss keyboard pydirectinput opencv-python numpy
 Tesseract OCR engine:
     - Windows : https://github.com/UB-Mannheim/tesseract/wiki
     - macOS   : brew install tesseract
@@ -36,6 +44,7 @@ import re
 import sys
 import time
 import json
+import math
 import random
 import queue
 import platform
@@ -50,6 +59,8 @@ from recorded_alert import RecordedAlert
 try:
     import mss              # screen capture — ~2x faster and far more consistent than pyautogui.screenshot
     import pytesseract
+    import cv2              # template matching for F7 auto-locate
+    import numpy as np
     from PIL import Image, ImageDraw, ImageTk
     import keyboard        # global hotkey to start/stop Enter+click spam — works even while the game has focus
     import pydirectinput   # DirectInput-style key injection — see the spam-loop comment below
@@ -143,6 +154,40 @@ SPAM_JITTER     = 0.3     # +/- fraction of randomness applied to each interval 
                           # so presses/clicks don't land on a perfectly robotic fixed cadence
 BEEP_HOTKEY     = "f10"   # mutes/unmutes the detection beep — starts UNMUTED
 
+AUTOLOCATE_HOTKEY = "f7"   # scans the screen for the Combat Power Change panel and snaps the box + cursor to it
+LABEL_TEMPLATE_PATH = Path(__file__).parent / "assets" / "reference" / "combat_power_label.png"
+AUTOLOCATE_MIN_CONFIDENCE = 0.75    # cv2.TM_CCOEFF_NORMED score below this is treated as "not found"
+AUTOLOCATE_SCALES = np.linspace(0.5, 2.0, 31)   # search these template scales to handle different UI/DPI scaling
+# Both the BEFORE and AFTER panels show a "Combat Power Change" label (BEFORE's value is always 0), so
+# template matching finds two near-identical matches — the rightmost one is always the AFTER panel, which
+# is the one that actually carries a value. These ratios (label size -> number field offset/size) were
+# measured directly off assets/reference/combat_power_label.png vs the number field beneath it in the
+# screenshot it was cropped from, expressed relative to the matched label's own size so they still hold
+# at whatever scale the label was actually found at.
+LABEL_TO_NUMBER_DX_RATIO = -11 / 146
+LABEL_TO_NUMBER_DY_RATIO = 27 / 10
+NUMBER_WIDTH_RATIO       = 154 / 146
+NUMBER_HEIGHT_RATIO      = 22 / 10
+# The number field's exact measured height above is a snug fit around the digits, which was clipping
+# their tops/bottoms just enough to hurt OCR — pad it out top and bottom by this fraction of the label's
+# own height on each side.
+NUMBER_VERTICAL_PAD_RATIO = 0.6
+
+# Same idea for the "Reset x1" button beneath the panels — measured the same way (label top-left to
+# button top-left), so the cursor can be moved onto the actual button (center of this rect) instead of
+# onto the number field.
+LABEL_TO_RESET_DX_RATIO = -176 / 146
+LABEL_TO_RESET_DY_RATIO = 131 / 10
+RESET_WIDTH_RATIO       = 247 / 146
+RESET_HEIGHT_RATIO      = 29 / 10
+
+AUTOLOCATE_MOVE_DURATION = 0.55   # seconds to glide the cursor to the Reset button, instead of teleporting
+AUTOLOCATE_MOVE_STEPS    = 45     # interpolation steps across that duration — pydirectinput's own
+                                  # duration/tween params are accepted but silently ignored (always an
+                                  # instant jump), so the easing is done by hand here
+AUTOLOCATE_MOVE_JITTER_PX = 4     # max sideways wobble off the straight-line path, shrinking to 0 as it
+                                  # nears the target — reads as a human hand instead of a robotic slide
+
 # psm 6 = "uniform block of text" — the box may contain the label line above
 # the number, so don't assume a single line. Whitelist keeps OCR focused on
 # the characters a delta number can actually contain. Plain grayscale+upscale
@@ -185,6 +230,29 @@ def read_delta(region, sct=None) -> str | None:
     text = pytesseract.image_to_string(proc, config=OCR_CONFIG)
     m = PLUS_NUMBER_RE.search(text.replace(" ", ""))
     return m.group(0) if m else None
+
+
+def smooth_move_to(target_x, target_y, duration=AUTOLOCATE_MOVE_DURATION, steps=AUTOLOCATE_MOVE_STEPS,
+                    jitter_px=AUTOLOCATE_MOVE_JITTER_PX):
+    """Glide the cursor to (target_x, target_y) instead of teleporting —
+    pydirectinput.moveTo's own duration/tween arguments are accepted but
+    silently ignored (its implementation always jumps instantly), so this is
+    done by hand: ease-in-out timing (slow to start, fastest in the middle,
+    slow to settle) plus a little random sideways wobble off the straight
+    line — shrinking to zero as it nears the target so it still lands
+    precisely — reads as a human hand rather than a robotic slide."""
+    start_x, start_y = pydirectinput.position()
+    dx, dy = target_x - start_x, target_y - start_y
+    dist = math.hypot(dx, dy)
+    perp_x, perp_y = (-dy / dist, dx / dist) if dist > 0 else (0.0, 0.0)
+    for i in range(1, steps + 1):
+        t = i / steps
+        eased = (1 - math.cos(math.pi * t)) / 2
+        wobble = random.uniform(-1, 1) * jitter_px * (1 - t)
+        x = round(start_x + dx * eased + perp_x * wobble)
+        y = round(start_y + dy * eased + perp_y * wobble)
+        pydirectinput.moveTo(x, y)
+        time.sleep(duration / steps)
 
 
 def beep():
@@ -285,6 +353,9 @@ class OverlayApp:
         self._selector = None
         self._selecting = False
         self._region_revision = 0
+        self._autolocate_requested = threading.Event()
+        self._label_template_gray = None
+        self._autolocate_available = True
 
     def _build_window(self):
         """Build the normal taskbar window plus the capture-safe screen overlay."""
@@ -335,6 +406,11 @@ class OverlayApp:
         self._start_button.pack(side="left")
         self._button(buttons, "Choose region  (F8)", self._request_selection,
                      UI_BUTTON, UI_TEXT).pack(side="left", padx=(10, 0))
+        self._button(buttons, "Auto-locate  (F7)", self._request_autolocate,
+                     UI_BUTTON, UI_TEXT).pack(side="left", padx=(10, 0))
+        tk.Label(status, text="Auto-locate currently only recognizes the Combat Power reset dialog.",
+                 fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 8), anchor="center",
+                 justify="center", wraplength=450).pack(fill="x", padx=16, pady=(0, 12))
 
         audio = self._card(outer)
         audio.pack(fill="x", pady=(14, 0))
@@ -441,6 +517,9 @@ class OverlayApp:
 
     def _request_selection(self):
         self._selection_requested.set()
+
+    def _request_autolocate(self):
+        self._autolocate_requested.set()
 
     def _request_audio(self, action):
         self._audio_requests.put(action)
@@ -574,7 +653,7 @@ class OverlayApp:
         self._running = False
         self._unlock_mouse()
         self.alert.close()
-        hotkeys = ["f8", "f11", "f12", self.beep_hotkey, self.enter_hotkey]
+        hotkeys = ["f7", "f8", "f11", "f12", self.beep_hotkey, self.enter_hotkey]
         for hk in hotkeys:
             try:
                 keyboard.remove_hotkey(hk)
@@ -819,6 +898,9 @@ class OverlayApp:
         if self._selection_requested.is_set():
             self._selection_requested.clear()
             self._start_selection()
+        if self._autolocate_requested.is_set():
+            self._autolocate_requested.clear()
+            self._auto_locate()
         # Keep microphone operations outside the Windows keyboard hook.
         try:
             action = self._audio_requests.get_nowait()
@@ -885,12 +967,107 @@ class OverlayApp:
         else:
             self._log("Tesseract ready.")
 
+    def _check_autolocate(self):
+        try:
+            self._label_template_gray = np.array(Image.open(LABEL_TEMPLATE_PATH).convert("L"))
+        except Exception as error:
+            self._autolocate_available = False
+            self._log(f"Auto-locate unavailable: {error}")
+        else:
+            self._log("Auto-locate ready (currently recognizes only the Combat Power reset dialog).")
+
+    def _auto_locate(self):
+        """F7: screenshot the whole desktop, find the 'Combat Power Change'
+        label via multi-scale template matching, snap the box onto the number
+        field beneath it, and move the real cursor onto the Reset button.
+        Both the BEFORE and AFTER panels show this label — see AUTOLOCATE
+        constants above — so among the matches found at the best-scoring
+        scale, the rightmost one (the AFTER panel) is the one used."""
+        if not self._autolocate_available or self._selecting:
+            return
+        self._cancel_start()
+        self._set_enter_on(False)
+        self._unlock_mouse()
+        self._log("Auto-locate: scanning the screen...")
+
+        with mss.MSS() as sct:
+            desktop = sct.monitors[0]
+            shot = sct.grab(desktop)
+        full_gray = cv2.cvtColor(
+            np.array(Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")),
+            cv2.COLOR_RGB2GRAY)
+        tmpl_gray = self._label_template_gray
+        th, tw = tmpl_gray.shape
+
+        best_val, best_res, best_shape = -1.0, None, None
+        for scale in AUTOLOCATE_SCALES:
+            rt = cv2.resize(tmpl_gray, (max(1, round(tw * scale)), max(1, round(th * scale))))
+            if rt.shape[0] > full_gray.shape[0] or rt.shape[1] > full_gray.shape[1]:
+                continue
+            res = cv2.matchTemplate(full_gray, rt, cv2.TM_CCOEFF_NORMED)
+            _, maxval, _, _ = cv2.minMaxLoc(res)
+            if maxval > best_val:
+                best_val, best_res, best_shape = maxval, res, rt.shape
+
+        if best_val < AUTOLOCATE_MIN_CONFIDENCE:
+            self._log(f"Auto-locate: panel not found (best match {best_val:.2f}).")
+            return
+
+        # Pull out every distinct match at this scale (not just the global
+        # best) by repeatedly taking the max and blanking a template-sized
+        # area around it, so the BEFORE panel's near-identical label doesn't
+        # get missed just because it scored a hair lower than the AFTER one.
+        sh, sw = best_shape
+        work = best_res.copy()
+        peaks = []
+        for _ in range(4):
+            _, maxval, _, maxloc = cv2.minMaxLoc(work)
+            if maxval < AUTOLOCATE_MIN_CONFIDENCE:
+                break
+            peaks.append(maxloc)
+            x, y = maxloc
+            x0, x1 = max(0, x - sw // 2), min(work.shape[1], x + sw // 2)
+            y0, y1 = max(0, y - sh // 2), min(work.shape[0], y + sh // 2)
+            work[y0:y1, x0:x1] = -1.0
+
+        lx, ly = max(peaks, key=lambda p: p[0])   # rightmost match = the AFTER panel
+        lx += desktop["left"]
+        ly += desktop["top"]
+
+        nx = round(lx + LABEL_TO_NUMBER_DX_RATIO * sw)
+        ny = round(ly + LABEL_TO_NUMBER_DY_RATIO * sh)
+        nw = round(sw * NUMBER_WIDTH_RATIO)
+        nh = round(sh * NUMBER_HEIGHT_RATIO)
+        pad = round(sh * NUMBER_VERTICAL_PAD_RATIO)
+        ny -= pad
+        nh += pad * 2
+
+        self.region = [nx, ny, nw, nh]
+        save_region(tuple(self.region))
+        self._region_revision += 1
+        self.hit = self._prev_hit = False
+        self.last_value = None
+        self.status_text = "paused"
+        self._sync_geometry()
+        self._log(f"Auto-locate: found panel ({best_val:.2f} confidence), moved box to {tuple(self.region)}.")
+
+        rx = round(lx + LABEL_TO_RESET_DX_RATIO * sw)
+        ry = round(ly + LABEL_TO_RESET_DY_RATIO * sh)
+        rw = round(sw * RESET_WIDTH_RATIO)
+        rh = round(sh * RESET_HEIGHT_RATIO)
+        threading.Thread(target=smooth_move_to,
+                          args=(rx + rw // 2, ry + rh // 2), daemon=True).start()
+
     def run(self):
         root = self._build_window()
         self._check_tesseract()
+        self._check_autolocate()
         keyboard.add_hotkey("f8", self._selection_requested.set,
                             suppress=True, trigger_on_release=True)
         print("[hotkey] F8: draw a new region; Escape: cancel selection.", flush=True)
+        keyboard.add_hotkey("f7", self._autolocate_requested.set,
+                            suppress=True, trigger_on_release=True)
+        print("[hotkey] F7: auto-locate the Combat Power Change panel and move the box + cursor there.", flush=True)
         keyboard.add_hotkey("f11", self._audio_requests.put, args=(self.alert.toggle,),
                             suppress=True, trigger_on_release=True)
         keyboard.add_hotkey("f12", self._audio_requests.put, args=(self.alert.reset,),
