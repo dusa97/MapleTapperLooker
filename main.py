@@ -393,7 +393,14 @@ class OverlayApp:
 
     def _toggle_enter_spam(self):
         """Hotkey callback (runs on keyboard's own thread) — just flips a flag;
-        the spam thread and the UI poll both pick it up on their next tick."""
+        the spam thread and the UI poll both pick it up on their next tick.
+        Re-enabling is blocked while a detection is still showing, so F9
+        can't immediately restart spam into the same still-visible popup —
+        it only turns off, then waits for self.hit to clear."""
+        if not self.enter_on and self.hit:
+            print(f"\n  [hotkey {self.enter_hotkey.upper()}] Ignored — a '+' is still showing; "
+                  f"wait for it to clear before re-enabling.\n", flush=True)
+            return
         self.enter_on = not self.enter_on
         print(f"\n  [hotkey {self.enter_hotkey.upper()}] Enter+Left-Click spam "
               f"{'ON' if self.enter_on else 'OFF'}\n", flush=True)
@@ -427,6 +434,13 @@ class OverlayApp:
                     last_click_time = now
             time.sleep(0.001)
 
+    def _read_with_retry(self, sct):
+        try:
+            return read_delta(tuple(self.region), sct=sct)
+        except Exception as e:
+            print(f"  [ocr error] {e}", flush=True)
+            return None
+
     def _ocr_loop(self):
         """
         Runs on its own thread, back-to-back with no artificial delay (unless
@@ -439,37 +453,51 @@ class OverlayApp:
         with mss.MSS() as sct:
             while self._running:
                 t0 = time.perf_counter()
-                try:
-                    value = read_delta(tuple(self.region), sct=sct)
-                except Exception as e:
-                    value = None
-                    print(f"  [ocr error] {e}", flush=True)
+                value = self._read_with_retry(sct)
 
-                if value:
+                if value and not self._prev_hit:
+                    # New detection (edge-triggered, so a popup that stays on
+                    # screen for several reads doesn't re-trigger this every
+                    # frame). Stop the spam immediately so it doesn't click
+                    # through the popup, then take one more independent read
+                    # before believing it — a single stray OCR frame was
+                    # producing occasional false positives, so only a second
+                    # confirming read earns the beep.
+                    was_spamming = self.enter_on
+                    self.enter_on = False
+                    self.hit = True
+                    self.status_text = "confirming…"
+
+                    confirm = self._read_with_retry(sct)
+                    if confirm:
+                        value = confirm
+                        self.status_text = value
+                        self.last_value = value
+                        print(f"[{time.strftime('%H:%M:%S')}] detected: {value}", flush=True)
+                        if was_spamming and self.beep_enabled:
+                            now = time.perf_counter()
+                            if now - self.last_beep_time >= BEEP_COOLDOWN:
+                                threading.Thread(target=beep, daemon=True).start()
+                                self.last_beep_time = now
+                        if was_spamming:
+                            print(f"  [enter+click] OFF — detected {value}. "
+                                  f"Press {self.enter_hotkey.upper()} to re-enable.\n", flush=True)
+                    else:
+                        print("  [ocr] ignored a one-frame false positive.", flush=True)
+                        value = None
+                        self.hit = False
+                        self.status_text = "watching…"
+                        self.last_value = None
+                        self.enter_on = was_spamming
+                elif value:
                     self.hit = True
                     self.status_text = value
-                    print(f"[{time.strftime('%H:%M:%S')}] detected: {value}", flush=True)
                     self.last_value = value
                 else:
                     self.hit = False
                     self.status_text = "watching…"
                     self.last_value = None
 
-                # Edge-triggered: fire only on the transition into a detection,
-                # so a popup that stays on screen for several reads only
-                # beeps/stops once. The beep only fires when spam was actually
-                # running (self.enter_on) — a detection while idle (F9 off)
-                # is silent, per request.
-                if self.hit and not self._prev_hit:
-                    if self.enter_on:
-                        if self.beep_enabled:
-                            now = time.perf_counter()
-                            if now - self.last_beep_time >= BEEP_COOLDOWN:
-                                threading.Thread(target=beep, daemon=True).start()
-                                self.last_beep_time = now
-                        self.enter_on = False
-                        print(f"  [enter+click] OFF — detected {value}. "
-                              f"Press {self.enter_hotkey.upper()} to re-enable.\n", flush=True)
                 self._prev_hit = self.hit
 
                 if self.min_read_gap > 0:
