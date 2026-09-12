@@ -54,6 +54,26 @@ from tkinter import font as tkfont
 from tkinter import messagebox, ttk
 from pathlib import Path
 
+# ── DPI awareness (Windows) ──────────────────────────────────────────────────
+# Must be set before any window/screen API runs (Tk included), so every
+# screen-coordinate value in this app agrees on physical pixels: mss
+# screenshots, pydirectinput's cursor moves (which read GetSystemMetrics),
+# and Tk's own window geometry. A DPI-unaware process gets a scaled/
+# virtualized view of the screen from Windows for GetSystemMetrics, while mss
+# still captures true physical pixels regardless — so on any display running
+# above 100% scaling, a screenshot-based coordinate and a cursor move to that
+# same coordinate silently disagree, showing up as the cursor landing
+# consistently off to one side of wherever auto-locate aims it.
+if platform.system() == "Windows":
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)   # PROCESS_PER_MONITOR_DPI_AWARE
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
 from recorded_alert import RecordedAlert
 
 try:
@@ -173,13 +193,22 @@ NUMBER_HEIGHT_RATIO      = 22 / 10
 # own height on each side.
 NUMBER_VERTICAL_PAD_RATIO = 0.6
 
-# Same idea for the "Reset x1" button beneath the panels — measured the same way (label top-left to
-# button top-left), so the cursor can be moved onto the actual button (center of this rect) instead of
-# onto the number field.
-LABEL_TO_RESET_DX_RATIO = -176 / 146
-LABEL_TO_RESET_DY_RATIO = 131 / 10
-RESET_WIDTH_RATIO       = 247 / 146
-RESET_HEIGHT_RATIO      = 29 / 10
+# Same idea for the Reset button(s) beneath the panels — measured the same way (BEFORE label
+# top-left to button top-left), so the cursor can be moved onto the actual button (center of this
+# rect) instead of onto the number field. The button row is centered under the WHOLE dialog rather
+# than fixed relative to the BEFORE panel, so its offset from BEFORE's label genuinely differs
+# between a Reset x1 dialog (2 panels wide, measured from assets/reference/combat_power_label.png's
+# own screenshot) and a Reset x3 dialog (4 panels wide, measured from a Reset x3 screenshot) — one
+# set of ratios does not work for both, so _auto_locate() picks between them by detected layout.
+LABEL_TO_RESET_X1_DX_RATIO = 68 / 146
+LABEL_TO_RESET_X1_DY_RATIO = 131 / 10
+RESET_X1_WIDTH_RATIO       = 247 / 146
+RESET_X1_HEIGHT_RATIO      = 29 / 10
+
+LABEL_TO_RESET_X3_DX_RATIO = 825 / 277
+LABEL_TO_RESET_X3_DY_RATIO = 246 / 19
+RESET_X3_WIDTH_RATIO       = 344 / 277
+RESET_X3_HEIGHT_RATIO      = 55 / 19
 
 AUTOLOCATE_MOVE_DURATION = 0.55   # seconds to glide the cursor to the Reset button, instead of teleporting
 AUTOLOCATE_MOVE_STEPS    = 45     # interpolation steps across that duration — pydirectinput's own
@@ -984,12 +1013,16 @@ class OverlayApp:
     def _auto_locate(self):
         """F7: screenshot the whole desktop, find the 'Combat Power Change'
         label via multi-scale template matching, snap the box onto the AFTER
-        number field(s), and move the real cursor onto the Reset button.
-        Every panel shows this label — BEFORE and however many AFTER panels
-        there are (1 for Reset x1, 3 for Reset x3) — and they always lay out
-        left-to-right with BEFORE first, so the leftmost match is dropped and
-        one box is sized to cover the rest: just the single number on x1, or
-        all of them at once on x3."""
+        number field(s), and move the real cursor onto the matching Reset
+        button. Every panel shows this label — BEFORE and however many AFTER
+        panels there are (1 for Reset x1, 3 for Reset x3) — and they always
+        lay out left-to-right with BEFORE first, so the leftmost match is
+        dropped and one box is sized to cover the rest: just the single
+        number on x1, or all of them at once on x3. The detected panel count
+        also picks which Reset button (x1 or x3) the cursor goes to — the
+        button row is centered under the whole dialog rather than fixed
+        relative to BEFORE, so its offset genuinely differs between the two
+        dialog widths."""
         if not self._autolocate_available or self._selecting:
             return
         self._cancel_start()
@@ -1078,12 +1111,22 @@ class OverlayApp:
         self._log(f"Auto-locate: found {len(after_peaks)} AFTER panel(s) "
                   f"({best_val:.2f} confidence), moved box to {tuple(self.region)}.")
 
+        if len(after_peaks) == 1:
+            dx_ratio, dy_ratio = LABEL_TO_RESET_X1_DX_RATIO, LABEL_TO_RESET_X1_DY_RATIO
+            w_ratio, h_ratio = RESET_X1_WIDTH_RATIO, RESET_X1_HEIGHT_RATIO
+            button_name = "Reset x1"
+        else:
+            dx_ratio, dy_ratio = LABEL_TO_RESET_X3_DX_RATIO, LABEL_TO_RESET_X3_DY_RATIO
+            w_ratio, h_ratio = RESET_X3_WIDTH_RATIO, RESET_X3_HEIGHT_RATIO
+            button_name = "Reset x3"
+
         lx = before_x + desktop["left"]
         ly = before_y + desktop["top"]
-        rx = round(lx + LABEL_TO_RESET_DX_RATIO * sw)
-        ry = round(ly + LABEL_TO_RESET_DY_RATIO * sh)
-        rw = round(sw * RESET_WIDTH_RATIO)
-        rh = round(sh * RESET_HEIGHT_RATIO)
+        rx = round(lx + dx_ratio * sw)
+        ry = round(ly + dy_ratio * sh)
+        rw = round(sw * w_ratio)
+        rh = round(sh * h_ratio)
+        self._log(f"Auto-locate: moving cursor to {button_name}.")
         threading.Thread(target=smooth_move_to,
                           args=(rx + rw // 2, ry + rh // 2), daemon=True).start()
 
