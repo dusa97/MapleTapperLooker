@@ -6,9 +6,11 @@ bold white text with a black outline on a dark green/olive panel).
 
 Position the box over the number, and it's continuously screenshotted,
 preprocessed (upscaled + grayscaled), and OCR'd with Tesseract. Whenever a
-"+<digits>" match appears, it's shown in the box and printed to the console;
-a beep fires once per new value (not every frame the popup happens to still
-be on screen). The OCR loop runs on its own background thread, back-to-back
+"+<digits>" match appears, a separate draggable status panel (off to the
+side, so it never covers the box or gets OCR'd itself) shows it and it's
+printed to the console; a beep fires once per new value (not every frame
+the popup happens to still be on screen). The OCR loop runs on its own
+background thread, back-to-back
 with no artificial delay between reads, so detection latency is bounded only
 by how fast screen-capture + Tesseract actually are (~150ms/read) instead of
 also waiting out a fixed poll interval on top of that.
@@ -211,10 +213,14 @@ class OverlayApp:
         self.root         = None
         self._canvas      = None
         self._rect_id     = None
-        self._text_id     = None
         self._handle_ids  = {}
         self._drag        = {}
         self._ocr_thread  = None
+        self._panel        = None
+        self._panel_status = None
+        self._panel_enter  = None
+        self._panel_beep   = None
+        self._panel_drag   = None
 
         # Enter+Left-Click spam — starts OFF, F9 toggles it on; a detection
         # beeps once (unless muted) and turns it back off until F9 is pressed
@@ -244,9 +250,6 @@ class OverlayApp:
         canvas.pack()
         self._rect_id = canvas.create_rectangle(0, 0, 0, 0, outline=self.COLOR,
                                                  width=b * 2, fill="black", tags="border")
-        self._text_id = canvas.create_text(0, 0, text=self.status_text, anchor="nw",
-                                            fill=self.COLOR, font=("Segoe UI", 11, "bold"),
-                                            width=500, tags="status")
         for corner in ("nw", "ne", "sw", "se"):
             hid = canvas.create_rectangle(0, 0, 0, 0, fill=self.COLOR, outline="",
                                            tags=("handle", f"handle_{corner}"))
@@ -268,7 +271,46 @@ class OverlayApp:
         self.root    = root
         self._sync_geometry()
         self._exclude_from_capture()
+        self._build_status_panel(root)
         return root
+
+    def _build_status_panel(self, root):
+        """A small always-on-top panel off to the side showing run status —
+        separate from the box itself, which now stays a plain colored
+        rectangle. Drag anywhere on the panel to reposition it."""
+        panel = tk.Toplevel(root)
+        panel.overrideredirect(True)
+        panel.attributes("-topmost", True)
+        panel.configure(bg="#1a1a1a")
+        panel.geometry("240x104+20+20")
+
+        self._panel_status = tk.Label(panel, text=self.status_text, fg=self.COLOR,
+                                       bg="#1a1a1a", font=("Segoe UI", 13, "bold"),
+                                       anchor="w")
+        self._panel_status.pack(fill="x", padx=12, pady=(12, 6))
+        self._panel_enter = tk.Label(panel, text="", fg="#AAAAAA", bg="#1a1a1a",
+                                      font=("Segoe UI", 10), anchor="w")
+        self._panel_enter.pack(fill="x", padx=12)
+        self._panel_beep = tk.Label(panel, text="", fg="#AAAAAA", bg="#1a1a1a",
+                                     font=("Segoe UI", 10), anchor="w")
+        self._panel_beep.pack(fill="x", padx=12, pady=(0, 12))
+
+        for widget in (panel, self._panel_status, self._panel_enter, self._panel_beep):
+            widget.bind("<ButtonPress-1>", self._on_panel_drag_press)
+            widget.bind("<B1-Motion>",     self._on_panel_drag_move)
+
+        self._panel = panel
+
+    def _on_panel_drag_press(self, event):
+        self._panel_drag = (event.x_root, event.y_root,
+                             self._panel.winfo_x(), self._panel.winfo_y())
+
+    def _on_panel_drag_move(self, event):
+        if not self._panel_drag:
+            return
+        sx, sy, ox, oy = self._panel_drag
+        dx, dy = event.x_root - sx, event.y_root - sy
+        self._panel.geometry(f"+{ox + dx}+{oy + dy}")
 
     def _exclude_from_capture(self):
         """Hide this overlay window from screen-capture APIs (mss included)
@@ -298,7 +340,6 @@ class OverlayApp:
         self.root.geometry(f"{W}x{H}+{x - b}+{y - b}")
         self._canvas.config(width=W, height=H)
         self._canvas.coords(self._rect_id, 0, 0, W - 1, H - 1)
-        self._canvas.coords(self._text_id, b + 4, b + 4)
         for corner, (hx, hy) in {"nw": (0, 0), "ne": (W, 0), "sw": (0, H), "se": (W, H)}.items():
             self._canvas.coords(self._handle_ids[corner], hx - hs, hy - hs, hx + hs, hy + hs)
 
@@ -439,16 +480,16 @@ class OverlayApp:
     def _render(self):
         """Fast, OCR-free UI repaint tick — just reflects whatever state the
         background OCR loop (or the spam loop) last wrote."""
+        color = self.COLOR_HIT if self.hit else self.COLOR
         if self._canvas:
-            color = self.COLOR_HIT if self.hit else self.COLOR
             self._canvas.itemconfig("border", outline=color)
-            text = self.status_text
-            if self.enter_spam_enabled:
-                text += f"  [Enter+Click: {'ON' if self.enter_on else 'OFF'}]"
-                text += f"  [Beep: {'ON' if self.beep_enabled else 'MUTED'}]"
-            self._canvas.itemconfig("status", text=text, fill=color)
             for hid in self._handle_ids.values():
                 self._canvas.itemconfig(hid, fill=color)
+        if self._panel_status:
+            self._panel_status.config(text=self.status_text, fg=color)
+            if self.enter_spam_enabled:
+                self._panel_enter.config(text=f"Enter+Click: {'ON' if self.enter_on else 'OFF'}")
+                self._panel_beep.config(text=f"Beep: {'ON' if self.beep_enabled else 'MUTED'}")
         self.root.after(int(RENDER_INTERVAL * 1000), self._render)
 
     def run(self):
