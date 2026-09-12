@@ -290,7 +290,7 @@ class OverlayApp:
         root.title("Maple Tapper Looker")
         with Image.open(Path(__file__).parent / "assets" / "logo.png") as image:
             self._logo_image = ImageTk.PhotoImage(
-                image.resize((72, 72), Image.Resampling.LANCZOS), master=root)
+                image.resize((144, 144), Image.Resampling.LANCZOS), master=root)
             self._icon_image = ImageTk.PhotoImage(
                 image.resize((256, 256), Image.Resampling.LANCZOS), master=root)
         root.iconphoto(True, self._icon_image)
