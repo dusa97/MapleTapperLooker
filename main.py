@@ -165,7 +165,20 @@ OCR_TARGET_HEIGHT = 100    # preprocess_for_ocr upscales toward this fixed outpu
                            # (min scale 1.0) or upscales past 4x (min-caps overhead on an already-huge region).
 OCR_SCALE_MIN     = 1.0
 OCR_SCALE_MAX     = 4.0
+# The delta popup renders its digits in a light, low-saturation blue-gray over a darker, far more
+# saturated teal/olive panel — measured (168,190,198) directly off two different real screenshots of
+# it. Converting straight to grayscale collapses much of that contrast away (digit and background can
+# land at similar brightness once hue/saturation are discarded), which was leaving OCR reading
+# digits close to 0% confidence and misreading them outright on some real captures. Masking on
+# saturation/value in preprocess_for_ocr instead — bright AND desaturated pixels are digit ink,
+# everything else is background — measured 90%+ confidence with exact correct reads on the same
+# screenshots that plain grayscale failed on.
+OCR_MASK_VALUE_MIN      = 140   # HSV V — digit pixels are brighter than the panel background
+OCR_MASK_SATURATION_MAX = 70    # HSV S — digit pixels are far less saturated than the teal/olive panel
 BEEP_COOLDOWN     = 1.5    # min seconds between beeps
+CONFIRM_ATTEMPTS  = 5      # follow-up OCR reads tried after a raw detection before giving up on it as
+                           # a false positive — spam is already stopped by then, so retrying costs
+                           # nothing but a little time (see _ocr_loop for why this isn't just 1 try)
 
 ENTER_HOTKEY    = "f9"    # toggles Enter+Left-Click spam on/off — starts OFF
 ENTER_INTERVAL  = 0.16    # seconds between spammed Enter presses (160ms)
@@ -234,14 +247,20 @@ PLUS_NUMBER_RE = re.compile(r'\+[\d,]{2,}')   # "+<number>" only, by design: a n
 
 
 def preprocess_for_ocr(img: Image.Image) -> Image.Image:
-    """Upscale + grayscale — small popup text needs the extra resolution.
-    Scales toward OCR_TARGET_HEIGHT rather than a fixed multiplier, so a
-    larger raw region (e.g. from a higher screen resolution) doesn't balloon
-    processing time — see OCR_TARGET_HEIGHT for why that matters here."""
+    """Upscale, then isolate the digits by color instead of just converting
+    to plain grayscale — see OCR_MASK_VALUE_MIN/OCR_MASK_SATURATION_MAX for
+    why that matters a lot for OCR reliability here. Scales toward
+    OCR_TARGET_HEIGHT rather than a fixed multiplier, so a larger raw region
+    (e.g. from a higher screen resolution) doesn't balloon processing time —
+    see OCR_TARGET_HEIGHT for why that matters too."""
     scale = OCR_TARGET_HEIGHT / img.height
     scale = max(OCR_SCALE_MIN, min(scale, OCR_SCALE_MAX))
     big = img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))), Image.LANCZOS)
-    return big.convert("L")
+    hsv = np.array(big.convert("HSV"))
+    saturation, value = hsv[..., 1].astype(int), hsv[..., 2].astype(int)
+    is_digit_ink = (value > OCR_MASK_VALUE_MIN) & (saturation < OCR_MASK_SATURATION_MAX)
+    black_on_white = np.where(is_digit_ink, 0, 255).astype("uint8")
+    return Image.fromarray(black_on_white, mode="L")
 
 
 def _grab(region, sct=None) -> Image.Image:
@@ -902,17 +921,33 @@ class OverlayApp:
                     # New detection (edge-triggered, so a popup that stays on
                     # screen for several reads doesn't re-trigger this every
                     # frame). Stop the spam immediately so it doesn't click
-                    # through the popup, then take one more independent read
-                    # before believing it — a single stray OCR frame was
-                    # producing occasional false positives, so only a second
-                    # confirming read earns the beep.
+                    # through the popup, then take independent follow-up
+                    # reads before believing it — a single stray OCR frame
+                    # was producing occasional false positives, so requiring
+                    # a confirming read earns the beep. Retries up to
+                    # CONFIRM_ATTEMPTS times rather than requiring only the
+                    # very next read to also succeed: spam is already
+                    # stopped at this point (self.hit is True), so retrying
+                    # costs nothing but a little time, whereas requiring
+                    # exactly one immediate follow-up was discarding real
+                    # detections — and resuming spam through the still-
+                    # visible popup — whenever OCR missed just that one
+                    # retry (e.g. a fade-in animation frame).
                     self.hit = True
                     self._unlock_mouse()
                     self.status_text = "confirming…"
 
-                    confirm = self._read_with_retry(sct)
-                    if (self._selecting or revision != self._region_revision
-                            or not self.enter_on or activation != self._activation):
+                    confirm = None
+                    aborted = False
+                    for _ in range(CONFIRM_ATTEMPTS):
+                        confirm = self._read_with_retry(sct)
+                        if (self._selecting or revision != self._region_revision
+                                or not self.enter_on or activation != self._activation):
+                            aborted = True
+                            break
+                        if confirm:
+                            break
+                    if aborted:
                         continue
                     if confirm:
                         value = confirm
@@ -927,7 +962,7 @@ class OverlayApp:
                         self._set_enter_on(False)
                         self._log("Detection paused after confirmed value.")
                     else:
-                        self._log("Ignored one-frame OCR false positive.")
+                        self._log(f"Ignored a {CONFIRM_ATTEMPTS}-frame OCR false positive.")
                         value = None
                         self.hit = False
                         self.status_text = "watching…"
