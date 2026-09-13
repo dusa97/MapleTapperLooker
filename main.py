@@ -306,6 +306,24 @@ def _maybe_save_debug_capture(raw_img, mask_img):
         pass
 
 
+def save_success_capture(raw_img, value):
+    """Companion to _maybe_save_debug_capture — misses alone don't teach
+    anything without knowing what a correct read looks like too. Saves a
+    CONFIRMED detection's raw crop labeled with the value that was read, so
+    there's a growing set of known-correct examples to compare misses
+    against (and eventually build digit templates from, not just diagnose
+    failures). Not rate-limited: confirmed detections are already
+    inherently infrequent — gated by the reset gameplay loop itself — so
+    there's no flood risk here the way there is for the miss heuristic."""
+    try:
+        DEBUG_CAPTURE_DIR.mkdir(exist_ok=True)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        safe_value = value.replace(",", "")   # commas are awkward in filenames on some tools/OSes
+        raw_img.save(DEBUG_CAPTURE_DIR / f"hit_{stamp}_{safe_value}.png")
+    except Exception:
+        pass
+
+
 def read_delta(region, sct=None) -> str | None:
     """Screenshot *region* and return the first "+<number>" match found, or
     None. When OCR produces text with digits in it that still doesn't parse
@@ -991,6 +1009,10 @@ class OverlayApp:
                         self.status_text = value
                         self.last_value = value
                         self._log(f"Detected {value}.")
+                        try:
+                            save_success_capture(_grab(tuple(self.region), sct=sct), value)
+                        except Exception:
+                            pass
                         if self.beep_enabled:
                             now = time.perf_counter()
                             if now - self.last_beep_time >= BEEP_COOLDOWN:
