@@ -180,6 +180,16 @@ CONFIRM_ATTEMPTS  = 5      # follow-up OCR reads tried after a raw detection bef
                            # a false positive — spam is already stopped by then, so retrying costs
                            # nothing but a little time (see _ocr_loop for why this isn't just 1 try)
 
+# Debug capture: whenever OCR sees text that looks like it might be a garbled number (digits present)
+# but it doesn't parse as a valid "+<number>", save the raw crop here so real missed-detection cases
+# can be collected from actual play and used to recalibrate OCR_MASK_*/etc. against real failures
+# instead of guessing — this is the same "measure against a real screenshot" approach that fixed
+# everything else OCR/auto-locate related so far this project. Rate-limited so a sustained streak of
+# garbled reads doesn't flood the folder; saves both the raw crop and what the mask did to it, since
+# both are useful for diagnosing which stage actually failed.
+DEBUG_CAPTURE_DIR      = _BASE_DIR / "debug_captures"
+DEBUG_CAPTURE_COOLDOWN = 3.0
+
 ENTER_HOTKEY    = "f9"    # toggles Enter+Left-Click spam on/off — starts OFF
 ENTER_INTERVAL  = 0.16    # seconds between spammed Enter presses (160ms)
 CLICK_INTERVAL  = 0.24    # seconds between spammed left-clicks (240ms)
@@ -276,12 +286,39 @@ def _grab(region, sct=None) -> Image.Image:
     return Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
 
 
+_last_debug_capture = 0.0
+
+
+def _maybe_save_debug_capture(raw_img, mask_img):
+    """See DEBUG_CAPTURE_DIR above. Best-effort only — a failure to save a
+    debug image must never break actual detection."""
+    global _last_debug_capture
+    now = time.perf_counter()
+    if now - _last_debug_capture < DEBUG_CAPTURE_COOLDOWN:
+        return
+    _last_debug_capture = now
+    try:
+        DEBUG_CAPTURE_DIR.mkdir(exist_ok=True)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        raw_img.save(DEBUG_CAPTURE_DIR / f"miss_{stamp}_raw.png")
+        mask_img.save(DEBUG_CAPTURE_DIR / f"miss_{stamp}_mask.png")
+    except Exception:
+        pass
+
+
 def read_delta(region, sct=None) -> str | None:
-    """Screenshot *region* and return the first "+<number>" match found, or None."""
+    """Screenshot *region* and return the first "+<number>" match found, or
+    None. When OCR produces text with digits in it that still doesn't parse
+    as a "+<number>" — the likely signature of a real popup that OCR
+    misread rather than plain empty background — the frame is saved via
+    _maybe_save_debug_capture() for later recalibration."""
     img = _grab(region, sct=sct)
     proc = preprocess_for_ocr(img)
     text = pytesseract.image_to_string(proc, config=OCR_CONFIG)
-    m = PLUS_NUMBER_RE.search(text.replace(" ", ""))
+    cleaned = text.replace(" ", "")
+    m = PLUS_NUMBER_RE.search(cleaned)
+    if not m and re.search(r'\d{2,}', cleaned):
+        _maybe_save_debug_capture(img, proc)
     return m.group(0) if m else None
 
 
