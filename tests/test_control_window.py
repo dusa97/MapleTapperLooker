@@ -131,7 +131,7 @@ class ControlWindowTest(unittest.TestCase):
         app.enter_on = True
         with patch("main.read_delta", side_effect=RuntimeError("capture failed")), \
              patch.object(app, "_unlock_mouse"):
-            self.assertIsNone(app._read_with_retry(Mock()))
+            self.assertEqual(app._read_with_retry(Mock()), (None, None))
         self.assertFalse(app.enter_on)
         self.assertIn("OCR error", app.status_text)
 

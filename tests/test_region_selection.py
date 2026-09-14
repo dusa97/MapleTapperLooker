@@ -84,7 +84,7 @@ class RegionSelectionTest(unittest.TestCase):
                 if len(calls) == select_on_read:
                     app._region_revision += 1
                     app._running = False
-                return "+123"
+                return "+123", Mock()
 
             with patch("main.mss.MSS"), \
                  patch.object(app, "_read_with_retry", side_effect=read), \

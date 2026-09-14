@@ -256,13 +256,49 @@ PLUS_NUMBER_RE = re.compile(r'\+[\d,]{2,}')   # "+<number>" only, by design: a n
                                                # finds the first "+" among them, if any appear.)
 
 
+def _trim_to_text_band(mask_img: Image.Image, min_ink_frac=0.03, min_gap_rows=3, pad=4) -> Image.Image:
+    """Keep only the tallest contiguous run of rows with enough ink to be a
+    real text line, discarding anything separated from it by a mostly-blank
+    gap. Confirmed against a real missed detection (see
+    debug_captures/miss_20260914_232542_*.png): the auto-locate box's
+    vertical padding (added earlier so it wouldn't clip digit tops/bottoms)
+    was, in live gameplay, also catching a band of background texture below
+    the actual number. That noise threw off Tesseract's layout analysis
+    enough to make it drop the leading '+' entirely — cropping the noise
+    out fixed it completely (confirmed: same image read as '+518,721'
+    instead of '518,721' once the band below was removed)."""
+    arr = np.array(mask_img)
+    has_ink = (arr < 128).mean(axis=1) > min_ink_frac
+    runs = []
+    start, gap = None, 0
+    for i, ink in enumerate(has_ink):
+        if ink:
+            if start is None:
+                start = i
+            gap = 0
+        elif start is not None:
+            gap += 1
+            if gap > min_gap_rows:
+                runs.append((start, i - gap))
+                start = None
+    if start is not None:
+        runs.append((start, len(has_ink) - 1))
+    if not runs:
+        return mask_img
+    top, bottom = max(runs, key=lambda r: r[1] - r[0])
+    top = max(0, top - pad)
+    bottom = min(arr.shape[0], bottom + pad + 1)
+    return mask_img.crop((0, top, arr.shape[1], bottom))
+
+
 def preprocess_for_ocr(img: Image.Image) -> Image.Image:
     """Upscale, then isolate the digits by color instead of just converting
     to plain grayscale — see OCR_MASK_VALUE_MIN/OCR_MASK_SATURATION_MAX for
     why that matters a lot for OCR reliability here. Scales toward
     OCR_TARGET_HEIGHT rather than a fixed multiplier, so a larger raw region
     (e.g. from a higher screen resolution) doesn't balloon processing time —
-    see OCR_TARGET_HEIGHT for why that matters too."""
+    see OCR_TARGET_HEIGHT for why that matters too. Finally trims to just
+    the digit line — see _trim_to_text_band for why that matters too."""
     scale = OCR_TARGET_HEIGHT / img.height
     scale = max(OCR_SCALE_MIN, min(scale, OCR_SCALE_MAX))
     big = img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))), Image.LANCZOS)
@@ -270,7 +306,7 @@ def preprocess_for_ocr(img: Image.Image) -> Image.Image:
     saturation, value = hsv[..., 1].astype(int), hsv[..., 2].astype(int)
     is_digit_ink = (value > OCR_MASK_VALUE_MIN) & (saturation < OCR_MASK_SATURATION_MAX)
     black_on_white = np.where(is_digit_ink, 0, 255).astype("uint8")
-    return Image.fromarray(black_on_white, mode="L")
+    return _trim_to_text_band(Image.fromarray(black_on_white, mode="L"))
 
 
 def _grab(region, sct=None) -> Image.Image:
@@ -324,12 +360,18 @@ def save_success_capture(raw_img, value):
         pass
 
 
-def read_delta(region, sct=None) -> str | None:
-    """Screenshot *region* and return the first "+<number>" match found, or
-    None. When OCR produces text with digits in it that still doesn't parse
-    as a "+<number>" — the likely signature of a real popup that OCR
-    misread rather than plain empty background — the frame is saved via
-    _maybe_save_debug_capture() for later recalibration."""
+def read_delta(region, sct=None) -> tuple[str | None, Image.Image]:
+    """Screenshot *region* and return (first "+<number>" match or None, the
+    raw crop that produced it). The raw crop is returned alongside the
+    value — not re-grabbed later by a caller that wants to log/save it —
+    because a second, later screenshot can show something different if
+    anything on screen changed in between, however briefly; a real
+    confirmed detection got logged with a saved image of a completely
+    different, mismatched number this way before this was fixed to return
+    the actual source frame instead. When OCR produces text with digits in
+    it that still doesn't parse as a "+<number>" — the likely signature of
+    a real popup that OCR misread rather than plain empty background — the
+    frame is saved via _maybe_save_debug_capture() for later recalibration."""
     img = _grab(region, sct=sct)
     proc = preprocess_for_ocr(img)
     text = pytesseract.image_to_string(proc, config=OCR_CONFIG)
@@ -337,7 +379,7 @@ def read_delta(region, sct=None) -> str | None:
     m = PLUS_NUMBER_RE.search(cleaned)
     if not m and re.search(r'\d{2,}', cleaned):
         _maybe_save_debug_capture(img, proc)
-    return m.group(0) if m else None
+    return (m.group(0) if m else None), img
 
 
 def smooth_move_to(target_x, target_y, duration=AUTOLOCATE_MOVE_DURATION, steps=AUTOLOCATE_MOVE_STEPS,
@@ -948,7 +990,7 @@ class OverlayApp:
             self._set_enter_on(False)
             self.status_text = "OCR error - see activity"
             self._log(f"OCR stopped: {e}")
-            return None
+            return None, None
 
     def _ocr_loop(self):
         """
@@ -967,7 +1009,7 @@ class OverlayApp:
                 revision = self._region_revision
                 activation = self._activation
                 t0 = time.perf_counter()
-                value = self._read_with_retry(sct)
+                value, _raw_img = self._read_with_retry(sct)
                 if (self._selecting or revision != self._region_revision
                         or not self.enter_on or activation != self._activation):
                     continue
@@ -993,9 +1035,10 @@ class OverlayApp:
                     self.status_text = "confirming…"
 
                     confirm = None
+                    confirm_img = None
                     aborted = False
                     for _ in range(CONFIRM_ATTEMPTS):
-                        confirm = self._read_with_retry(sct)
+                        confirm, confirm_img = self._read_with_retry(sct)
                         if (self._selecting or revision != self._region_revision
                                 or not self.enter_on or activation != self._activation):
                             aborted = True
@@ -1010,7 +1053,7 @@ class OverlayApp:
                         self.last_value = value
                         self._log(f"Detected {value}.")
                         try:
-                            save_success_capture(_grab(tuple(self.region), sct=sct), value)
+                            save_success_capture(confirm_img, value)
                         except Exception:
                             pass
                         if self.beep_enabled:
@@ -1476,7 +1519,7 @@ if __name__ == "__main__":
         print(f"  Last region: left={region[0]}  top={region[1]}  width={region[2]}  height={region[3]}")
 
     if args.once:
-        value = read_delta(region)
+        value, _img = read_delta(region)
         print(f"detected: {value}" if value else "no '+<number>' found")
         sys.exit(0 if value else 1)
 
