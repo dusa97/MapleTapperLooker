@@ -131,7 +131,7 @@ class ControlWindowTest(unittest.TestCase):
         app.enter_on = True
         with patch("main.read_delta", side_effect=RuntimeError("capture failed")), \
              patch.object(app, "_unlock_mouse"):
-            self.assertIsNone(app._read_with_retry(Mock()))
+            self.assertEqual(app._read_with_retry(Mock()), (None, None))
         self.assertFalse(app.enter_on)
         self.assertIn("OCR error", app.status_text)
 
@@ -189,7 +189,8 @@ class ControlWindowTest(unittest.TestCase):
                 self.assertEqual(app._canvas.find_overlapping(x, y, x, y)[-1],
                                  app._handle_ids[corner])
             self.assertEqual(app._canvas.itemcget(app._rect_id, "fill"), "black")
-            self.assertEqual(app.overlay.attributes("-transparentcolor"), "black")
+            # str(): newer Tk returns a color object here rather than the plain string
+            self.assertEqual(str(app.overlay.attributes("-transparentcolor")), "black")
             self.assertFalse(app._canvas.tag_bind("border", "<Double-Button-1>"))
             with patch("main.time.monotonic", return_value=0):
                 app._render()

@@ -165,7 +165,64 @@ OCR_TARGET_HEIGHT = 100    # preprocess_for_ocr upscales toward this fixed outpu
                            # (min scale 1.0) or upscales past 4x (min-caps overhead on an already-huge region).
 OCR_SCALE_MIN     = 1.0
 OCR_SCALE_MAX     = 4.0
+# The delta popup renders its digits in a light, low-saturation blue-gray over a darker, far more
+# saturated teal/olive panel — measured (168,190,198) directly off two different real screenshots of
+# it. Converting straight to grayscale collapses much of that contrast away (digit and background can
+# land at similar brightness once hue/saturation are discarded), which was leaving OCR reading
+# digits close to 0% confidence and misreading them outright on some real captures. Masking on
+# saturation/value in preprocess_for_ocr instead — bright AND desaturated pixels are digit ink,
+# everything else is background — measured 90%+ confidence with exact correct reads on the same
+# screenshots that plain grayscale failed on.
+OCR_MASK_VALUE_MIN      = 140   # HSV V — digit pixels are brighter than the panel background
+OCR_MASK_SATURATION_MAX = 70    # HSV S — digit pixels are far less saturated than the teal/olive panel
 BEEP_COOLDOWN     = 1.5    # min seconds between beeps
+CONFIRM_ATTEMPTS  = 5      # follow-up OCR reads tried after a raw detection before giving up on it as
+                           # a false positive — spam is already stopped by then, so retrying costs
+                           # nothing but a little time (see _ocr_loop for why this isn't just 1 try)
+
+# Debug capture: whenever OCR sees text that looks like it might be a garbled number (digits present)
+# but it doesn't parse as a valid "+<number>", save the raw crop here so real missed-detection cases
+# can be collected from actual play and used to recalibrate OCR_MASK_*/etc. against real failures
+# instead of guessing — this is the same "measure against a real screenshot" approach that fixed
+# everything else OCR/auto-locate related so far this project. Rate-limited so a sustained streak of
+# garbled reads doesn't flood the folder; saves both the raw crop and what the mask did to it, since
+# both are useful for diagnosing which stage actually failed.
+DEBUG_CAPTURE_DIR      = _BASE_DIR / "debug_captures"
+DEBUG_CAPTURE_COOLDOWN = 3.0
+
+# Startup re-check of the captures the PREVIOUS run left behind: collecting images
+# during play only pays off if something actually reads them back, and doing that by
+# hand never happens. Every launch re-runs the current detection pipeline over the
+# captures it hasn't judged yet and records the verdict in CAPTURE_CHECK_LEDGER, so
+# each classifier change gets scored against real frames automatically — hit_*.png
+# files carry the confirmed value in their name, which makes them a labelled
+# correct/wrong test, and a miss_*_raw.png that now reads as a "+<number>" is a
+# failure the current code has recovered.
+#
+# The ledger is also what "already checked" means: filenames are left untouched on
+# purpose, because tools/build_digit_templates.py globs hit_*.png and parses the
+# value straight out of the name — marking by renaming would quietly break template
+# rebuilds. It doubles as crash protection, since a run that dies halfway keeps the
+# verdicts it already wrote and resumes from there rather than starting over.
+# hit captures whose filename-encoded value is known NOT to match the image, from
+# before read_delta was fixed to return the exact frame that produced a result (it
+# used to re-grab a separate, later screenshot that could show a different number).
+# Their labels can't be trusted, so they are neither training data nor a fair test:
+# grading against them would report two permanent regressions that no classifier
+# change can ever fix. Lives here rather than in tools/build_digit_templates.py —
+# which is where it started, and still consumes it — because the startup re-check
+# needs it too and tools/ is not bundled into the exe.
+KNOWN_BAD_CAPTURES = {
+    "hit_20260914_231259_+633221.png",
+    "hit_20260914_233154_+17971.png",
+}
+
+CAPTURE_CHECK_LEDGER  = DEBUG_CAPTURE_DIR / "_checked.json"
+CAPTURE_CHECK_CUTOFF  = "20260914"   # ignore captures stamped before this date (YYYYMMDD)
+CAPTURE_CHECK_YIELD   = 0.004        # pause between images so the OCR loop keeps priority
+CAPTURE_CHECK_FLUSH   = 200          # write the ledger every N images, not just at the end
+HIT_CAPTURE_RE  = re.compile(r"^hit_(\d{8})_\d{6}_([+-]?\d+)\.png$")
+MISS_CAPTURE_RE = re.compile(r"^miss_(\d{8})_\d{6}_raw\.png$")
 
 ENTER_HOTKEY    = "f9"    # toggles Enter+Left-Click spam on/off — starts OFF
 ENTER_INTERVAL  = 0.16    # seconds between spammed Enter presses (160ms)
@@ -225,23 +282,347 @@ AUTOLOCATE_MOVE_JITTER_PX = 4     # max sideways wobble off the straight-line pa
 # strokes of the game's stylized digits.
 OCR_CONFIG = r'--psm 6 -c tessedit_char_whitelist=+-0123456789,'
 
-PLUS_NUMBER_RE = re.compile(r'\+[\d,]{2,}')   # "+<number>" only, by design: a negative/bad reset
+PLUS_NUMBER_RE = re.compile(r'\+\d[\d,]*\d')  # "+<number>" only, by design: a negative/bad reset
                                                # result should NOT count as detected, so the spam
                                                # keeps re-rolling through it — only a positive result
                                                # stops it. (A wide auto-locate box spanning multiple
                                                # AFTER panels still works fine with this: .search()
                                                # finds the first "+" among them, if any appear.)
+                                               # Must END on a digit: Tesseract sometimes tacks a
+                                               # stray comma onto the end ('+19,525,' seen on a real
+                                               # capture) and the old '\+[\d,]{2,}' swallowed it
+                                               # into the displayed/logged value.
+
+# Template matching for the digits/sign, tried before ever falling back to Tesseract. Tesseract has
+# a documented failure mode on this exact font (dropping the leading '+' — see _trim_to_text_band —
+# and misreading digits under real gameplay conditions), while matching each character against known
+# reference glyphs captured from actual CONFIRMED-correct detections scored 100% accuracy across every
+# usable real example collected so far (54/54 images, 370/370 characters, leave-one-out cross-
+# validated). It's also faster per read (~62ms vs Tesseract's ~135ms on the same crop). Templates are
+# built offline from debug_captures/hit_*.png (see assets/digit_templates.npz) — this is deliberately
+# not an online/self-updating system: new captures don't change live behavior until someone rebuilds
+# and redeploys the template file, so a bad capture can't silently degrade detection on its own.
+DIGIT_TEMPLATE_PATH   = Path(__file__).parent / "assets" / "digit_templates.npz"
+TEMPLATE_GLYPH_SIZE   = (28, 40)   # (w, h) every glyph is resized to before comparison — must match
+                                   # whatever size the templates in DIGIT_TEMPLATE_PATH were built at
+TEMPLATE_MIN_WIDTH    = 6          # discard thinner blobs as noise (e.g. a stray panel-border line)
+TEMPLATE_GAP_RATIO    = 2.5        # a glyph-to-glyph gap wider than this multiple of the median glyph
+                                   # width marks a new number, not a new character — needed since a
+                                   # wide auto-locate box can span multiple AFTER panels (Reset x3) at
+                                   # once, each with its own number
+TEMPLATE_MATCH_MIN_SCORE = 0.5     # cv2.TM_CCOEFF_NORMED score below this = not confident enough;
+                                   # triggers the Tesseract fallback for that one read instead of
+                                   # trusting a shaky template match
+TEMPLATE_PLUS_MIN_SCORE  = 0.7     # threshold for _is_plus_sign specifically — measured directly:
+                                   # real '+' glyphs score ~1.0, every digit and '-' sample score
+                                   # <= 0.4, so this has a wide, confirmed margin on both sides
+TEMPLATE_MIN_RUN_BOXES   = 2       # a run of a single blob can never be a "+<number>" (PLUS_NUMBER_RE
+                                   # needs a sign plus at least two more characters), so it is junk to
+                                   # skip rather than a number to puzzle over — see
+                                   # classify_number_via_templates for why that distinction mattered:
+                                   # the app photographs its own overlay border, whose bottom edge the
+                                   # LANCZOS upscale in preprocess_for_ocr blends into a mask-passing
+                                   # grey smudge at the right-hand edge of the frame. Measured on real
+                                   # play data: that one smudge was forcing the Tesseract fallback on
+                                   # 141 of 141 negative rolls in a single session (~128ms each,
+                                   # against ~0.3ms for a clean template read).
+TEMPLATE_SIGN_MAX_HEIGHT_FRAC = 0.5  # a glyph taller than this fraction of the text band is a DIGIT,
+                                   # not a sign — measured across real captures with no overlap:
+                                   # '-' spans 0.10 of the band, '+' 0.33, digits 0.72-0.87. Used by
+                                   # _classify_number_run to tell "this number is negative" apart from
+                                   # "this number's sign is missing from the crop", which look
+                                   # identical to _is_plus_sign but must not be treated the same.
+
+
+def _load_digit_templates():
+    try:
+        data = np.load(DIGIT_TEMPLATE_PATH)
+        key_for = {"+": "plus", "-": "minus"}
+        return {cls: data[key_for.get(cls, cls)] for cls in data["class_names"]}
+    except Exception as e:
+        print(f"  [warning] Digit templates unavailable, falling back to Tesseract only: {e}", flush=True)
+        return None
+
+
+DIGIT_TEMPLATES = _load_digit_templates()
+
+
+def _pack_templates(templates):
+    """Flatten every stored reference glyph into one row of a single matrix,
+    zero-meaned and unit-normalised, so that matching a glyph against ALL
+    370 of them is one matrix-vector product instead of 370 separate
+    cv2.matchTemplate calls. This is exactly the same number, not an
+    approximation: TM_CCOEFF_NORMED between two images of equal size IS the
+    dot product of their zero-mean, unit-norm flattenings, and the scores
+    agree with cv2's to within 3e-6 across every real glyph checked.
+    Measured per glyph: 9.3ms -> 0.07ms for digit classification, 1.6ms ->
+    0.06ms for the '+' check — and the '+' check runs on every frame that
+    has any glyphs in it at all, so this is a ~50ms cut off the one read
+    that matters most, the frame where the popup first appears."""
+    classes, rows = [], []
+    for cls, samples in templates.items():
+        for sample in samples:
+            v = sample.astype("float32").ravel()
+            v -= v.mean()
+            norm = np.linalg.norm(v)
+            rows.append(v / norm if norm else v)
+            classes.append(str(cls))
+    classes = np.array(classes)
+    return {
+        "classes": classes,
+        "matrix": np.ascontiguousarray(np.stack(rows)),
+        "is_plus": classes == "+",
+        "is_digit": ~np.isin(classes, ("+", "-")),
+    }
+
+
+_TEMPLATE_PACK = _pack_templates(DIGIT_TEMPLATES) if DIGIT_TEMPLATES else None
+
+
+def _template_scores(glyph_arr):
+    """TM_CCOEFF_NORMED of *glyph_arr* against every packed template at
+    once — see _pack_templates. A flat (zero-variance) glyph scores 0
+    everywhere, matching cv2's behaviour for the same input."""
+    v = _resize_for_template(glyph_arr).astype("float32").ravel()
+    v -= v.mean()
+    norm = np.linalg.norm(v)
+    if norm:
+        v /= norm
+    return _TEMPLATE_PACK["matrix"] @ v
+
+
+def _segment_glyph_boxes(mask_img: Image.Image):
+    """Column-gap segmentation: return (x0, x1, y0, y1) boxes for each ink
+    blob in *mask_img*, left to right, dropping anything too thin to be a
+    real character (see TEMPLATE_MIN_WIDTH)."""
+    arr = np.array(mask_img)
+    ink_cols = (arr < 128).any(axis=0)
+    spans = []
+    start = None
+    for x, has_ink in enumerate(ink_cols):
+        if has_ink and start is None:
+            start = x
+        elif not has_ink and start is not None:
+            spans.append((start, x))
+            start = None
+    if start is not None:
+        spans.append((start, len(ink_cols)))
+
+    boxes = []
+    for x0, x1 in spans:
+        if x1 - x0 < TEMPLATE_MIN_WIDTH:
+            continue
+        ink_rows = np.where((arr[:, x0:x1] < 128).any(axis=1))[0]
+        if len(ink_rows) == 0:
+            continue
+        boxes.append((x0, x1, int(ink_rows.min()), int(ink_rows.max()) + 1))
+    return boxes
+
+
+def _is_comma_box(box, img_height) -> bool:
+    """A comma sits low and short; digits/signs span much more of the row
+    height. Commas are recognized this way, by position, rather than
+    template-matched — reinserted programmatically from digit count instead
+    (see _classify_number_run) — since it's a small, easily-confused glyph
+    that isn't actually needed to read the number's value."""
+    _x0, _x1, y0, y1 = box
+    return (y1 - y0) < img_height * 0.35 and y1 / img_height > 0.7
+
+
+def _resize_for_template(glyph_arr, size=TEMPLATE_GLYPH_SIZE):
+    """cv2.INTER_AREA is for shrinking and gives corrupted results when used
+    to enlarge a small image — confirmed directly: a minus sign's natural
+    ~4px-tall crop, stretched to the 40px template height with INTER_AREA,
+    produced a solid corrupted blob instead of a stretched bar, which then
+    wrongly out-scored real digits during classification. Digits are close
+    enough to the target size that this mostly didn't show up for them, but
+    it must still be handled correctly in general — use INTER_AREA only
+    when actually shrinking, INTER_LINEAR when enlarging."""
+    h, w = glyph_arr.shape[:2]
+    dst_w, dst_h = size
+    interpolation = cv2.INTER_AREA if (h >= dst_h and w >= dst_w) else cv2.INTER_LINEAR
+    return cv2.resize(glyph_arr, size, interpolation=interpolation)
+
+
+def _is_plus_sign(glyph_arr, threshold=TEMPLATE_PLUS_MIN_SCORE) -> bool:
+    """Whether this glyph matches the '+' template class — checked as its
+    own yes/no question rather than as one class among many (see
+    _classify_number_run for why: detection only ever needs to know
+    whether a result is positive, never what a negative sign actually
+    looks like, and a genuine '-' reference has no equivalent to '+''s
+    confirmed-hit verification). Measured directly: real '+' glyphs score
+    ~1.0 here, every digit and the (unverified) '-' samples score <= 0.4,
+    so this threshold has a wide, confirmed margin on both sides."""
+    scores = _template_scores(glyph_arr)
+    return float(scores[_TEMPLATE_PACK["is_plus"]].max()) >= threshold
+
+
+def _classify_digit(glyph_arr):
+    """Best-matching digit class (0-9 only — '+'/'-' are handled by
+    _is_plus_sign, not here) + score, against every stored reference sample
+    of every digit class."""
+    scores = np.where(_TEMPLATE_PACK["is_digit"], _template_scores(glyph_arr), -np.inf)
+    best = int(np.argmax(scores))
+    if not np.isfinite(scores[best]):
+        return None, -1.0                  # no digit templates loaded at all
+    return str(_TEMPLATE_PACK["classes"][best]), float(scores[best])
+
+
+def _split_into_number_runs(glyph_boxes):
+    """Group glyph boxes into separate runs whenever the gap to the next
+    one is much wider than a typical within-number gap — see
+    TEMPLATE_GAP_RATIO."""
+    if not glyph_boxes:
+        return []
+    widths = sorted(x1 - x0 for x0, x1, _y0, _y1 in glyph_boxes)
+    gap_threshold = widths[len(widths) // 2] * TEMPLATE_GAP_RATIO
+    runs = [[glyph_boxes[0]]]
+    for prev_box, box in zip(glyph_boxes, glyph_boxes[1:]):
+        if box[0] - prev_box[1] > gap_threshold:
+            runs.append([])
+        runs[-1].append(box)
+    return runs
+
+
+def _classify_number_run(run_boxes, mask_arr, img_height):
+    """Classify one run of glyph boxes (already known to belong to a single
+    number). Returns (value, confident):
+      - (None, True): the sign confidently does NOT match '+' — a fast,
+        confident "not a hit" that skips classifying the remaining digits
+        entirely, since detection only ever needs to know whether a result
+        is positive, never what a negative value actually reads as.
+      - ("+<number>", True): the sign confidently matches '+' and every
+        digit after it also classified confidently.
+      - (None, False): genuine ambiguity (the sign is missing, or the sign
+        or a digit didn't classify confidently) — the caller should fall
+        back to Tesseract for this one read rather than trust a shaky
+        result."""
+    content_boxes = [b for b in run_boxes if not _is_comma_box(b, img_height)]
+    if not content_boxes:
+        return None, True     # nothing but commas: no number here, and nothing ambiguous about that
+    x0, x1, y0, y1 = content_boxes[0]
+    if not _is_plus_sign(mask_arr[y0:y1, x0:x1]):
+        # "Not a '+'" is only a confident no-hit if this glyph is a SIGN at all.
+        # A digit-height first glyph means the crop starts partway into the number
+        # and the sign is missing — a positive value whose '+' got clipped looks
+        # exactly like a negative one here. Reporting a confident "not a hit" for
+        # that (as this did before) silently drops a real detection: no beep, no
+        # Tesseract fallback, and no debug capture either, so the miss leaves no
+        # trace anywhere to find it by later. Reproduced on 57 of 57 confirmed
+        # hits by cropping the '+' off. Tesseract's own known weakness on this
+        # font is dropping the leading '+' too, so the fallback is not guaranteed
+        # to save it — but an uncertain read beats a silent one.
+        if (y1 - y0) / img_height > TEMPLATE_SIGN_MAX_HEIGHT_FRAC:
+            return None, False
+        return None, True
+
+    digits = []
+    for box in content_boxes[1:]:
+        x0, x1, y0, y1 = box
+        cls, score = _classify_digit(mask_arr[y0:y1, x0:x1])
+        if cls is None or score < TEMPLATE_MATCH_MIN_SCORE:
+            return None, False
+        digits.append(cls)
+    if not digits:
+        return None, False
+
+    grouped = []
+    for i, digit in enumerate(reversed(digits)):
+        if i and i % 3 == 0:
+            grouped.append(",")
+        grouped.append(digit)
+    return "+" + "".join(reversed(grouped)), True
+
+
+def classify_number_via_templates(mask_img: Image.Image):
+    """Try to read a "+<number>" out of *mask_img* using template matching.
+    Returns (value_or_None, confident). confident=True means the result can
+    be trusted outright with no need to also run Tesseract on this frame —
+    true when a frame is confidently empty (zero glyphs found at all, the
+    common case while idly watching for a popup), when a run's sign
+    confidently isn't '+' (a negative/bad result — see
+    _classify_number_run), and when a positive number was cleanly
+    classified end to end. This is what keeps this fast rather than paying
+    for both methods on every single read: an idle frame resolves near-
+    instantly, a negative result stops at the sign check, and a real hit
+    skips Tesseract entirely. confident=False only when
+    segmentation/classification couldn't resolve a run cleanly (e.g.
+    touching digits), so the caller should fall back to Tesseract for just
+    that one read."""
+    if not DIGIT_TEMPLATES:
+        return None, False
+    boxes = _segment_glyph_boxes(mask_img)
+    if not boxes:
+        return None, True
+    mask_arr = np.array(mask_img)
+    for run in _split_into_number_runs(boxes):
+        # Every run gets a vote here, and a single "not confident" vote sends the
+        # whole frame to Tesseract — so a run that cannot possibly hold a number
+        # must be skipped outright rather than allowed to report ambiguity about
+        # itself. See TEMPLATE_MIN_RUN_BOXES: one speck of border smudge in the
+        # corner of the frame used to overrule the number run's own confident
+        # verdict and cost a full Tesseract read on every single negative roll.
+        if len(run) < TEMPLATE_MIN_RUN_BOXES:
+            continue
+        value, confident = _classify_number_run(run, mask_arr, mask_img.height)
+        if not confident:
+            return None, False
+        if value is not None:
+            return value, True
+    return None, True
+
+
+def _trim_to_text_band(mask_img: Image.Image, min_ink_frac=0.03, min_gap_rows=3, pad=4) -> Image.Image:
+    """Keep only the tallest contiguous run of rows with enough ink to be a
+    real text line, discarding anything separated from it by a mostly-blank
+    gap. Confirmed against a real missed detection (see
+    debug_captures/miss_20260914_232542_*.png): the auto-locate box's
+    vertical padding (added earlier so it wouldn't clip digit tops/bottoms)
+    was, in live gameplay, also catching a band of background texture below
+    the actual number. That noise threw off Tesseract's layout analysis
+    enough to make it drop the leading '+' entirely — cropping the noise
+    out fixed it completely (confirmed: same image read as '+518,721'
+    instead of '518,721' once the band below was removed)."""
+    arr = np.array(mask_img)
+    has_ink = (arr < 128).mean(axis=1) > min_ink_frac
+    runs = []
+    start, gap = None, 0
+    for i, ink in enumerate(has_ink):
+        if ink:
+            if start is None:
+                start = i
+            gap = 0
+        elif start is not None:
+            gap += 1
+            if gap > min_gap_rows:
+                runs.append((start, i - gap))
+                start = None
+    if start is not None:
+        runs.append((start, len(has_ink) - 1))
+    if not runs:
+        return mask_img
+    top, bottom = max(runs, key=lambda r: r[1] - r[0])
+    top = max(0, top - pad)
+    bottom = min(arr.shape[0], bottom + pad + 1)
+    return mask_img.crop((0, top, arr.shape[1], bottom))
 
 
 def preprocess_for_ocr(img: Image.Image) -> Image.Image:
-    """Upscale + grayscale — small popup text needs the extra resolution.
-    Scales toward OCR_TARGET_HEIGHT rather than a fixed multiplier, so a
-    larger raw region (e.g. from a higher screen resolution) doesn't balloon
-    processing time — see OCR_TARGET_HEIGHT for why that matters here."""
+    """Upscale, then isolate the digits by color instead of just converting
+    to plain grayscale — see OCR_MASK_VALUE_MIN/OCR_MASK_SATURATION_MAX for
+    why that matters a lot for OCR reliability here. Scales toward
+    OCR_TARGET_HEIGHT rather than a fixed multiplier, so a larger raw region
+    (e.g. from a higher screen resolution) doesn't balloon processing time —
+    see OCR_TARGET_HEIGHT for why that matters too. Finally trims to just
+    the digit line — see _trim_to_text_band for why that matters too."""
     scale = OCR_TARGET_HEIGHT / img.height
     scale = max(OCR_SCALE_MIN, min(scale, OCR_SCALE_MAX))
     big = img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))), Image.LANCZOS)
-    return big.convert("L")
+    hsv = np.array(big.convert("HSV"))
+    saturation, value = hsv[..., 1].astype(int), hsv[..., 2].astype(int)
+    is_digit_ink = (value > OCR_MASK_VALUE_MIN) & (saturation < OCR_MASK_SATURATION_MAX)
+    black_on_white = np.where(is_digit_ink, 0, 255).astype("uint8")
+    return _trim_to_text_band(Image.fromarray(black_on_white, mode="L"))
 
 
 def _grab(region, sct=None) -> Image.Image:
@@ -257,13 +638,222 @@ def _grab(region, sct=None) -> Image.Image:
     return Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
 
 
-def read_delta(region, sct=None) -> str | None:
-    """Screenshot *region* and return the first "+<number>" match found, or None."""
+_last_debug_capture = 0.0
+
+
+def _maybe_save_debug_capture(raw_img, mask_img):
+    """See DEBUG_CAPTURE_DIR above. Best-effort only — a failure to save a
+    debug image must never break actual detection."""
+    global _last_debug_capture
+    now = time.perf_counter()
+    if now - _last_debug_capture < DEBUG_CAPTURE_COOLDOWN:
+        return
+    _last_debug_capture = now
+    try:
+        DEBUG_CAPTURE_DIR.mkdir(exist_ok=True)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        raw_img.save(DEBUG_CAPTURE_DIR / f"miss_{stamp}_raw.png")
+        mask_img.save(DEBUG_CAPTURE_DIR / f"miss_{stamp}_mask.png")
+    except Exception:
+        pass
+
+
+def save_success_capture(raw_img, value):
+    """Companion to _maybe_save_debug_capture — misses alone don't teach
+    anything without knowing what a correct read looks like too. Saves a
+    CONFIRMED detection's raw crop labeled with the value that was read, so
+    there's a growing set of known-correct examples to compare misses
+    against (and eventually build digit templates from, not just diagnose
+    failures). Not rate-limited: confirmed detections are already
+    inherently infrequent — gated by the reset gameplay loop itself — so
+    there's no flood risk here the way there is for the miss heuristic."""
+    try:
+        DEBUG_CAPTURE_DIR.mkdir(exist_ok=True)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        safe_value = value.replace(",", "")   # commas are awkward in filenames on some tools/OSes
+        raw_img.save(DEBUG_CAPTURE_DIR / f"hit_{stamp}_{safe_value}.png")
+    except Exception:
+        pass
+
+
+def read_delta(region, sct=None) -> tuple[str | None, Image.Image]:
+    """Screenshot *region* and return (first "+<number>" match or None, the
+    raw crop that produced it). The raw crop is returned alongside the
+    value — not re-grabbed later by a caller that wants to log/save it —
+    because a second, later screenshot can show something different if
+    anything on screen changed in between, however briefly; a real
+    confirmed detection got logged with a saved image of a completely
+    different, mismatched number this way before this was fixed to return
+    the actual source frame instead. When OCR produces text with digits in
+    it that still doesn't parse as a "+<number>" — the likely signature of
+    a real popup that OCR misread rather than plain empty background — the
+    frame is saved via _maybe_save_debug_capture() for later recalibration.
+    Tries template matching first (see classify_number_via_templates) and
+    only falls back to Tesseract for a read it couldn't confidently
+    resolve."""
     img = _grab(region, sct=sct)
+    return read_delta_from_image(img), img
+
+
+def read_delta_from_image(img: Image.Image, save_debug=True) -> str | None:
+    """The actual read, split out from read_delta() so the startup capture
+    re-check (see check_pending_captures) scores saved frames through the
+    exact same path live detection uses — a re-check that reimplemented the
+    read would drift from the real one and start reporting on code that
+    isn't running.
+
+    save_debug=False is not optional for that caller but load-bearing: this
+    function saves garbled frames via _maybe_save_debug_capture(), so
+    letting it fire while re-reading saved captures would have every
+    unreadable capture spawn a fresh copy of itself, which the next launch
+    would then re-check and copy again."""
     proc = preprocess_for_ocr(img)
+
+    value, confident = classify_number_via_templates(proc)
+    if confident:
+        return value
+
     text = pytesseract.image_to_string(proc, config=OCR_CONFIG)
-    m = PLUS_NUMBER_RE.search(text.replace(" ", ""))
+    cleaned = text.replace(" ", "")
+    m = PLUS_NUMBER_RE.search(cleaned)
+    if not m and save_debug and re.search(r'\d{2,}', cleaned):
+        _maybe_save_debug_capture(img, proc)
     return m.group(0) if m else None
+
+
+def _load_check_ledger() -> dict:
+    """See CAPTURE_CHECK_LEDGER. A missing or corrupt ledger is treated as an
+    empty one rather than an error — the worst case is re-checking captures
+    that were already judged, which costs time and changes nothing, while
+    refusing to start would take the app down over a side feature."""
+    try:
+        data = json.loads(CAPTURE_CHECK_LEDGER.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and isinstance(data.get("checked"), dict):
+            return data
+    except Exception:
+        pass
+    return {"cutoff": CAPTURE_CHECK_CUTOFF, "runs": [], "checked": {}}
+
+
+def _save_check_ledger(ledger: dict):
+    try:
+        DEBUG_CAPTURE_DIR.mkdir(exist_ok=True)
+        CAPTURE_CHECK_LEDGER.write_text(json.dumps(ledger, indent=1), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _pending_captures(ledger: dict) -> list:
+    """Captures stamped on/after CAPTURE_CHECK_CUTOFF that the ledger hasn't
+    judged yet — in practice the ones the previous run produced, since every
+    launch clears its own backlog. Sorted by name, which for these filenames
+    is chronological."""
+    try:
+        names = sorted(p.name for p in DEBUG_CAPTURE_DIR.glob("*.png"))
+    except Exception:
+        return []
+    pending = []
+    for name in names:
+        if name in ledger["checked"] or name in KNOWN_BAD_CAPTURES:
+            continue
+        m = HIT_CAPTURE_RE.match(name) or MISS_CAPTURE_RE.match(name)
+        if m and m.group(1) >= CAPTURE_CHECK_CUTOFF:
+            pending.append(name)
+    return pending
+
+
+def check_pending_captures(on_progress=None) -> dict:
+    """Re-read every not-yet-judged capture with the current pipeline and
+    record what it now says. Returns a summary dict of the counts below.
+
+    hit_*.png files are scored, because the value in the filename is a
+    confirmed read: matching it is 'correct', reading something else or
+    nothing at all is a regression worth knowing about. miss_*_raw.png files
+    have no such label — nobody ever recorded what they should have said —
+    so they are only split into 'recovered' (the current code finds a
+    +<number> where the code at capture time found nothing) and 'still
+    unread', which is the number that should fall as the classifier
+    improves."""
+    ledger = _load_check_ledger()
+    pending = _pending_captures(ledger)
+    summary = {"checked": 0, "hit_correct": 0, "hit_wrong": 0,
+               "miss_recovered": 0, "miss_unread": 0, "unreadable": 0,
+               "pending": len(pending)}
+    if not pending:
+        return summary
+
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    for i, name in enumerate(pending, 1):
+        hit = HIT_CAPTURE_RE.match(name)
+        try:
+            with Image.open(DEBUG_CAPTURE_DIR / name) as img:
+                read = read_delta_from_image(img.convert("RGB"), save_debug=False)
+        except Exception:
+            # A capture that can't even be opened (half-written when the last run
+            # was killed, say) gets marked so it isn't retried every launch forever.
+            ledger["checked"][name] = {"error": "unreadable", "at": stamp}
+            summary["unreadable"] += 1
+            summary["checked"] += 1
+            continue
+
+        entry = {"read": read, "at": stamp}
+        if hit:
+            # The filename strips commas (see save_success_capture) but the
+            # classifier groups them back in, so compare without them.
+            expected = hit.group(2)
+            entry["expected"] = expected
+            entry["ok"] = bool(read) and read.replace(",", "") == expected
+            summary["hit_correct" if entry["ok"] else "hit_wrong"] += 1
+        else:
+            entry["recovered"] = read is not None
+            summary["miss_recovered" if read else "miss_unread"] += 1
+
+        ledger["checked"][name] = entry
+        summary["checked"] += 1
+        if on_progress:
+            on_progress(i, len(pending))
+        if summary["checked"] % CAPTURE_CHECK_FLUSH == 0:
+            _save_check_ledger(ledger)
+        time.sleep(CAPTURE_CHECK_YIELD)
+
+    ledger["cutoff"] = CAPTURE_CHECK_CUTOFF
+    ledger.setdefault("runs", []).append({"at": stamp, **summary})
+    _save_check_ledger(ledger)
+    return summary
+
+
+def format_check_summary(s: dict) -> str:
+    if not s["checked"]:
+        return "  Capture re-check: nothing new since the last run."
+    parts = [f"{s['checked']} new capture(s) re-read"]
+    if s["hit_correct"] or s["hit_wrong"]:
+        parts.append(f"confirmed hits: {s['hit_correct']} still correct, {s['hit_wrong']} now wrong")
+    if s["miss_recovered"] or s["miss_unread"]:
+        parts.append(f"misses: {s['miss_recovered']} now readable, {s['miss_unread']} still unread")
+    if s["unreadable"]:
+        parts.append(f"{s['unreadable']} unreadable file(s)")
+    return "  Capture re-check: " + "; ".join(parts) + "."
+
+
+def start_capture_check(on_done=None):
+    """Kick the re-check off on a daemon thread at startup. Deliberately not
+    blocking: the first launch after this shipped has a backlog of thousands
+    of images (~24ms each) to work through, and making the app unusable for a
+    minute and a half to grade old screenshots would be a bad trade for a
+    diagnostic. Later launches only see their predecessor's captures, so this
+    normally finishes in seconds. Daemon so closing the app doesn't wait for
+    it — the ledger is flushed as it goes, so a partial scan is not lost."""
+    def _run():
+        try:
+            summary = check_pending_captures()
+        except Exception as exc:          # never let a diagnostic take detection down
+            print(f"  Capture re-check failed: {exc}")
+            return
+        print(format_check_summary(summary))
+        if on_done:
+            on_done(summary)
+
+    threading.Thread(target=_run, daemon=True, name="capture-check").start()
 
 
 def smooth_move_to(target_x, target_y, duration=AUTOLOCATE_MOVE_DURATION, steps=AUTOLOCATE_MOVE_STEPS,
@@ -874,7 +1464,7 @@ class OverlayApp:
             self._set_enter_on(False)
             self.status_text = "OCR error - see activity"
             self._log(f"OCR stopped: {e}")
-            return None
+            return None, None
 
     def _ocr_loop(self):
         """
@@ -893,7 +1483,7 @@ class OverlayApp:
                 revision = self._region_revision
                 activation = self._activation
                 t0 = time.perf_counter()
-                value = self._read_with_retry(sct)
+                value, _raw_img = self._read_with_retry(sct)
                 if (self._selecting or revision != self._region_revision
                         or not self.enter_on or activation != self._activation):
                     continue
@@ -902,23 +1492,44 @@ class OverlayApp:
                     # New detection (edge-triggered, so a popup that stays on
                     # screen for several reads doesn't re-trigger this every
                     # frame). Stop the spam immediately so it doesn't click
-                    # through the popup, then take one more independent read
-                    # before believing it — a single stray OCR frame was
-                    # producing occasional false positives, so only a second
-                    # confirming read earns the beep.
+                    # through the popup, then take independent follow-up
+                    # reads before believing it — a single stray OCR frame
+                    # was producing occasional false positives, so requiring
+                    # a confirming read earns the beep. Retries up to
+                    # CONFIRM_ATTEMPTS times rather than requiring only the
+                    # very next read to also succeed: spam is already
+                    # stopped at this point (self.hit is True), so retrying
+                    # costs nothing but a little time, whereas requiring
+                    # exactly one immediate follow-up was discarding real
+                    # detections — and resuming spam through the still-
+                    # visible popup — whenever OCR missed just that one
+                    # retry (e.g. a fade-in animation frame).
                     self.hit = True
                     self._unlock_mouse()
                     self.status_text = "confirming…"
 
-                    confirm = self._read_with_retry(sct)
-                    if (self._selecting or revision != self._region_revision
-                            or not self.enter_on or activation != self._activation):
+                    confirm = None
+                    confirm_img = None
+                    aborted = False
+                    for _ in range(CONFIRM_ATTEMPTS):
+                        confirm, confirm_img = self._read_with_retry(sct)
+                        if (self._selecting or revision != self._region_revision
+                                or not self.enter_on or activation != self._activation):
+                            aborted = True
+                            break
+                        if confirm:
+                            break
+                    if aborted:
                         continue
                     if confirm:
                         value = confirm
                         self.status_text = value
                         self.last_value = value
                         self._log(f"Detected {value}.")
+                        try:
+                            save_success_capture(confirm_img, value)
+                        except Exception:
+                            pass
                         if self.beep_enabled:
                             now = time.perf_counter()
                             if now - self.last_beep_time >= BEEP_COOLDOWN:
@@ -927,7 +1538,7 @@ class OverlayApp:
                         self._set_enter_on(False)
                         self._log("Detection paused after confirmed value.")
                     else:
-                        self._log("Ignored one-frame OCR false positive.")
+                        self._log(f"Ignored a {CONFIRM_ATTEMPTS}-frame OCR false positive.")
                         value = None
                         self.hit = False
                         self.status_text = "watching…"
@@ -1352,7 +1963,22 @@ if __name__ == "__main__":
                               "while an elevated game window has focus) — on by default, see --no-elevate")
     parser.add_argument("--no-elevate", action="store_true",
                          help="skip the automatic UAC elevation prompt on startup")
+    parser.add_argument("--no-capture-check", action="store_true",
+                         help="skip the startup re-check of the previous run's debug captures")
+    parser.add_argument("--check-captures", action="store_true",
+                         help="re-check the previous run's debug captures and print the result, no overlay")
     args = parser.parse_args()
+
+    # Ahead of the elevation prompt on purpose: grading saved screenshots needs no
+    # admin rights, and no saved region either, so neither should be demanded for it.
+    if args.check_captures:
+        def _progress(done, total):
+            print(f"\r  Re-checking captures: {done}/{total}", end="", flush=True)
+        summary = check_pending_captures(on_progress=_progress)
+        if summary["checked"]:                      # only if a progress line was actually drawn
+            print("\r" + " " * 40 + "\r", end="")
+        print(format_check_summary(summary))
+        sys.exit(0)
 
     # Auto-elevate by default so F9 keeps working even while an elevated game
     # window has focus, with no manual step (opening as admin, etc.) needed.
@@ -1382,7 +2008,7 @@ if __name__ == "__main__":
         print(f"  Last region: left={region[0]}  top={region[1]}  width={region[2]}  height={region[3]}")
 
     if args.once:
-        value = read_delta(region)
+        value, _img = read_delta(region)
         print(f"detected: {value}" if value else "no '+<number>' found")
         sys.exit(0 if value else 1)
 
@@ -1394,9 +2020,14 @@ if __name__ == "__main__":
 
     print(f"\n  Watching region={region} — drag the box to reposition, drag a corner to resize.")
     print("  Close the control window to quit.\n")
-    OverlayApp(region, is_placeholder_region=is_placeholder, enter_spam=not args.no_enter_spam,
-               enter_hotkey=args.enter_hotkey,
-               enter_interval=args.enter_interval,
-               click_interval=args.click_interval,
-               beep_hotkey=args.beep_hotkey,
-               min_read_gap=args.interval).run()
+    app = OverlayApp(region, is_placeholder_region=is_placeholder, enter_spam=not args.no_enter_spam,
+                     enter_hotkey=args.enter_hotkey,
+                     enter_interval=args.enter_interval,
+                     click_interval=args.click_interval,
+                     beep_hotkey=args.beep_hotkey,
+                     min_read_gap=args.interval)
+    if not args.no_capture_check:
+        # The exe has no console (console=False in the spec), so the printed summary
+        # is invisible there — surface it in the app's own activity log instead.
+        start_capture_check(on_done=lambda summary: app._log(format_check_summary(summary).strip()))
+    app.run()

@@ -79,13 +79,14 @@ class DetectionBeepTest(unittest.TestCase):
                     value = next(reads, None)
                     if value is None:
                         app._running = False
-                    return value
+                    return value, Mock()
 
                 with patch("main.mss.MSS"), \
                      patch.object(app, "_read_with_retry", side_effect=read) as ocr, \
                      patch("main.time.sleep", side_effect=lambda _: setattr(app, "_running", False)), \
                      patch.object(app, "_lock_mouse"), \
                      patch.object(app, "_unlock_mouse"), \
+                     patch("main.save_success_capture"), \
                      patch("main.time.perf_counter", return_value=100 + BEEP_COOLDOWN / 2), \
                      patch("main.threading.Thread") as thread:
                     app._ocr_loop()
@@ -114,7 +115,7 @@ class DetectionBeepTest(unittest.TestCase):
                     if calls == stop_at:
                         app._toggle_enter_spam()
                         app._running = False
-                    return "+123"
+                    return "+123", Mock()
 
                 with patch("main.mss.MSS"), \
                      patch.object(app, "_unlock_mouse"), \
