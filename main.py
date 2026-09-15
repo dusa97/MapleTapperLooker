@@ -2018,14 +2018,16 @@ if __name__ == "__main__":
         print(f"  No saved region yet — starting with a placeholder box at {region}. "
               "Use 'Choose region' (F8) or 'Auto-locate' (F7) in the app to set the real one.")
 
-    if not args.no_capture_check:
-        start_capture_check()
-
     print(f"\n  Watching region={region} — drag the box to reposition, drag a corner to resize.")
     print("  Close the control window to quit.\n")
-    OverlayApp(region, is_placeholder_region=is_placeholder, enter_spam=not args.no_enter_spam,
-               enter_hotkey=args.enter_hotkey,
-               enter_interval=args.enter_interval,
-               click_interval=args.click_interval,
-               beep_hotkey=args.beep_hotkey,
-               min_read_gap=args.interval).run()
+    app = OverlayApp(region, is_placeholder_region=is_placeholder, enter_spam=not args.no_enter_spam,
+                     enter_hotkey=args.enter_hotkey,
+                     enter_interval=args.enter_interval,
+                     click_interval=args.click_interval,
+                     beep_hotkey=args.beep_hotkey,
+                     min_read_gap=args.interval)
+    if not args.no_capture_check:
+        # The exe has no console (console=False in the spec), so the printed summary
+        # is invisible there — surface it in the app's own activity log instead.
+        start_capture_check(on_done=lambda summary: app._log(format_check_summary(summary).strip()))
+    app.run()
