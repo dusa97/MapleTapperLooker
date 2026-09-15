@@ -50,6 +50,8 @@ class VideoTest(unittest.TestCase):
         self.assertTrue(any("No videos found" in message for message in messages))
 
     def test_attached_panel_sound_and_single_player(self):
+        # Set the limit explicitly; the CI desktop can be narrower than this window.
+        self.app.root.maxsize(self.size[0] + 480, self.size[1])
         path = self.open_video()
         self.app.root.update_idletasks()
         self.assertEqual(self.factory.call_args.args, (str(path),))
