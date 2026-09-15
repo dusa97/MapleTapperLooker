@@ -36,11 +36,11 @@ OUT_PATH = REPO_ROOT / "assets" / "digit_templates.npz"
 # Hit captures whose logged value is known to NOT match what's actually in
 # the image (from before read_delta was fixed to save the exact frame that
 # produced a result, instead of a separate later screenshot that could show
-# something different). Exclude these from training even if still present.
-KNOWN_BAD = {
-    "hit_20260914_231259_+633221.png",
-    "hit_20260914_233154_+17971.png",
-}
+# something different). Excluded from training even if still present. The list
+# now lives in main.py because the startup capture re-check has to skip the same
+# files — two copies would drift, and a file dropped from only one of them would
+# either poison templates or report a regression that can't be fixed.
+KNOWN_BAD = m.KNOWN_BAD_CAPTURES
 
 HIT_NAME_RE = re.compile(r"hit_\d+_\d+_([+-]?\d+)\.png")
 
