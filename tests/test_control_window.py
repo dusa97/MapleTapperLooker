@@ -189,7 +189,8 @@ class ControlWindowTest(unittest.TestCase):
                 self.assertEqual(app._canvas.find_overlapping(x, y, x, y)[-1],
                                  app._handle_ids[corner])
             self.assertEqual(app._canvas.itemcget(app._rect_id, "fill"), "black")
-            self.assertEqual(app.overlay.attributes("-transparentcolor"), "black")
+            # str(): newer Tk returns a color object here rather than the plain string
+            self.assertEqual(str(app.overlay.attributes("-transparentcolor")), "black")
             self.assertFalse(app._canvas.tag_bind("border", "<Double-Button-1>"))
             with patch("main.time.monotonic", return_value=0):
                 app._render()
