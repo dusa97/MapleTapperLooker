@@ -6,3 +6,4 @@ opencv-python-headless
 numpy
 keyboard
 pydirectinput
+ffpyplayer

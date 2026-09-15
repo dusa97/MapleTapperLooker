@@ -81,7 +81,7 @@ try:
     import pytesseract
     import cv2              # template matching for F7 auto-locate
     import numpy as np
-    from PIL import Image, ImageDraw, ImageTk
+    from PIL import Image, ImageDraw, ImageOps, ImageTk
     import keyboard        # global hotkey to start/stop Enter+click spam — works even while the game has focus
     import pydirectinput   # DirectInput-style key injection — see the spam-loop comment below
 except ImportError as e:
@@ -968,6 +968,10 @@ class OverlayApp:
         self._activity_lines = []
         self._start_after = None
         self._ocr_available = True
+        self._video_player = None
+        self._video_panel = None
+        self._video_after = None
+        self._video_image = None
 
         # Enter+Left-Click spam — starts OFF, F9 toggles it on; a detection
         # beeps once (unless muted) and turns it back off until F9 is pressed
@@ -1016,7 +1020,7 @@ class OverlayApp:
         root.option_add("*Font", ("Segoe UI", 10))
 
         outer = tk.Frame(root, bg=UI_BG, padx=24, pady=20)
-        outer.pack(fill="both", expand=True)
+        outer.pack(side="left", fill="both", expand=True)
         header = tk.Frame(outer, bg=UI_BG)
         header.pack(fill="x", pady=(0, 14))
         tk.Label(header, image=self._logo_image, bg=UI_BG).pack(pady=(0, 10))
@@ -1088,6 +1092,10 @@ class OverlayApp:
         self._mute_button.pack(side="left", padx=8)
         self._button(audio_buttons, "Reset  (F12)", lambda: self._request_audio(self.alert.reset),
                      UI_BUTTON, UI_TEXT).pack(side="left")
+
+        self._bored_button = self._button(outer, "i'm bored", self._open_video,
+                                           UI_BUTTON, UI_TEXT)
+        self._bored_button.pack(pady=(14, 0))
 
         activity = self._card(outer)
         activity.pack(fill="both", expand=True, pady=(14, 0))
@@ -1161,6 +1169,92 @@ class OverlayApp:
 
     def _log(self, message):
         self._activity_pending.put(f"{time.strftime('%H:%M:%S')}  {message}")
+
+    def _open_video(self):
+        if self._video_panel is not None:
+            return
+        directory = _BASE_DIR / "videos"
+        try:
+            videos = [path for path in directory.iterdir()
+                      if path.is_file() and path.suffix.lower() in
+                      {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v"}]
+            if not videos:
+                self._log(f"No videos found in {directory}.")
+                return
+            from ffpyplayer.player import MediaPlayer
+            path = random.choice(videos)
+            events = queue.SimpleQueue()
+            self._video_events = events
+            self._video_player = MediaPlayer(
+                str(path), ff_opts={"volume": 1.0, "out_fmt": "rgb24"},
+                callback=lambda kind, value: events.put((kind, value)))
+            self._video_started = time.monotonic()
+            self._video_has_frame = False
+            self.root.update_idletasks()
+            self._video_base_size = (self.root.winfo_width(), self.root.winfo_height())
+            self._video_panel = self._card(self.root)
+            self._video_panel.configure(width=480)
+            self._video_panel.pack(side="right", fill="y")
+            self._video_panel.pack_propagate(False)
+            self._button(self._video_panel, "Close video", self._close_video,
+                         UI_BUTTON, UI_TEXT).pack(pady=12)
+            tk.Label(self._video_panel, text=path.name, wraplength=440,
+                     fg=UI_TEXT, bg=UI_SURFACE).pack(padx=12)
+            self._video_label = tk.Label(self._video_panel, text="Loading video…",
+                                         fg=UI_TEXT, bg="black")
+            self._video_label.pack(fill="both", expand=True, padx=12, pady=12)
+            width, height = self._video_base_size
+            self.root.geometry(f"{width + 480}x{height}")
+            self._bored_button.config(state="disabled")
+            self._log(f"Playing: {path.name}")
+            self._video_tick()
+        except Exception as exc:
+            self._log(f"Cannot play video: {exc}")
+            self._close_video()
+
+    def _video_tick(self):
+        self._video_after = None
+        try:
+            while not self._video_events.empty():
+                kind, value = self._video_events.get_nowait()
+                if kind.endswith(":error") or (kind == "read:exit" and value):
+                    raise RuntimeError(value or kind)
+            frame, delay = self._video_player.get_frame()
+            if delay == "eof":
+                self._close_video()
+                return
+            if frame is not None:
+                self._video_has_frame = True
+                image, _ = frame
+                picture = Image.frombytes("RGB", image.get_size(), bytes(image.to_bytearray()[0]))
+                picture = ImageOps.contain(
+                    picture, (max(1, self._video_label.winfo_width()),
+                              max(1, self._video_label.winfo_height())), Image.Resampling.LANCZOS)
+                self._video_image = ImageTk.PhotoImage(picture, master=self.root)
+                self._video_label.config(image=self._video_image, text="")
+            elif not self._video_has_frame and time.monotonic() - self._video_started > 10:
+                raise RuntimeError("No video frames received within 10 seconds.")
+            self._video_after = self.root.after(
+                max(10, min(100, int(delay * 1000))) if isinstance(delay, (int, float)) else 30,
+                self._video_tick)
+        except Exception as exc:
+            self._log(f"Video playback failed: {exc}")
+            self._close_video()
+
+    def _close_video(self):
+        if self._video_after is not None:
+            self.root.after_cancel(self._video_after)
+            self._video_after = None
+        if self._video_player is not None:
+            self._video_player.close_player()
+            self._video_player = None
+        if self._video_panel is not None:
+            self._video_panel.destroy()
+            self._video_panel = None
+            width, height = self._video_base_size
+            self.root.geometry(f"{width}x{height}")
+            self._bored_button.config(state="normal")
+        self._video_image = None
 
     def _request_selection(self):
         self._selection_requested.set()
@@ -1313,6 +1407,7 @@ class OverlayApp:
         self._running = False
         self._unlock_mouse()
         self.alert.close()
+        self._close_video()
         hotkeys = ["f7", "f8", "f11", "f12", self.beep_hotkey, self.enter_hotkey]
         for hk in hotkeys:
             try:

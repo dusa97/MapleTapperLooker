@@ -89,6 +89,18 @@ The selector covers all monitors. Selection pauses detection and stops automated
 The region is saved in `last_region.json` beside the script or executable.
 Double-clicking the overlay does not close the application; close the control window instead.
 
+### Play a random video
+
+1. Put video files in `videos/` beside `main.py` or `MapleTapperLooker.exe`.
+2. Click **i'm bored** to play one random video with sound in the attached right-side panel.
+
+The panel closes when playback ends. Click **Close video** to stop it early.
+The panel moves with the application. Detection audio mute does not mute video sound.
+Supported file extensions are `.mp4`, `.mkv`, `.mov`, `.avi`, `.webm`, and `.m4v`.
+Missing files and playback errors appear in **Recent activity**.
+Videos are not included in the executable. Copy the `videos/` folder separately.
+Source installations require `pip install -r requirements.txt` after this update.
+
 ### Record a detection message
 
 1. Press **F11** to record from the default microphone.
