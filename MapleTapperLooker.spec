@@ -10,7 +10,7 @@ a = Analysis(
     pathex=[],
     binaries=video_binaries,
     datas=[('assets/logo.png', 'assets'), ('assets/reference/combat_power_label.png', 'assets/reference'),
-           ('assets/digit_templates.npz', 'assets')] + video_datas,
+           ('assets/digit_templates.npz', 'assets'), ('videos', 'videos')] + video_datas,
     hiddenimports=video_imports,
     hookspath=[],
     hooksconfig={},

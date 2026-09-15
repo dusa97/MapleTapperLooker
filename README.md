@@ -91,14 +91,15 @@ Double-clicking the overlay does not close the application; close the control wi
 
 ### Play a random video
 
-1. Put video files in `videos/` beside `main.py` or `MapleTapperLooker.exe`.
-2. Click **i'm bored** to play one random video with sound in the attached right-side panel.
+Click **i'm bored** to play one random video with sound in the attached right-side panel.
+The executable includes the videos. No separate folder is required.
+To use your own collection, create `videos/` beside `MapleTapperLooker.exe` and put video files there.
+This external folder replaces the bundled collection. Source installations use `videos/` beside `main.py`.
 
 The panel closes when playback ends. Click **Close video** to stop it early.
 The panel moves with the application. Detection audio mute does not mute video sound.
 Supported file extensions are `.mp4`, `.mkv`, `.mov`, `.avi`, `.webm`, and `.m4v`.
 Missing files and playback errors appear in **Recent activity**.
-Videos are not included in the executable. Copy the `videos/` folder separately.
 Source installations require `pip install -r requirements.txt` after this update.
 
 ### Record a detection message
