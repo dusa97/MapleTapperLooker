@@ -1174,6 +1174,8 @@ class OverlayApp:
         if self._video_panel is not None:
             return
         directory = _BASE_DIR / "videos"
+        if getattr(sys, "frozen", False) and not directory.is_dir():
+            directory = Path(__file__).parent / "videos"
         try:
             videos = [path for path in directory.iterdir()
                       if path.is_file() and path.suffix.lower() in

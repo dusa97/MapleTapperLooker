@@ -37,6 +37,19 @@ class VideoTest(unittest.TestCase):
         self.app._open_video()
         return path
 
+    def test_executable_uses_bundled_videos_unless_external_folder_exists(self):
+        bundle = self.base / "_MEI_bundle"
+        (bundle / "videos").mkdir(parents=True)
+        bundled_video = bundle / "videos" / "included.mp4"
+        bundled_video.touch()
+        with patch("main.sys.frozen", True, create=True), \
+                patch("main.__file__", str(bundle / "main.py")):
+            self.app._open_video()
+            self.assertEqual(self.factory.call_args.args, (str(bundled_video),))
+            self.app._close_video()
+            external_video = self.open_video()
+            self.assertEqual(self.factory.call_args.args, (str(external_video),))
+
     def test_missing_and_empty_directory(self):
         self.app._open_video()
         (self.base / "videos").mkdir()
