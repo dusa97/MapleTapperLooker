@@ -7,6 +7,9 @@ from main import BEEP_COOLDOWN, OverlayApp, beep
 
 
 class DetectionBeepTest(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(patch("discord_alerts.DiscordSettingsStore.load", return_value=None))
+
     def test_alert_uses_recording_with_beep_fallback(self):
         app = OverlayApp((0, 0, 100, 100))
         with patch.object(app.alert, "play") as play:

@@ -7,6 +7,9 @@ from main import OverlayApp, UI_ACCENT, UI_BG, UI_BUTTON, UI_PRIMARY, UI_SURFACE
 
 
 class ControlWindowTest(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(patch("discord_alerts.DiscordSettingsStore.load", return_value=None))
+
     def app(self):
         app = OverlayApp((0, 0, 100, 100))
         app.root = Mock()

@@ -451,7 +451,9 @@ def send_webhook(settings: DiscordSettings, value: str = "", image: bytes | None
         return "Discord alert failed."
     body, boundary = _multipart(settings, value, image, test)
     request = Request(settings.webhook_url + "?wait=true", body,
-                      {"Content-Type": f"multipart/form-data; boundary={boundary}"}, method="POST")
+                      {"Content-Type": f"multipart/form-data; boundary={boundary}",
+                       "User-Agent": "MapleTapperLooker (https://github.com/dusa97/MapleTapperLooker, 1.0)"},
+                      method="POST")
     try:
         opener = build_opener(_NoRedirect)
         with opener.open(request, timeout=10):

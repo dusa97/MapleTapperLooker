@@ -192,6 +192,8 @@ class DeliveryTest(unittest.TestCase):
         request = opener.open.call_args.args[0]
         self.assertEqual(result, "Discord alert accepted.")
         self.assertTrue(request.full_url.endswith("?wait=true"))
+        self.assertEqual(request.get_header("User-agent"),
+                         "MapleTapperLooker (https://github.com/dusa97/MapleTapperLooker, 1.0)")
         self.assertIn(b'"parse":[]', request.data)
         self.assertIn(b'"users":["456"]', request.data)
         self.assertIn(b'filename="game.jpg"', request.data)
