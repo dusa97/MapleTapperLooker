@@ -11,6 +11,9 @@ def event(x, y):
 
 
 class RegionSelectionTest(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(patch("discord_alerts.DiscordSettingsStore.load", return_value=None))
+
     def selector(self):
         selector = RegionSelector.__new__(RegionSelector)
         selector.root = Mock()

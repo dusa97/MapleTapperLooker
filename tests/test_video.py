@@ -10,6 +10,7 @@ from main import OverlayApp
 @unittest.skipUnless(platform.system() == "Windows", "The control window requires Windows")
 class VideoTest(unittest.TestCase):
     def setUp(self):
+        self.enterContext(patch("discord_alerts.DiscordSettingsStore.load", return_value=None))
         self.folder = tempfile.TemporaryDirectory()
         self.addCleanup(self.folder.cleanup)
         self.base = Path(self.folder.name)

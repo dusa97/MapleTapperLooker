@@ -1,11 +1,15 @@
 """Check detection beeps without screen capture or keyboard input."""
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from main import BEEP_COOLDOWN, OverlayApp, beep
 
 
 class DetectionBeepTest(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(patch("discord_alerts.DiscordSettingsStore.load", return_value=None))
+
     def test_alert_uses_recording_with_beep_fallback(self):
         app = OverlayApp((0, 0, 100, 100))
         with patch.object(app.alert, "play") as play:
@@ -101,6 +105,33 @@ class DetectionBeepTest(unittest.TestCase):
                     self.assertFalse(app.enter_on)
                 else:
                     self.assertTrue(app.enter_on)
+
+    def test_confirmed_hit_pauses_before_discord_job(self):
+        app = OverlayApp((0, 0, 100, 100))
+        app.enter_on = True
+        target = object()
+        app._activation_target = target
+        activation = app._activation
+        def schedule(_value, _target, **_kwargs):
+            self.assertFalse(app.enter_on)
+            app._running = False
+            return True
+        schedule = Mock(side_effect=schedule)
+        app.discord = SimpleNamespace(enabled=True, schedule=schedule)
+        reads = iter(["+123", "+123"])
+
+        def read(_sct):
+            value = next(reads, None)
+            if value is None:
+                app._running = False
+            return value, Mock()
+
+        with patch("main.mss.MSS"), patch.object(app, "_read_with_retry", side_effect=read), \
+             patch("main.save_success_capture"), patch("main.target_is_current", return_value=True), \
+             patch.object(app, "_unlock_mouse"), patch("main.threading.Thread"):
+            app._ocr_loop()
+        schedule.assert_called_once_with("+123", target, activation=activation)
+        self.assertFalse(app.enter_on)
 
     def test_disable_during_read_discards_detection(self):
         for stop_at in (1, 2):

@@ -4,14 +4,15 @@
 from PyInstaller.utils.hooks import collect_all
 
 video_datas, video_binaries, video_imports = collect_all('ffpyplayer')
+capture_datas, capture_binaries, capture_imports = collect_all('windows_capture')
 
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=video_binaries,
+    binaries=video_binaries + capture_binaries,
     datas=[('assets/logo.png', 'assets'), ('assets/reference/combat_power_label.png', 'assets/reference'),
-           ('assets/digit_templates.npz', 'assets'), ('videos', 'videos')] + video_datas,
-    hiddenimports=video_imports,
+           ('assets/digit_templates.npz', 'assets'), ('videos', 'videos')] + video_datas + capture_datas,
+    hiddenimports=video_imports + capture_imports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -21,7 +22,7 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
-# opencv-python-headless still bundles its FFmpeg video-decoding backend even though
+# opencv-python still bundles its FFmpeg video-decoding backend even though
 # this app only ever calls cv2.cvtColor/resize/matchTemplate/minMaxLoc for auto-locate's
 # template matching - no video or image-file I/O through cv2 at all - so that ~30MB DLL
 # is dead weight here. Cutting it from the collected binaries before building the EXE.

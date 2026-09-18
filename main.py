@@ -40,6 +40,12 @@ Tesseract OCR engine:
     - Linux   : sudo apt install tesseract-ocr
 """
 
+# PyInstaller starts spawned capture helpers through this entry point. This must
+# run before normal imports so a helper never builds the Tk application.
+if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
+
 import re
 import sys
 import time
@@ -75,6 +81,7 @@ if platform.system() == "Windows":
             pass
 
 from recorded_alert import RecordedAlert
+from discord_alerts import DiscordNotifier, bind_foreground_target, target_is_current
 
 try:
     import mss              # screen capture — ~2x faster and far more consistent than pyautogui.screenshot
@@ -1001,6 +1008,12 @@ class OverlayApp:
         self._autolocate_available = True
         self._box_visible = True
         self._box_toggle_button = None
+        self._activation_target = None
+        self.discord = DiscordNotifier(log=self._log)
+        self._discord_button = None
+        self._discord_settings_button = None
+        self._mute_var = None
+        self._discord_var = None
 
     def _build_window(self):
         """Build the normal taskbar window plus the capture-safe screen overlay."""
@@ -1081,8 +1094,9 @@ class OverlayApp:
             draw.ellipse((x, 6, x + 75, 77), fill="white")
             self._mute_images.append(ImageTk.PhotoImage(
                 image.resize((56, 28), Image.Resampling.LANCZOS), master=root))
+        self._mute_var = tk.BooleanVar(root, value=False)
         self._mute_button = tk.Checkbutton(
-            audio_buttons, text="Mute  (F10)", command=self._toggle_beep,
+            audio_buttons, text="Mute  (F10)", command=self._toggle_beep, variable=self._mute_var,
             image=self._mute_images[0], selectimage=self._mute_images[1],
             indicatoron=False, compound="left", relief="flat", offrelief="flat",
             borderwidth=0, bg=UI_SURFACE, fg=UI_TEXT, selectcolor=UI_SURFACE,
@@ -1092,6 +1106,31 @@ class OverlayApp:
         self._mute_button.pack(side="left", padx=8)
         self._button(audio_buttons, "Reset  (F12)", lambda: self._request_audio(self.alert.reset),
                      UI_BUTTON, UI_TEXT).pack(side="left")
+
+        discord = self._card(outer)
+        discord.pack(fill="x", pady=(14, 0))
+        tk.Label(discord, text="Discord alerts", fg=UI_TEXT, bg=UI_SURFACE,
+                 font=("Segoe UI", 12, "bold"), anchor="center").pack(fill="x", padx=16, pady=(14, 3))
+        tk.Label(discord, text="Posts a server-channel mention and can include game chat. Not a DM or guaranteed notification.",
+                 fg=UI_MUTED, bg=UI_SURFACE, anchor="center", justify="center", wraplength=450).pack(
+                     fill="x", padx=16, pady=(0, 10))
+        discord_buttons = tk.Frame(discord, bg=UI_SURFACE)
+        discord_buttons.pack(padx=16, pady=(0, 14))
+        self._discord_var = tk.BooleanVar(root, value=self.discord.enabled)
+        self._discord_button = tk.Checkbutton(
+            discord_buttons, text="Discord alerts", command=self._toggle_discord, variable=self._discord_var,
+            image=self._mute_images[0], selectimage=self._mute_images[1], indicatoron=False,
+            compound="left", relief="flat", offrelief="flat", borderwidth=0, bg=UI_SURFACE,
+            fg=UI_TEXT, selectcolor=UI_SURFACE, activebackground=UI_SURFACE,
+            activeforeground=UI_TEXT, highlightbackground=UI_SURFACE, highlightcolor=UI_PRIMARY,
+            highlightthickness=1, takefocus=True, padx=6, pady=5, cursor="hand2",
+            state="normal" if self.discord.supported else "disabled")
+        self._discord_button.pack(side="left")
+        self._discord_settings_button = self._button(discord_buttons, "Discord settings", self._open_discord_settings,
+                                                      UI_BUTTON, UI_TEXT)
+        self._discord_settings_button.pack(side="left", padx=(8, 0))
+        if not self.discord.supported:
+            self._log("Discord alerts need Windows DPAPI and are unavailable here.")
 
         self._bored_button = self._button(outer, "i'm bored", self._open_video,
                                            UI_BUTTON, UI_TEXT)
@@ -1407,6 +1446,10 @@ class OverlayApp:
     def _quit(self):
         print("\nStopped.")
         self._running = False
+        self.discord.close()
+        target = getattr(self, "_activation_target", None)
+        if target is not None and hasattr(target, "close"):
+            target.close()
         self._unlock_mouse()
         self.alert.close()
         self._close_video()
@@ -1481,6 +1524,21 @@ class OverlayApp:
             return
         self.enter_on = value
         self._activation += 1
+        if value:
+            previous = getattr(self, "_activation_target", None)
+            if previous is not None and hasattr(previous, "close"):
+                previous.close()
+            self._activation_target = None
+            own_hwnds = []
+            for window in (self.root, self.overlay):
+                try:
+                    own_hwnds.append(window.winfo_id())
+                except (AttributeError, tk.TclError):
+                    pass
+            self._activation_target = bind_foreground_target(
+                self.region, own_hwnds, report=self._log if self.discord.enabled else None)
+            if self.discord.enabled and self._activation_target is None:
+                self._log("Discord images unavailable for this activation; text alerts still work.")
         if value and self.enter_spam_enabled:
             self._lock_mouse()
         else:
@@ -1508,6 +1566,82 @@ class OverlayApp:
         the Enter+Click spam state."""
         self.beep_enabled = not self.beep_enabled
         self._log(f"Audio {'unmuted' if self.beep_enabled else 'muted'}.")
+
+    def _toggle_discord(self):
+        requested = not self.discord.enabled
+        try:
+            if not self.discord.set_enabled(requested):
+                self._log("Set Discord webhook and user ID before enabling alerts.")
+                return
+        except OSError:
+            self._log("Could not save Discord settings.")
+        else:
+            self._log(f"Discord alerts {'enabled' if requested else 'disabled'}.")
+        finally:
+            if self._discord_var is not None:
+                self._discord_var.set(self.discord.enabled)
+
+    def _open_discord_settings(self):
+        if not self.discord.supported:
+            return
+        current = self.discord.settings
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Discord settings")
+        dialog.configure(bg=UI_BG)
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        body = tk.Frame(dialog, bg=UI_BG, padx=20, pady=18)
+        body.pack(fill="both", expand=True)
+        tk.Label(body, text="Posts to a server channel, mentions one user, and can include game chat. It is not a DM.",
+                 bg=UI_BG, fg=UI_MUTED, justify="left", wraplength=420).pack(fill="x", pady=(0, 12))
+        tk.Label(body, text="Webhook URL", bg=UI_BG, fg=UI_TEXT, anchor="w").pack(fill="x")
+        webhook = tk.Entry(body, width=54, show="•")
+        webhook.pack(fill="x", pady=(2, 8))
+        webhook.insert(0, current.webhook_url if current else "")
+        tk.Label(body, text="Discord user ID", bg=UI_BG, fg=UI_TEXT, anchor="w").pack(fill="x")
+        user_id = tk.Entry(body, width=54)
+        user_id.pack(fill="x", pady=(2, 4))
+        user_id.insert(0, current.user_id if current else "")
+        error = tk.Label(body, text="", bg=UI_BG, fg=UI_PRIMARY_ACTIVE, anchor="w")
+        error.pack(fill="x", pady=(0, 8))
+        buttons = tk.Frame(body, bg=UI_BG)
+        buttons.pack()
+
+        def save():
+            try:
+                self.discord.save_settings(webhook.get(), user_id.get())
+            except ValueError as exc:
+                error.config(text=str(exc))
+                return
+            except OSError:
+                error.config(text="Could not save settings. Previous settings were kept.")
+                return
+            self._log("Discord settings saved.")
+            dialog.destroy()
+
+        def clear():
+            try:
+                self.discord.clear()
+            except OSError:
+                error.config(text="Could not clear settings.")
+                return
+            if self._discord_var is not None:
+                self._discord_var.set(False)
+            self._log("Discord settings cleared and disabled.")
+            dialog.destroy()
+
+        def test_alert():
+            if self.discord.settings is None:
+                error.config(text="Save valid settings before sending a test alert.")
+                return
+            if not self.discord.schedule("", test=True):
+                error.config(text="A Discord alert is already pending.")
+
+        self._button(buttons, "Save", save, UI_PRIMARY, UI_BG).pack(side="left")
+        self._button(buttons, "Cancel", dialog.destroy, UI_BUTTON, UI_TEXT).pack(side="left", padx=8)
+        self._button(buttons, "Clear settings", clear, UI_BUTTON, UI_TEXT).pack(side="left")
+        self._button(buttons, "Send test alert", test_alert, UI_BUTTON, UI_TEXT).pack(side="left", padx=(8, 0))
+        webhook.focus_set()
 
     def _play_alert(self):
         self.alert.play(beep)
@@ -1623,16 +1757,22 @@ class OverlayApp:
                         self.status_text = value
                         self.last_value = value
                         self._log(f"Detected {value}.")
+                        target = self._activation_target
+                        self._set_enter_on(False)
                         try:
                             save_success_capture(confirm_img, value)
                         except Exception:
                             pass
+                        if self.discord.enabled:
+                            if target is not None and not target_is_current(target):
+                                target = None
+                            if not self.discord.schedule(value, target, activation=activation):
+                                self._log("Discord alert skipped.")
                         if self.beep_enabled:
                             now = time.perf_counter()
                             if now - self.last_beep_time >= BEEP_COOLDOWN:
                                 threading.Thread(target=self._play_alert, daemon=True).start()
                                 self.last_beep_time = now
-                        self._set_enter_on(False)
                         self._log("Detection paused after confirmed value.")
                     else:
                         self._log(f"Ignored a {CONFIRM_ATTEMPTS}-frame OCR false positive.")
@@ -1720,6 +1860,11 @@ class OverlayApp:
                 self._mute_button.deselect()
             else:
                 self._mute_button.select()
+            if self._discord_button is not None:
+                if self.discord.enabled:
+                    self._discord_button.select()
+                else:
+                    self._discord_button.deselect()
             self._record_button.config(text=("Save message" if self.alert.recording else "Record") + "  (F11)")
         activity_changed = False
         for _ in range(100):

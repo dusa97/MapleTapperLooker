@@ -7,6 +7,9 @@ from main import OverlayApp, UI_ACCENT, UI_BG, UI_BUTTON, UI_PRIMARY, UI_SURFACE
 
 
 class ControlWindowTest(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(patch("discord_alerts.DiscordSettingsStore.load", return_value=None))
+
     def app(self):
         app = OverlayApp((0, 0, 100, 100))
         app.root = Mock()
@@ -84,6 +87,19 @@ class ControlWindowTest(unittest.TestCase):
         self.assertFalse(app.hit)
         self.assertFalse(app._prev_hit)
 
+    def test_watching_binds_one_foreground_target_for_the_activation(self):
+        app = self.app()
+        target = Mock()
+        with patch("main.bind_foreground_target", return_value=target) as bind, \
+             patch.object(app, "_lock_mouse"):
+            app._set_enter_on(True)
+            app._set_enter_on(False)
+            target.close.assert_not_called()
+            bind.assert_called_once()
+            app._set_enter_on(True)
+            target.close.assert_called_once()
+            self.assertEqual(bind.call_count, 2)
+
     def test_f9_queue_cancels_countdown_on_render(self):
         app = self.app()
         app._start_after = "pending-start"
@@ -136,6 +152,71 @@ class ControlWindowTest(unittest.TestCase):
         self.assertIn("OCR error", app.status_text)
 
     @unittest.skipUnless(platform.system() == "Windows", "Windows overlay uses transparentcolor")
+    def test_discord_settings_dialog_masks_webhook_and_cancel_keeps_settings(self):
+        app = OverlayApp((0, 0, 100, 100), enter_spam=False)
+        try:
+            root = app._build_window()
+            app._open_discord_settings()
+            dialog = next(window for window in root.winfo_children()
+                          if window.winfo_class() == "Toplevel" and window.title() == "Discord settings")
+            entries = []
+            buttons = []
+
+            def collect(widget):
+                for child in widget.winfo_children():
+                    if child.winfo_class() == "Entry":
+                        entries.append(child)
+                    if child.winfo_class() == "Button":
+                        buttons.append(child)
+                    collect(child)
+            collect(dialog)
+            self.assertEqual(entries[0].cget("show"), "•")
+            self.assertCountEqual([button.cget("text") for button in buttons],
+                                  ["Save", "Cancel", "Clear settings", "Send test alert"])
+            next(button for button in buttons if button.cget("text") == "Cancel").invoke()
+            self.assertIsNone(app.discord.settings)
+        finally:
+            if app.root is not None:
+                for pending in app.root.tk.call("after", "info"):
+                    app.root.after_cancel(pending)
+                app.root.destroy()
+
+    @unittest.skipUnless(platform.system() == "Windows", "Windows overlay uses transparentcolor")
+    def test_discord_checkbox_reflects_saved_toggle_and_clear_immediately(self):
+        from discord_alerts import DiscordNotifier, DiscordSettings
+        from tests.test_discord_alerts import MemoryStore
+        app = OverlayApp((0, 0, 100, 100), enter_spam=False)
+        saved = DiscordSettings("https://discord.com/api/webhooks/1/synthetic", "2", True)
+        app.discord = DiscordNotifier(MemoryStore(saved))
+        try:
+            root = app._build_window()
+            self.assertTrue(app._discord_var.get())
+            app._discord_button.invoke()
+            self.assertFalse(app.discord.enabled)
+            self.assertFalse(app._discord_var.get())
+            app._discord_button.invoke()
+            self.assertTrue(app._discord_var.get())
+            app._open_discord_settings()
+            dialog = next(window for window in root.winfo_children()
+                          if window.winfo_class() == "Toplevel" and window.title() == "Discord settings")
+            def clear_button(widget):
+                for child in widget.winfo_children():
+                    if child.winfo_class() == "Button" and child.cget("text") == "Clear settings":
+                        return child
+                    found = clear_button(child)
+                    if found is not None:
+                        return found
+            clear_button(dialog).invoke()
+            self.assertFalse(app.discord.enabled)
+            self.assertFalse(app._discord_var.get())
+        finally:
+            app.discord.close()
+            if app.root is not None:
+                for pending in app.root.tk.call("after", "info"):
+                    app.root.after_cancel(pending)
+                app.root.destroy()
+
+    @unittest.skipUnless(platform.system() == "Windows", "Windows overlay uses transparentcolor")
     def test_real_window_build_and_render(self):
         app = OverlayApp((0, 0, 100, 100), enter_spam=False)
         try:
@@ -176,6 +257,11 @@ class ControlWindowTest(unittest.TestCase):
             app._render()
             self.assertTrue(app.beep_enabled)
             self.assertEqual(int(root.getvar(mute.cget("variable"))), 0)
+            discord = app._discord_button
+            self.assertEqual(discord.winfo_class(), "Checkbutton")
+            self.assertFalse(int(discord.cget("indicatoron")))
+            self.assertTrue(discord.cget("takefocus"))
+            self.assertEqual(app._discord_settings_button.cget("text"), "Discord settings")
             self.assertEqual(app._activity_list.cget("state"), "disabled")
             self.assertTrue(app.overlay.winfo_exists())
             self.assertEqual(app.region, [0, 0, 100, 100])
@@ -212,6 +298,8 @@ class ControlWindowTest(unittest.TestCase):
             self.assertEqual(app.region, [0, 0, 100, 100])
         finally:
             if app.root is not None:
+                for pending in app.root.tk.call("after", "info"):
+                    app.root.after_cancel(pending)
                 app.root.destroy()
 
 
