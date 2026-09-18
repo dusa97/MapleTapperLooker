@@ -129,6 +129,56 @@ Settings are saved only under `%LOCALAPPDATA%\MapleTapperLooker\discord-settings
 
 Discord images require Windows 10 version 1903 or later, Windows x64 graphics capture, and a supported game display mode. Protected content, exclusive fullscreen, minimization, HDR, or graphics failures can produce text-only alerts.
 
+#### First-time Discord setup
+
+Use the Discord desktop app or website for these steps. You need two values:
+
+- **Webhook URL:** a secret address that lets this tool post to one server channel.
+- **Discord user ID:** the numeric account identifier used to mention you. It is not your username or display name.
+
+Messages go to a server channel, not a direct message. Anyone who can view that channel can see its alerts and images.
+Use a private channel that your account can access. No bot or paid Discord subscription is required.
+
+**1. Get a webhook URL**
+
+If you need a server, click **+** in Discord's left sidebar, then select **Create My Own**.
+Use a server you own, or ask its administrator for the **Manage Webhooks** permission in the chosen channel.
+
+1. Open your server's menu and select **Server Settings**.
+2. Open **Integrations**, then **Webhooks**.
+3. Click **Create Webhook** or **New Webhook**, depending on what Discord shows.
+4. Name it **MapleTapperLooker**, select your alert text channel, and save the changes.
+5. Click **Copy Webhook URL**. Keep the copied address private.
+
+The address starts with `https://discord.com/api/webhooks/`. Copy the entire address, not a channel link or server invite.
+
+> [!WARNING]
+> Treat the webhook URL like a password. Anyone with it can post to its channel.
+> Never put it in screenshots, bug reports, or public chats.
+> If you share it accidentally, delete that webhook and create a replacement. Update the app with the new URL.
+
+**2. Get your Discord user ID**
+
+1. Click the gear beside your Discord username to open **User Settings**.
+2. Open **Advanced** and enable **Developer Mode**.
+3. Find yourself in your server's member list, or use one of your own messages.
+4. Right-click your username and select **Copy User ID**.
+
+Copy your account's numeric ID, not the server, channel, or message ID. Developer Mode does not require programming knowledge.
+
+**3. Connect the app and check it**
+
+1. Open **Discord settings** in MapleTapperLooker.
+2. Paste the two values into **Webhook URL** and **Discord user ID**, then click **Save**.
+3. Reopen **Discord settings** and click **Send test alert**. Check your chosen channel for a text-only test mention.
+4. Enable **Discord alerts** in the main window. The test button works even when this checkbox is off.
+5. Focus the game and press **F9**. A confirmed hit sends the mention and game image when capture is available.
+
+The test button never sends an image. Only a confirmed detection requests a game image.
+If the image is unavailable, read the reason in **Recent activity**. Discord acceptance does not guarantee a phone notification.
+
+Official Discord guides: [Create a webhook](https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks) · [Find your user ID](https://support.discord.com/hc/en-us/articles/206346498-Where-can-I-find-my-User-Server-Message-ID).
+
 ## Run from source
 
 Use Windows, Tesseract OCR, and Python. The release workflow builds and tests with **Python 3.11**.
