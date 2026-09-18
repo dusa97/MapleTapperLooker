@@ -1447,6 +1447,9 @@ class OverlayApp:
         print("\nStopped.")
         self._running = False
         self.discord.close()
+        target = getattr(self, "_activation_target", None)
+        if target is not None and hasattr(target, "close"):
+            target.close()
         self._unlock_mouse()
         self.alert.close()
         self._close_video()
@@ -1521,8 +1524,11 @@ class OverlayApp:
             return
         self.enter_on = value
         self._activation += 1
-        self._activation_target = None
         if value:
+            previous = getattr(self, "_activation_target", None)
+            if previous is not None and hasattr(previous, "close"):
+                previous.close()
+            self._activation_target = None
             own_hwnds = []
             for window in (self.root, self.overlay):
                 try:
@@ -1618,13 +1624,8 @@ class OverlayApp:
             dialog.destroy()
 
         def test_alert():
-            try:
-                self.discord.save_settings(webhook.get(), user_id.get())
-            except ValueError as exc:
-                error.config(text=str(exc))
-                return
-            except OSError:
-                error.config(text="Could not save settings. Previous settings were kept.")
+            if self.discord.settings is None:
+                error.config(text="Save valid settings before sending a test alert.")
                 return
             if not self.discord.schedule("", test=True):
                 error.config(text="A Discord alert is already pending.")
@@ -1757,9 +1758,8 @@ class OverlayApp:
                             pass
                         if self.discord.enabled:
                             if target is not None and not target_is_current(target):
-                                self._activation_target = None
                                 target = None
-                            if not self.discord.schedule(value, target):
+                            if not self.discord.schedule(value, target, activation=activation):
                                 self._log("Discord alert skipped.")
                         if self.beep_enabled:
                             now = time.perf_counter()

@@ -1,9 +1,12 @@
 """Private Discord hit alerts with Windows-only protected settings and capture."""
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from io import BytesIO
 import ctypes
+from ctypes import wintypes
+from functools import lru_cache
 import json
 import multiprocessing
 import os
@@ -41,13 +44,17 @@ class WindowTarget:
 
 
 def _snowflake(value: str, field: str) -> str:
-    if not isinstance(value, str) or not value.isdecimal() or not (0 < int(value) <= MAX_SNOWFLAKE):
+    if not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]{0,19}", value) or not (0 < int(value) <= MAX_SNOWFLAKE):
         raise ValueError(f"Enter a valid {field}.")
     return value
 
 
 def validate_settings(webhook_url: str, user_id: str) -> DiscordSettings:
     """Validate local fields before storage or network I/O."""
+    if not isinstance(webhook_url, str) or not webhook_url.startswith("https://discord.com/"):
+        raise ValueError("Enter a canonical Discord webhook URL.")
+    if any(ord(c) <= 32 or ord(c) >= 127 for c in webhook_url) or "?" in webhook_url or "#" in webhook_url:
+        raise ValueError("Enter a canonical Discord webhook URL.")
     parsed = urlsplit(webhook_url)
     if (parsed.scheme != "https" or parsed.hostname != "discord.com" or parsed.netloc != "discord.com"
             or parsed.query or parsed.fragment or parsed.username or parsed.password):
@@ -108,9 +115,11 @@ class DiscordSettingsStore:
     def load(self) -> DiscordSettings | None:
         try:
             payload = json.loads(self.unprotect(self.path.read_bytes()).decode("utf-8"))
+            if not isinstance(payload, dict) or type(payload.get("enabled", False)) is not bool:
+                return None
             settings = validate_settings(payload["webhook_url"], payload["user_id"])
-            return replace(settings, enabled=bool(payload.get("enabled", False)))
-        except (OSError, ValueError, KeyError, UnicodeError, json.JSONDecodeError):
+            return replace(settings, enabled=payload.get("enabled", False))
+        except (OSError, ValueError, KeyError, TypeError, UnicodeError):
             return None
 
     def save(self, webhook_url: str, user_id: str, enabled: bool = False) -> DiscordSettings:
@@ -141,9 +150,28 @@ class DiscordSettingsStore:
             raise OSError("Could not clear Discord settings.") from None
 
 
+@lru_cache(maxsize=1)
+def _windows_api():
+    """Declare pointer-sized Windows handles before use."""
+    user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.c_void_p] * 4
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    for name in ("GetForegroundWindow", "GetDesktopWindow", "GetShellWindow", "GetAncestor"):
+        getattr(user32, name).restype = wintypes.HWND
+    user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+    for name in ("IsWindow", "IsWindowVisible", "IsIconic"):
+        getattr(user32, name).argtypes = [wintypes.HWND]
+    user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.c_void_p]
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.c_void_p]
+    return user32, kernel32
+
+
 def _process_creation_time(pid: int) -> int | None:
     if os.name != "nt" or not pid:
         return None
+    _windows_api()
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not handle:
@@ -162,7 +190,7 @@ def _process_creation_time(pid: int) -> int | None:
 def _window_target(hwnd: int, region: tuple | list | None = None) -> WindowTarget | None:
     if os.name != "nt" or not hwnd:
         return None
-    user32 = ctypes.windll.user32
+    user32, _kernel32 = _windows_api()
     if (not user32.IsWindow(hwnd) or user32.GetAncestor(hwnd, 2) != hwnd
             or not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd)
             or hwnd in (user32.GetDesktopWindow(), user32.GetShellWindow())):
@@ -183,22 +211,107 @@ def _window_target(hwnd: int, region: tuple | list | None = None) -> WindowTarge
 def bind_foreground_target(region: tuple | list, own_hwnds=()) -> WindowTarget | None:
     if os.name != "nt":
         return None
-    hwnd = ctypes.windll.user32.GetForegroundWindow()
+    user32, _kernel32 = _windows_api()
+    hwnd = user32.GetForegroundWindow()
     if hwnd in set(own_hwnds):
         return None
-    return _window_target(hwnd, region)
+    identity = _window_target(hwnd, region)
+    if identity is None or identity.pid == os.getpid():
+        return None
+    watch = WindowWatch(hwnd)
+    if watch.identity != identity or not watch.current():
+        watch.close()
+        return None
+    return watch
 
 
 def target_is_current(target: WindowTarget | None) -> bool:
-    if target is None:
+    if isinstance(target, WindowWatch):
+        return target.current()
+    if not isinstance(target, WindowTarget):
         return False
+    for value, bits in ((target.hwnd, ctypes.sizeof(ctypes.c_void_p) * 8),
+                        (target.pid, 32), (target.creation_time, 64)):
+        if type(value) is not int or not (0 < value < 1 << bits):
+            return False
     current = _window_target(target.hwnd)
     return current is not None and current.pid == target.pid and current.creation_time == target.creation_time
 
 
+class WindowWatch:
+    """Keep destruction irreversible while an activation or helper uses a HWND."""
+    def __init__(self, hwnd):
+        self.hwnd = hwnd
+        self.identity = None
+        self._invalid = threading.Event()
+        self._stop = threading.Event()
+        self._ready = threading.Event()
+        self._checks = queue.Queue()
+        self._thread = threading.Thread(target=self._watch, daemon=True)
+        self._thread.start()
+        if not self._ready.wait(1):
+            self._invalid.set()
+
+    def _watch(self):
+        hook = None
+        try:
+            user32, _kernel32 = _windows_api()
+            callback_type = ctypes.WINFUNCTYPE(None, wintypes.HANDLE, wintypes.DWORD, wintypes.HWND,
+                                               wintypes.LONG, wintypes.LONG, wintypes.DWORD, wintypes.DWORD)
+            def destroyed(_hook, _event, hwnd, object_id, child_id, _thread, _time):
+                if hwnd == self.hwnd and object_id == 0 and child_id == 0:
+                    self._invalid.set()
+            callback = callback_type(destroyed)
+            user32.SetWinEventHook.restype = wintypes.HANDLE
+            user32.SetWinEventHook.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.HMODULE,
+                                               callback_type, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD]
+            user32.UnhookWinEvent.argtypes = [wintypes.HANDLE]
+            hook = user32.SetWinEventHook(0x8001, 0x8001, None, callback, 0, 0, 0)
+            if not hook:
+                self._invalid.set()
+                return
+            self.identity = _window_target(self.hwnd)
+            self._ready.set()
+            message = wintypes.MSG()
+            while not self._stop.is_set():
+                while user32.PeekMessageW(ctypes.byref(message), None, 0, 0, 1):
+                    user32.TranslateMessage(ctypes.byref(message))
+                    user32.DispatchMessageW(ctypes.byref(message))
+                if self.identity is None or _window_target(self.hwnd) != self.identity:
+                    self._invalid.set()
+                while True:
+                    try:
+                        self._checks.get_nowait().set()
+                    except queue.Empty:
+                        break
+                self._stop.wait(0.01)
+        except Exception:
+            self._invalid.set()
+        finally:
+            self._invalid.set()
+            self._ready.set()
+            if hook:
+                user32.UnhookWinEvent(hook)
+
+    def current(self):
+        if self._invalid.is_set() or not self._thread.is_alive():
+            return False
+        checked = threading.Event()
+        self._checks.put(checked)
+        return checked.wait(0.25) and not self._invalid.is_set()
+
+    def close(self):
+        self._invalid.set()
+        self._stop.set()
+        self._thread.join()
+
+
 def _jpeg_from_frame(frame) -> bytes | None:
     from PIL import Image
-    image = Image.fromarray(frame.frame_buffer.copy(), "RGBA").convert("RGB")
+    buffer = frame.frame_buffer
+    if len(buffer.shape) != 3 or buffer.shape[2] != 4 or buffer.shape[0] * buffer.shape[1] > MAX_CAPTURE_PIXELS:
+        return None
+    image = Image.fromarray(buffer[:, :, [2, 1, 0, 3]].copy(), "RGBA").convert("RGB")
     if not image.width or not image.height or image.width * image.height > MAX_CAPTURE_PIXELS:
         return None
     if all(high == 0 for _low, high in image.getextrema()):
@@ -214,67 +327,92 @@ def _jpeg_from_frame(frame) -> bytes | None:
 
 def capture_entry(connection, target: WindowTarget) -> None:
     """Spawn-safe helper entry. It receives identity only, never credentials."""
+    watch = None
     try:
         if not target_is_current(target):
-            connection.send(None)
+            connection.send_bytes(b"")
             return
+        watch = WindowWatch(target.hwnd)
         from windows_capture import WindowsCapture
+        if watch.identity != target or not watch.current() or not target_is_current(target):
+            connection.send_bytes(b"")
+            return
         capture = WindowsCapture(cursor_capture=False, secondary_window=False, window_hwnd=target.hwnd)
         sent = False
 
         @capture.event
         def on_frame_arrived(frame, control):
             nonlocal sent
-            result = _jpeg_from_frame(frame) if target_is_current(target) else None
-            if not target_is_current(target):
+            result = _jpeg_from_frame(frame) if watch.current() and target_is_current(target) else None
+            if not watch.current() or not target_is_current(target):
                 result = None
             if not sent:
-                connection.send(result)
+                connection.send_bytes(result or b"")
                 sent = True
             control.stop()
 
         @capture.event
         def on_closed():
             if not sent:
-                connection.send(None)
+                connection.send_bytes(b"")
 
         capture.start()
     except Exception:
         try:
-            connection.send(None)
+            connection.send_bytes(b"")
         except (BrokenPipeError, OSError):
             pass
     finally:
+        if watch is not None:
+            watch.close()
         connection.close()
 
 
 def capture_window(target: WindowTarget | None, timeout: float = 5.0,
                    cancelled: threading.Event | None = None, context=None) -> bytes | None:
     """Capture only a verified HWND in a bounded spawned helper."""
-    if not target_is_current(target):
+    deadline = time.monotonic() + min(timeout, 5.0)
+    if not target_is_current(target) or (cancelled is not None and cancelled.is_set()):
         return None
+    identity = target.identity if isinstance(target, WindowWatch) else target
     context = context or multiprocessing.get_context("spawn")
     parent, child = context.Pipe(duplex=False)
-    process = context.Process(target=capture_entry, args=(child, target))
+    process = context.Process(target=capture_entry, args=(child, identity))
+    started = False
     try:
-        process.start()
+        with getattr(cancelled, "start_lock", nullcontext()):
+            if cancelled is not None and cancelled.is_set():
+                return None
+            process.start()
+            started = True
         child.close()
-        deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if cancelled is not None and cancelled.is_set():
                 return None
             if parent.poll(0.05):
-                result = parent.recv()
-                if not target_is_current(target):
+                result = parent.recv_bytes(MAX_IMAGE_BYTES)
+                if time.monotonic() >= deadline or not target_is_current(target):
                     return None
-                return result if isinstance(result, bytes) and len(result) <= MAX_IMAGE_BYTES else None
+                if not isinstance(result, bytes) or len(result) > MAX_IMAGE_BYTES:
+                    return None
+                from PIL import Image
+                try:
+                    with Image.open(BytesIO(result)) as image:
+                        if image.format != "JPEG" or not (0 < image.width <= MAX_IMAGE_EDGE and 0 < image.height <= MAX_IMAGE_EDGE):
+                            return None
+                        image.verify()
+                except Exception:
+                    return None
+                return result
         return None
     except (EOFError, OSError):
         return None
     finally:
-        if process.is_alive():
-            process.terminate()
-        process.join(timeout=1)
+        if started:
+            if process.is_alive():
+                process.terminate()
+            process.join()
+            process.close()
         parent.close()
         try:
             child.close()
@@ -307,6 +445,10 @@ def _multipart(settings: DiscordSettings, value: str, image: bytes | None, test:
 def send_webhook(settings: DiscordSettings, value: str = "", image: bytes | None = None,
                  test: bool = False) -> str:
     """Send one request. Returned states are safe for the activity log."""
+    try:
+        validate_settings(settings.webhook_url, settings.user_id)
+    except (ValueError, TypeError):
+        return "Discord alert failed."
     body, boundary = _multipart(settings, value, image, test)
     request = Request(settings.webhook_url + "?wait=true", body,
                       {"Content-Type": f"multipart/form-data; boundary={boundary}"}, method="POST")
@@ -318,7 +460,10 @@ def send_webhook(settings: DiscordSettings, value: str = "", image: bytes | None
         return "Discord alert status unknown after timeout."
     except HTTPError as error:
         return "Discord alert failed." if error.code != 429 else "Discord alert failed (rate limited)."
-    except (URLError, OSError, ssl.SSLError):
+    except URLError as error:
+        return ("Discord alert status unknown after timeout." if isinstance(error.reason, TimeoutError)
+                else "Discord alert failed.")
+    except (OSError, ssl.SSLError):
         return "Discord alert failed."
 
 
@@ -329,6 +474,7 @@ class _Job:
     value: str
     target: WindowTarget | None
     test: bool
+    activation: int | None = None
 
 
 class DiscordNotifier:
@@ -347,6 +493,9 @@ class DiscordNotifier:
         self._submitted = False
         self._closing = False
         self._cancel = threading.Event()
+        self._worker = None
+        self._capture_done = threading.Event()
+        self._capture_done.set()
 
     @property
     def supported(self) -> bool:
@@ -365,57 +514,81 @@ class DiscordNotifier:
     def save_settings(self, webhook_url: str, user_id: str) -> None:
         with self._lock:
             enabled = self._enabled
-        saved = self.store.save(webhook_url, user_id, enabled)
-        with self._lock:
+            saved = self.store.save(webhook_url, user_id, enabled)
             self._settings, self._revision = saved, self._revision + 1
+            self._cancel.set()
 
     def set_enabled(self, enabled: bool) -> bool:
         with self._lock:
             if enabled and self._settings is None:
                 return False
             settings = self._settings
-        if settings is not None:
-            saved = self.store.save(settings.webhook_url, settings.user_id, enabled)
-            with self._lock:
+            if settings is not None:
+                saved = self.store.save(settings.webhook_url, settings.user_id, enabled)
                 self._settings, self._enabled, self._revision = saved, enabled, self._revision + 1
-        return not enabled or settings is not None
+            else:
+                self._revision += 1
+            self._cancel.set()
+            return not enabled or settings is not None
 
     def clear(self) -> None:
-        self.store.clear()
         with self._lock:
+            self.store.clear()
             self._settings = None
             self._enabled = False
             self._revision += 1
+            self._cancel.set()
 
-    def schedule(self, value: str, target: WindowTarget | None = None, test: bool = False) -> bool:
+    def schedule(self, value: str, target: WindowTarget | None = None, test: bool = False,
+                 *, activation: int | None = None) -> bool:
         with self._lock:
             if self._closing or self._busy or self._settings is None or (not test and not self._enabled):
                 return False
             self._busy = True
             self._submitted = False
-            job = _Job(self._settings, self._revision, value, target, test)
+            job = _Job(self._settings, self._revision, value, target, test, activation)
             self._cancel = threading.Event()
-        self.log("Discord alert pending.")
-        threading.Thread(target=self._run, args=(job,), daemon=True).start()
-        return True
+            # Use the state lock to order helper startup against cancellation.
+            self._cancel.start_lock = self._lock
+            self._capture_done.clear()
+            self._worker = threading.Thread(target=self._run, args=(job,), daemon=True)
+            self.log("Discord alert pending.")
+            try:
+                self._worker.start()
+            except RuntimeError:
+                self._busy = False
+                self._capture_done.set()
+                self.log("Discord alert failed.")
+                return False
+            return True
 
     def _run(self, job: _Job) -> None:
-        image = None if job.test else self.capture(job.target, cancelled=self._cancel)
-        with self._lock:
-            allowed = not self._closing and job.revision == self._revision and (job.test or self._enabled)
-            # This is the atomic pending-to-submitted transition. A later close
-            # cannot recall the request, so it must not block this winner.
-            self._submitted = allowed
-        if not allowed:
-            self.log("Discord alert skipped.")
-        else:
-            self.log(self.deliver(job.settings, job.value, image, job.test))
-        with self._lock:
-            self._submitted = False
-            self._busy = False
+        try:
+            try:
+                image = None if job.test else self.capture(job.target, cancelled=self._cancel)
+            except Exception:
+                image = None
+            finally:
+                self._capture_done.set()
+            if image is not None and not target_is_current(job.target):
+                image = None
+            with self._lock:
+                allowed = not self._closing and job.revision == self._revision and (job.test or self._enabled)
+                self._submitted = allowed
+            if not allowed:
+                self.log("Discord alert skipped.")
+            else:
+                self.log(self.deliver(job.settings, job.value, image, job.test))
+        except Exception:
+            self.log("Discord alert failed.")
+        finally:
+            with self._lock:
+                self._submitted = False
+                self._busy = False
 
     def close(self) -> None:
         with self._lock:
             self._closing = True
             self._revision += 1
             self._cancel.set()
+        self._capture_done.wait()

@@ -123,7 +123,7 @@ Discord alerts start off. Click **Discord settings** to save a Discord webhook U
 
 A confirmed hit pauses detection before Discord capture or delivery. The app binds the foreground game window when watching starts and uploads only that full window. If Windows capture is unavailable, the alert says `Game image unavailable`; it never uploads the desktop, OCR crop, another window, or an old image.
 
-Discord posts to a server channel and mentions the configured user. It is not a direct message and does not guarantee a device notification. Game chat and overlays inside the game window can appear in the image. The app makes one asynchronous request with no automatic retry. Closing the app cancels pending work where possible.
+Discord posts to a server channel and mentions the configured user. It is not a direct message and does not guarantee a device notification. Game chat and overlays inside the game window can appear in the image. The app makes one asynchronous request with no automatic retry. Closing the app cancels pending work and stops the capture helper. An already submitted request cannot be recalled.
 
 Settings are saved only under `%LOCALAPPDATA%\MapleTapperLooker\discord-settings.bin`, protected for the current Windows user with DPAPI. Do not share the webhook URL or user ID. Clear settings disables alerts and removes this local file.
 
@@ -185,7 +185,8 @@ Example: select a new region and use detection without automated input.
 | Recording fails | Enable microphone access for desktop applications in Windows Settings. Check the default microphone and application folder write permissions. |
 | Reset cannot delete the message | Read the error in **Recent activity**, correct the file-access problem, and press F12 again. |
 | Discord cannot be enabled | Save a valid canonical `https://discord.com/api/.../webhooks/.../...` URL and a Discord user ID in **Discord settings**. |
-| Discord image is unavailable | Keep detection running. The alert stays text-only when the bound target closes, minimizes, or Windows capture is unsupported. |
+| Discord image is unavailable | Focus the game and press F9 for a new activation. Closed, minimized, or unsupported targets use text-only alerts. |
+| Discord status is unknown after timeout | Do not automatically repeat the alert. Discord may already have received it. |
 
 ## Development
 
@@ -199,6 +200,31 @@ powershell -NoProfile -File tests/test_release_notes.ps1
 ```
 
 Tests mock audio devices and Discord network boundaries. Check microphone recording and playback manually with the [recording steps](#record-a-detection-message). Test Discord only with private credentials; do not commit settings or game images.
+
+Run the synthetic capture check on Windows:
+
+```powershell
+python tests/synthetic_discord_capture.py
+```
+
+This check captures a synthetic window behind a separate-process covering window. It checks timeout cleanup and minimized/closed fallback without network requests.
+For a console-free one-file check, build and run the same script:
+
+```powershell
+python -m PyInstaller --clean --noconfirm --onefile --noconsole --collect-all windows_capture --paths . tests/synthetic_discord_capture.py
+$p = Start-Process dist/synthetic_discord_capture.exe -ArgumentList '--result', 'synthetic-capture-result.txt' -Wait -PassThru
+if ($p.ExitCode -ne 0) { throw 'Synthetic capture failed.' }
+Get-Content synthetic-capture-result.txt
+```
+
+The result must be `PASS`. No screenshot is written. These checks do not verify an intended game or a live Discord channel.
+
+Existing source environments must remove the old OpenCV provider before installing the updated requirements:
+
+```powershell
+python -m pip uninstall opencv-python-headless
+python -m pip install -r requirements.txt
+```
 
 ### Build and releases
 

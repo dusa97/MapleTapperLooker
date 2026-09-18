@@ -86,13 +86,16 @@ class ControlWindowTest(unittest.TestCase):
 
     def test_watching_binds_one_foreground_target_for_the_activation(self):
         app = self.app()
-        target = object()
+        target = Mock()
         with patch("main.bind_foreground_target", return_value=target) as bind, \
              patch.object(app, "_lock_mouse"):
             app._set_enter_on(True)
             app._set_enter_on(False)
-        self.assertIsNone(app._activation_target)
-        bind.assert_called_once()
+            target.close.assert_not_called()
+            bind.assert_called_once()
+            app._set_enter_on(True)
+            target.close.assert_called_once()
+            self.assertEqual(bind.call_count, 2)
 
     def test_f9_queue_cancels_countdown_on_render(self):
         app = self.app()
@@ -171,6 +174,8 @@ class ControlWindowTest(unittest.TestCase):
             self.assertIsNone(app.discord.settings)
         finally:
             if app.root is not None:
+                for pending in app.root.tk.call("after", "info"):
+                    app.root.after_cancel(pending)
                 app.root.destroy()
 
     @unittest.skipUnless(platform.system() == "Windows", "Windows overlay uses transparentcolor")
@@ -255,6 +260,8 @@ class ControlWindowTest(unittest.TestCase):
             self.assertEqual(app.region, [0, 0, 100, 100])
         finally:
             if app.root is not None:
+                for pending in app.root.tk.call("after", "info"):
+                    app.root.after_cancel(pending)
                 app.root.destroy()
 
 

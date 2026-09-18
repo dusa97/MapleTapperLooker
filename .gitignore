@@ -11,3 +11,7 @@ detection_message.wav
 detection_message.tmp.wav
 /last_region.json
 /debug_captures/
+discord-settings.bin
+discord-settings.bin.tmp
+/synthetic_discord_capture.spec
+/synthetic-capture-result.txt

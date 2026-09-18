@@ -108,7 +108,8 @@ class DetectionBeepTest(unittest.TestCase):
         app.enter_on = True
         target = object()
         app._activation_target = target
-        def schedule(_value, _target):
+        activation = app._activation
+        def schedule(_value, _target, **_kwargs):
             self.assertFalse(app.enter_on)
             app._running = False
             return True
@@ -126,7 +127,7 @@ class DetectionBeepTest(unittest.TestCase):
              patch("main.save_success_capture"), patch("main.target_is_current", return_value=True), \
              patch.object(app, "_unlock_mouse"), patch("main.threading.Thread"):
             app._ocr_loop()
-        schedule.assert_called_once_with("+123", target)
+        schedule.assert_called_once_with("+123", target, activation=activation)
         self.assertFalse(app.enter_on)
 
     def test_disable_during_read_discards_detection(self):
