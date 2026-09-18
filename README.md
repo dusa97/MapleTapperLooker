@@ -26,6 +26,7 @@ Select a screen region, such as a game's Combat Power Change field. MapleTapperL
 - Start and stop detection with global keyboard shortcuts.
 - Automate Enter presses and left-clicks, or use detection alone.
 - Hear a beep or your recorded message when a value is detected.
+- Optionally send a private Discord server-channel mention with a game-window image.
 - View status and the six most recent detections or errors in a compact dark window.
 
 A confirmed detection plays one alert and pauses detection and automated input. Press **F9** to resume.
@@ -116,6 +117,18 @@ The message stays in `detection_message.wav` beside the script or executable, in
 A failed recording keeps the previous message. Closing the application during recording discards the unfinished replacement.
 Detection audio is silent during recording. Recording uses Windows audio APIs and needs no additional Python dependency.
 
+### Discord alerts
+
+Discord alerts start off. Click **Discord settings** to save a Discord webhook URL and one Discord user ID, then enable **Discord alerts**. The test button sends one text-only test mention. Audio mute and Discord alerts are independent.
+
+A confirmed hit pauses detection before Discord capture or delivery. The app binds the foreground game window when watching starts and uploads only that full window. If Windows capture is unavailable, the alert says `Game image unavailable`; it never uploads the desktop, OCR crop, another window, or an old image.
+
+Discord posts to a server channel and mentions the configured user. It is not a direct message and does not guarantee a device notification. Game chat and overlays inside the game window can appear in the image. The app makes one asynchronous request with no automatic retry. Closing the app cancels pending work where possible.
+
+Settings are saved only under `%LOCALAPPDATA%\MapleTapperLooker\discord-settings.bin`, protected for the current Windows user with DPAPI. Do not share the webhook URL or user ID. Clear settings disables alerts and removes this local file.
+
+Discord images require Windows 10 version 1903 or later, Windows x64 graphics capture, and a supported game display mode. Protected content, exclusive fullscreen, minimization, HDR, or graphics failures can produce text-only alerts.
+
 ## Run from source
 
 Use Windows, Tesseract OCR, and Python. The release workflow builds and tests with **Python 3.11**.
@@ -171,6 +184,8 @@ Example: select a new region and use detection without automated input.
 | F9 does not work over an elevated game | Allow the application's administrator permission request. Do not use `--no-elevate` for that session. |
 | Recording fails | Enable microphone access for desktop applications in Windows Settings. Check the default microphone and application folder write permissions. |
 | Reset cannot delete the message | Read the error in **Recent activity**, correct the file-access problem, and press F12 again. |
+| Discord cannot be enabled | Save a valid canonical `https://discord.com/api/.../webhooks/.../...` URL and a Discord user ID in **Discord settings**. |
+| Discord image is unavailable | Keep detection running. The alert stays text-only when the bound target closes, minimizes, or Windows capture is unsupported. |
 
 ## Development
 
@@ -183,7 +198,7 @@ Run from the repository root after installing dependencies:
 powershell -NoProfile -File tests/test_release_notes.ps1
 ```
 
-Tests mock audio devices. Check microphone recording and playback manually with the [recording steps](#record-a-detection-message).
+Tests mock audio devices and Discord network boundaries. Check microphone recording and playback manually with the [recording steps](#record-a-detection-message). Test Discord only with private credentials; do not commit settings or game images.
 
 ### Build and releases
 

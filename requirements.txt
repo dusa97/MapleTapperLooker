@@ -2,7 +2,8 @@ pillow
 pytesseract
 mss
 pyautogui
-opencv-python-headless
+opencv-python
+windows-capture==2.0.1
 numpy
 keyboard
 pydirectinput
