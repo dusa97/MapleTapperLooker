@@ -4,7 +4,8 @@ Status: approved design. No production behavior is changed by this design branch
 Repository: `dusa97/MapleTapperLooker`.
 Parent specification: https://github.com/dusa97/MapleTapperLooker/issues/16.
 Implementation ticket: https://github.com/dusa97/MapleTapperLooker/issues/17.
-Design-artifact PR: publication pending.
+Design-artifact PR: https://github.com/dusa97/MapleTapperLooker/pull/18.
+Implementation selector: `/z-implement #16`, from clean, updated main. Do not start implementation during this design session.
 
 ## Goal and approved direction
 

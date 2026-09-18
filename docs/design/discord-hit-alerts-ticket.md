@@ -2,6 +2,7 @@
 
 Status: approved implementation ticket.
 Issue: https://github.com/dusa97/MapleTapperLooker/issues/17.
+Design-artifact PR: https://github.com/dusa97/MapleTapperLooker/pull/18.
 
 ## Parent and blockers
 
