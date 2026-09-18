@@ -116,6 +116,28 @@ class RepairRegressionTest(unittest.TestCase):
 
 
 class CaptureBoundaryTest(unittest.TestCase):
+    def test_missing_target_reports_a_safe_reason(self):
+        from discord_alerts import capture_window
+        messages = []
+        self.assertIsNone(capture_window(None, report=messages.append))
+        self.assertEqual(messages, ["Discord image unavailable: no target was bound. Focus the game before F9."])
+
+    def test_helper_failures_report_only_fixed_local_messages(self):
+        from discord_alerts import capture_window
+        for result in (b"blank", b"closed", b"helper-failed", b"private native error text"):
+            context = Mock()
+            receiver, sender = Mock(), Mock()
+            receiver.poll.return_value = True
+            receiver.recv_bytes.return_value = result
+            context.Pipe.return_value = receiver, sender
+            messages = []
+            with patch("discord_alerts.target_is_current", return_value=True):
+                self.assertIsNone(capture_window(WindowTarget(1, 2, 3), context=context, report=messages.append))
+            self.assertEqual(len(messages), 1)
+            self.assertTrue(messages[0].startswith("Discord image unavailable:"))
+            self.assertNotIn("private native error text", messages[0])
+            context.Process.return_value.join.assert_called_once()
+
     def test_helper_uses_only_the_explicit_hwnd(self):
         created = []
 
@@ -139,7 +161,7 @@ class CaptureBoundaryTest(unittest.TestCase):
             capture_entry(connection, WindowTarget(101, 202, 303))
         self.assertEqual(created[0].kwargs,
                          {"cursor_capture": False, "secondary_window": False, "window_hwnd": 101})
-        connection.send_bytes.assert_called_once_with(b"")
+        connection.send_bytes.assert_called_once_with(b"closed")
 
 
 class WindowsLifecycleTest(unittest.TestCase):

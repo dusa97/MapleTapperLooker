@@ -1535,7 +1535,8 @@ class OverlayApp:
                     own_hwnds.append(window.winfo_id())
                 except (AttributeError, tk.TclError):
                     pass
-            self._activation_target = bind_foreground_target(self.region, own_hwnds)
+            self._activation_target = bind_foreground_target(
+                self.region, own_hwnds, report=self._log if self.discord.enabled else None)
             if self.discord.enabled and self._activation_target is None:
                 self._log("Discord images unavailable for this activation; text alerts still work.")
         if value and self.enter_spam_enabled:

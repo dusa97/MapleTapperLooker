@@ -27,6 +27,23 @@ MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_IMAGE_EDGE = 1920
 MAX_CAPTURE_PIXELS = 64_000_000
 WEBHOOK_RE = re.compile(r"^/api(?:/v10)?/webhooks/([1-9][0-9]*)/([A-Za-z0-9._-]+)$")
+CAPTURE_FAILURES = {
+    b"unbound": "no target was bound. Focus the game before F9.",
+    b"own-window": "the selected window belongs to this app. Focus the game before F9.",
+    b"region-outside": "the watched region is outside the selected window.",
+    b"identity": "the target is closed, hidden, minimized, or its identity cannot be verified.",
+    b"blank": "Windows returned a blank or unsupported frame.",
+    b"closed": "Windows closed capture before an image arrived.",
+    b"timeout": "capture exceeded the five-second limit.",
+    b"invalid-image": "the returned image failed validation.",
+    b"helper-failed": "the Windows capture helper failed.",
+}
+
+
+def _capture_failure(report, reason):
+    if report is not None:
+        report("Discord image unavailable: " + CAPTURE_FAILURES.get(reason, CAPTURE_FAILURES[b"helper-failed"]))
+    return None
 
 
 @dataclass(frozen=True)
@@ -187,7 +204,7 @@ def _process_creation_time(pid: int) -> int | None:
         ctypes.windll.kernel32.CloseHandle(handle)
 
 
-def _window_target(hwnd: int, region: tuple | list | None = None) -> WindowTarget | None:
+def _window_target(hwnd: int, region: tuple | list | None = None, report=None) -> WindowTarget | None:
     if os.name != "nt" or not hwnd:
         return None
     user32, _kernel32 = _windows_api()
@@ -201,23 +218,25 @@ def _window_target(hwnd: int, region: tuple | list | None = None) -> WindowTarge
     if region is not None:
         left, top, width, height = region
         if left < rect[0] or top < rect[1] or left + width > rect[2] or top + height > rect[3]:
-            return None
+            return _capture_failure(report, b"region-outside")
     pid = ctypes.c_ulong()
     user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
     created = _process_creation_time(pid.value)
     return WindowTarget(hwnd, pid.value, created) if created is not None else None
 
 
-def bind_foreground_target(region: tuple | list, own_hwnds=()) -> WindowTarget | None:
+def bind_foreground_target(region: tuple | list, own_hwnds=(), report=None) -> WindowTarget | None:
     if os.name != "nt":
         return None
     user32, _kernel32 = _windows_api()
     hwnd = user32.GetForegroundWindow()
     if hwnd in set(own_hwnds):
+        return _capture_failure(report, b"own-window")
+    identity = _window_target(hwnd, region, report=report)
+    if identity is None:
         return None
-    identity = _window_target(hwnd, region)
-    if identity is None or identity.pid == os.getpid():
-        return None
+    if identity.pid == os.getpid():
+        return _capture_failure(report, b"own-window")
     watch = WindowWatch(hwnd)
     if watch.identity != identity or not watch.current():
         watch.close()
@@ -330,12 +349,12 @@ def capture_entry(connection, target: WindowTarget) -> None:
     watch = None
     try:
         if not target_is_current(target):
-            connection.send_bytes(b"")
+            connection.send_bytes(b"identity")
             return
         watch = WindowWatch(target.hwnd)
         from windows_capture import WindowsCapture
         if watch.identity != target or not watch.current() or not target_is_current(target):
-            connection.send_bytes(b"")
+            connection.send_bytes(b"identity")
             return
         capture = WindowsCapture(cursor_capture=False, secondary_window=False, window_hwnd=target.hwnd)
         sent = False
@@ -344,22 +363,24 @@ def capture_entry(connection, target: WindowTarget) -> None:
         def on_frame_arrived(frame, control):
             nonlocal sent
             result = _jpeg_from_frame(frame) if watch.current() and target_is_current(target) else None
+            reason = b"blank"
             if not watch.current() or not target_is_current(target):
                 result = None
+                reason = b"identity"
             if not sent:
-                connection.send_bytes(result or b"")
+                connection.send_bytes(result or reason)
                 sent = True
             control.stop()
 
         @capture.event
         def on_closed():
             if not sent:
-                connection.send_bytes(b"")
+                connection.send_bytes(b"closed")
 
         capture.start()
     except Exception:
         try:
-            connection.send_bytes(b"")
+            connection.send_bytes(b"helper-failed")
         except (BrokenPipeError, OSError):
             pass
     finally:
@@ -369,11 +390,15 @@ def capture_entry(connection, target: WindowTarget) -> None:
 
 
 def capture_window(target: WindowTarget | None, timeout: float = 5.0,
-                   cancelled: threading.Event | None = None, context=None) -> bytes | None:
+                   cancelled: threading.Event | None = None, context=None, report=None) -> bytes | None:
     """Capture only a verified HWND in a bounded spawned helper."""
     deadline = time.monotonic() + min(timeout, 5.0)
-    if not target_is_current(target) or (cancelled is not None and cancelled.is_set()):
+    if cancelled is not None and cancelled.is_set():
         return None
+    if target is None:
+        return _capture_failure(report, b"unbound")
+    if not target_is_current(target):
+        return _capture_failure(report, b"identity")
     identity = target.identity if isinstance(target, WindowWatch) else target
     context = context or multiprocessing.get_context("spawn")
     parent, child = context.Pipe(duplex=False)
@@ -391,22 +416,26 @@ def capture_window(target: WindowTarget | None, timeout: float = 5.0,
                 return None
             if parent.poll(0.05):
                 result = parent.recv_bytes(MAX_IMAGE_BYTES)
-                if time.monotonic() >= deadline or not target_is_current(target):
-                    return None
+                if time.monotonic() >= deadline:
+                    return _capture_failure(report, b"timeout")
+                if not target_is_current(target):
+                    return _capture_failure(report, b"identity")
+                if result in CAPTURE_FAILURES:
+                    return _capture_failure(report, result)
                 if not isinstance(result, bytes) or len(result) > MAX_IMAGE_BYTES:
-                    return None
+                    return _capture_failure(report, b"invalid-image")
                 from PIL import Image
                 try:
                     with Image.open(BytesIO(result)) as image:
                         if image.format != "JPEG" or not (0 < image.width <= MAX_IMAGE_EDGE and 0 < image.height <= MAX_IMAGE_EDGE):
-                            return None
+                            return _capture_failure(report, b"invalid-image")
                         image.verify()
                 except Exception:
-                    return None
+                    return _capture_failure(report, b"invalid-image")
                 return result
-        return None
+        return _capture_failure(report, b"timeout")
     except (EOFError, OSError):
-        return None
+        return _capture_failure(report, b"helper-failed")
     finally:
         if started:
             if process.is_alive():
@@ -482,10 +511,10 @@ class _Job:
 class DiscordNotifier:
     """One cancellable alert at a time. UI callbacks only enqueue activity text."""
     def __init__(self, store: DiscordSettingsStore | None = None, log: Callable[[str], None] | None = None,
-                 capture: Callable = capture_window, deliver: Callable = send_webhook):
+                 capture: Callable | None = None, deliver: Callable = send_webhook):
         self.store = store or DiscordSettingsStore()
         self.log = log or (lambda _message: None)
-        self.capture = capture
+        self.capture = capture or (lambda target, cancelled: capture_window(target, cancelled=cancelled, report=self.log))
         self.deliver = deliver
         self._lock = threading.Lock()
         self._settings = self.store.load()
@@ -569,11 +598,11 @@ class DiscordNotifier:
             try:
                 image = None if job.test else self.capture(job.target, cancelled=self._cancel)
             except Exception:
-                image = None
+                image = _capture_failure(self.log, b"helper-failed")
             finally:
                 self._capture_done.set()
             if image is not None and not target_is_current(job.target):
-                image = None
+                image = _capture_failure(self.log, b"identity")
             with self._lock:
                 allowed = not self._closing and job.revision == self._revision and (job.test or self._enabled)
                 self._submitted = allowed
