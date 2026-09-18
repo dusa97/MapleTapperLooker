@@ -79,7 +79,8 @@ class RepairRegressionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "settings.bin"
             path.write_bytes(b"ciphertext")
-            for payload in (b"null", b"[]", b'"text"', b'{"webhook_url":4,"user_id":"2"}'):
+            for payload in (b"null", b"[]", b'"text"', b'{"webhook_url":4,"user_id":"2"}',
+                            b"[" * 2000 + b"0" + b"]" * 2000):
                 with self.subTest(payload=payload):
                     store = DiscordSettingsStore(path, unprotect=lambda _data: payload)
                     self.assertIsNone(store.load())

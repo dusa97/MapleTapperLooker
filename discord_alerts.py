@@ -119,7 +119,7 @@ class DiscordSettingsStore:
                 return None
             settings = validate_settings(payload["webhook_url"], payload["user_id"])
             return replace(settings, enabled=payload.get("enabled", False))
-        except (OSError, ValueError, KeyError, TypeError, UnicodeError):
+        except (OSError, ValueError, KeyError, TypeError, UnicodeError, RecursionError):
             return None
 
     def save(self, webhook_url: str, user_id: str, enabled: bool = False) -> DiscordSettings:

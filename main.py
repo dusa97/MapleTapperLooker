@@ -1116,7 +1116,7 @@ class OverlayApp:
                      fill="x", padx=16, pady=(0, 10))
         discord_buttons = tk.Frame(discord, bg=UI_SURFACE)
         discord_buttons.pack(padx=16, pady=(0, 14))
-        self._discord_var = tk.BooleanVar(root, value=False)
+        self._discord_var = tk.BooleanVar(root, value=self.discord.enabled)
         self._discord_button = tk.Checkbutton(
             discord_buttons, text="Discord alerts", command=self._toggle_discord, variable=self._discord_var,
             image=self._mute_images[0], selectimage=self._mute_images[1], indicatoron=False,
@@ -1571,10 +1571,14 @@ class OverlayApp:
         try:
             if not self.discord.set_enabled(requested):
                 self._log("Set Discord webhook and user ID before enabling alerts.")
+                return
         except OSError:
             self._log("Could not save Discord settings.")
         else:
             self._log(f"Discord alerts {'enabled' if requested else 'disabled'}.")
+        finally:
+            if self._discord_var is not None:
+                self._discord_var.set(self.discord.enabled)
 
     def _open_discord_settings(self):
         if not self.discord.supported:
@@ -1620,6 +1624,8 @@ class OverlayApp:
             except OSError:
                 error.config(text="Could not clear settings.")
                 return
+            if self._discord_var is not None:
+                self._discord_var.set(False)
             self._log("Discord settings cleared and disabled.")
             dialog.destroy()
 
