@@ -637,6 +637,50 @@ class ComboGoal:
         return f"{n} of 3 lines are {' / '.join(self.names)}  (need {self.count})"
 
 
+class PerStatGoal:
+    """Stop when, for EVERY chosen stat, at least its own count of lines are
+    that stat - '2 x Critical Damage + 1 x STR' needs two crit lines and a
+    STR line on the same item. Each line is spent on one stat only, so
+    the requirements can't overlap (an All Stats line satisfies whichever
+    base stat still needs one)."""
+    def __init__(self, needs):                 # {stat name: count}, counts >= 1
+        self.needs = {n: max(1, min(3, int(c))) for n, c in needs.items() if int(c) > 0}
+        self.words = {n: (_stat_words(n), _stat_unit(n)) for n in self.needs}
+
+    def describe(self):
+        return " + ".join(f"{c} x {n}" for n, c in self.needs.items())
+
+    def _have(self, lines):
+        """How many lines each stat gets, assigning each line once - exact
+        matches first, then All Stats lines to whichever base stat is short."""
+        have = {n: 0 for n in self.needs}
+        free = list(lines[:3])
+        for n, (w, u) in self.words.items():                 # exact stat name
+            for line in list(free):
+                if have[n] < self.needs[n] and _line_is_stat(line, w, u) and not _is_all_stats(line):
+                    have[n] += 1
+                    free.remove(line)
+        for n, (w, u) in self.words.items():                 # All Stats fills remaining base-stat needs
+            for line in list(free):
+                if have[n] < self.needs[n] and _line_is_stat(line, w, u):
+                    have[n] += 1
+                    free.remove(line)
+        return have
+
+    def check(self, lines, tiers):
+        have = self._have(lines)
+        return "all requirements met" if all(have[n] >= c for n, c in self.needs.items()) else None
+
+    def progress(self, lines, tiers):
+        have = self._have(lines)
+        return "  ".join(f"{n}: {have[n]}/{c}" for n, c in self.needs.items())
+
+
+def _is_all_stats(line):
+    h = re.sub(r"\s+", " ", (line[0] or "").lower())
+    return "all" in h and "stat" in h
+
+
 def line_matches_target(line, target):
     """Does one OCR'd (stat, value) line satisfy a parsed target? The stat
     must contain every target word ("str" matches "STR" and "str" lines
@@ -2699,10 +2743,11 @@ class CubesApp:
         saved = self._load_target()
         stat_names = [name for name, _, _ in POTENTIAL_STATS]
         # Mode: 'total' (one stat, reach a number) or 'combo' (three lines from a set).
-        self._mode_var = tk.StringVar(value=saved.get("mode") if saved.get("mode") in ("total", "combo") else "total")
+        self._mode_var = tk.StringVar(value=saved.get("mode") if saved.get("mode") in ("total", "combo", "perstat") else "total")
         mode_row = tk.Frame(goal, bg=UI_SURFACE)
         mode_row.pack(fill="x", padx=14, pady=(0, 6))
-        for value, text in (("total", "Reach a total"), ("combo", "Combination of stats")):
+        self._mode_var.set(self._mode_var.get() if self._mode_var.get() in ("total", "combo", "perstat") else "total")
+        for value, text in (("total", "Reach a total"), ("combo", "Combination of stats"), ("perstat", "Lines per stat")):
             tk.Radiobutton(mode_row, text=text, value=value, variable=self._mode_var, bg=UI_SURFACE, fg=UI_TEXT,
                            selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
                            highlightthickness=0, font=("Segoe UI", 10)).pack(side="left", padx=(0, 14))
@@ -2748,6 +2793,26 @@ class CubesApp:
             tk.Checkbutton(combo, text=name, variable=var, bg=UI_SURFACE, fg=UI_TEXT, selectcolor=UI_BG,
                            activebackground=UI_SURFACE, activeforeground=UI_TEXT, highlightthickness=0,
                            font=("Segoe UI", 10), anchor="w").grid(row=1 + i // 3, column=i % 3, sticky="w", padx=(0, 12), pady=1)
+            var.trace_add("write", lambda *_: self._parse_target())
+        # Lines per stat: a 0/1/2/3 picker beside every stat. 0 = not required.
+        perstat = tk.Frame(goal, bg=UI_SURFACE)
+        self._perstat_frame = perstat
+        saved_needs = saved.get("needs", {}) if isinstance(saved.get("needs"), dict) else {}
+        tk.Label(perstat, text="Lines required, per stat (0 = not needed):", fg=UI_MUTED, bg=UI_SURFACE,
+                 font=("Segoe UI", 10)).grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 6))
+        self._perstat_vars = {}
+        for i, name in enumerate(stat_names):
+            row, col = 1 + i // 2, (i % 2) * 2
+            var = tk.StringVar(value=str(saved_needs.get(name, 0)) if str(saved_needs.get(name, 0)) in ("0", "1", "2", "3") else "0")
+            self._perstat_vars[name] = var
+            tk.Label(perstat, text=name, fg=UI_TEXT, bg=UI_SURFACE, font=("Segoe UI", 10), anchor="w",
+                     width=15).grid(row=row, column=col, sticky="w", pady=1)
+            picks = tk.Frame(perstat, bg=UI_SURFACE)
+            picks.grid(row=row, column=col + 1, sticky="w", padx=(0, 18))
+            for n in ("0", "1", "2", "3"):
+                tk.Radiobutton(picks, text=n, value=n, variable=var, bg=UI_SURFACE, fg=UI_TEXT, selectcolor=UI_BG,
+                               activebackground=UI_SURFACE, activeforeground=UI_TEXT, highlightthickness=0,
+                               font=("Segoe UI", 9, "bold"), padx=2).pack(side="left")
             var.trace_add("write", lambda *_: self._parse_target())
         self._target_label = tk.Label(goal, text="", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9), anchor="w")
         self._target_label.pack(fill="x", padx=14, pady=(0, 10))
@@ -2932,13 +2997,24 @@ class CubesApp:
         mode = self._mode_var.get()
         chosen = [n for n, v in self._combo_vars.items() if v.get()]
         # show the controls for the active mode only
-        if mode == "combo":
-            self._goal_row.pack_forget()
-            self._combo_frame.pack(fill="x", padx=14, pady=(0, 8), before=self._target_label)
-        else:
-            self._combo_frame.pack_forget()
-            self._goal_row.pack(fill="x", padx=14, pady=(0, 10), before=self._target_label)
-        if mode == "combo":
+        needs = {n: int(v.get()) for n, v in self._perstat_vars.items() if v.get() != "0"}
+        frames = {"total": self._goal_row, "combo": self._combo_frame, "perstat": self._perstat_frame}
+        for key, frame in frames.items():
+            if key != mode:
+                frame.pack_forget()
+        frames[mode].pack(fill="x", padx=14, pady=(0, 10 if mode == "total" else 8), before=self._target_label)
+        if mode == "perstat":
+            total_needed = sum(needs.values())
+            if not needs:
+                self.target = None
+                self._target_label.config(text="Set how many lines of each stat you need.", fg=UI_MUTED)
+            elif total_needed > 3:
+                self.target = None
+                self._target_label.config(text=f"That needs {total_needed} lines - an item only has 3.", fg=UI_PRIMARY)
+            else:
+                self.target = PerStatGoal(needs)
+                self._target_label.config(text="Stop when the item has " + self.target.describe(), fg=UI_ACCENT)
+        elif mode == "combo":
             count = int(self._count_var.get())
             self.target = ComboGoal(chosen, count) if chosen else None
             self._target_label.config(text=("Stop when " + self.target.describe()) if chosen
@@ -2951,7 +3027,7 @@ class CubesApp:
             self._target_label.config(text="Enter a minimum value.", fg=UI_MUTED)
         try:
             CUBES_TARGET_FILE.write_text(json.dumps({"mode": mode, "stat": name, "min": raw, "combo": chosen,
-                                                     "count": int(self._count_var.get())}),
+                                                     "count": int(self._count_var.get()), "needs": needs}),
                                          encoding="utf-8")
         except Exception:
             pass
