@@ -272,9 +272,12 @@ POTENTIAL_STATS = (
 POTENTIAL_LEGENDARY_ONLY = ("Critical Damage", "Skill Cooldowns")   # these lines only exist on legendary
 POTENTIAL_TIER_CHOICES = ("Any tier", "Rare+", "Epic+", "Unique+", "Legendary+")
 POTENTIAL_TIER_DEFAULT = "Unique+"    # rare/epic lines are never what anyone is cubing for
-CUBES_SETTLE      = 0.35   # seconds to wait after a cube click before reading, so the panel has redrawn
-                           # with the NEW lines rather than the old ones; ponytail: measured on one
-                           # machine, expose in the UI if it proves resolution/lag dependent
+# After a cube, the loop does not read on a timer - it polls the box until the pixels
+# differ from the pre-roll frame (the panel has redrawn with NEW lines), then OCRs once.
+# A timer would read stale lines on a slow client and could stop on the previous roll.
+CUBES_CHANGE_POLL   = 0.03   # seconds between cheap pixel-difference checks while waiting for the redraw
+CUBES_CHANGE_FRAC   = 0.004  # fraction of pixels that must differ to count as "the panel changed"
+CUBES_CHANGE_TIMEOUT = 3.0   # give up waiting after this long (no cubes left, dialog closed, ...)
 POTENTIAL_TARGET_HEIGHT = 210    # ~30px per stat line after upscaling (3 lines in the block)
 # EACH stat line has its own small lettered square (R/E/U/L) at its left, coloured by that
 # line's tier - an item can be L / U / U. Measured: 10x9 px at x 99..108, y 310..318 for
@@ -2938,26 +2941,54 @@ class CubesApp:
         self._sync_overlay()
         self._set_status(message)
 
+    def _wait_for_change(self, before):
+        """Block until the box's pixels differ from *before* (the panel has
+        redrawn), or CUBES_CHANGE_TIMEOUT passes. Returns the new grab, or
+        None on timeout. Compares small grayscale arrays, so each poll is
+        far cheaper than an OCR."""
+        ref = np.asarray(before.convert("L"), dtype=np.int16)
+        deadline = time.perf_counter() + CUBES_CHANGE_TIMEOUT
+        while self.looping and self._running and time.perf_counter() < deadline:
+            time.sleep(CUBES_CHANGE_POLL)
+            img = _grab(self.region)
+            cur = np.asarray(img.convert("L"), dtype=np.int16)
+            if cur.shape == ref.shape and (np.abs(cur - ref) > 40).mean() >= CUBES_CHANGE_FRAC:
+                return img
+        return None
+
     def _cube_loop(self):
-        """Worker: press Enter + click (one cube), wait for the panel to
-        redraw, read the three lines, stop if any satisfies the target.
-        Everything UI-facing is handed back to the Tk thread through the
-        request queue; this thread only clicks, waits and OCRs."""
+        """Worker. Order matters: READ FIRST - if the item already has what
+        you want, rolling would destroy it - then cube, wait until the panel
+        has actually changed (pixel difference, not a timer), read the new
+        lines, check, repeat. Everything UI-facing is handed back to the Tk
+        thread through the request queue; this thread only clicks, polls
+        and OCRs."""
         target = self.target
+        try:
+            img = _grab(self.region)
+        except Exception:
+            img = None
+        first = True
         while self.looping and self._running:
-            pydirectinput.press("enter")
-            time.sleep(OverlayApp._jittered(ENTER_INTERVAL))
-            pydirectinput.click()
-            self._mouse.reassert()
-            time.sleep(CUBES_SETTLE)
-            if not self.looping:
-                break
+            if not first:
+                pydirectinput.press("enter")
+                time.sleep(OverlayApp._jittered(ENTER_INTERVAL))
+                pydirectinput.click()
+                self._mouse.reassert()
+                if not self.looping:
+                    break
+                img = self._wait_for_change(img) if img is not None else _grab(self.region)
+                if img is None:
+                    self._requests.put(lambda: self._stop_loop(
+                        f"Stopped after {self.rolls} roll(s): the panel did not change after a cube "
+                        f"(out of cubes, or the dialog closed?)."))
+                    return
+                self.rolls += 1
+            first = False
             try:
-                img = _grab(self.region)
                 tiers, lines = read_potential_tiers(img), read_potential_lines(img)
             except Exception:
                 tiers, lines = [None] * 3, []
-            self.rolls += 1
             words, minimum, wants_pct, wanted_tier = target
             if words:
                 # Stat target: the item's TOTAL for that stat (All Stats included,
@@ -2973,7 +3004,8 @@ class CubesApp:
             if hit is not None:
                 self._requests.put(lambda hit=hit: self._on_hit(hit))
                 return
-            self._requests.put(lambda: self._set_status(f"Roll {self.rolls}: no match yet."))
+            self._requests.put(lambda: self._set_status(
+                f"Roll {self.rolls}: no match yet." if self.rolls else "Current item doesn't match - cubing..."))
 
     def _on_hit(self, hit):
         rank = (self.tiers[0] or "").capitalize()
