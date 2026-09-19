@@ -1075,7 +1075,9 @@ class OverlayApp:
         heading.pack()
         tk.Label(heading, text="MAPLE / TAPPER LOOKER", fg=UI_TEXT, bg=UI_BG,
                  font=("Segoe UI", 16, "bold"), anchor="center").pack(fill="x")
-        tk.Label(heading, text=f"OCR and input automation control  ·  {APP_VERSION}", fg=UI_MUTED, bg=UI_BG,
+        tk.Label(heading, text=f"version {APP_VERSION}", fg=UI_ACCENT, bg=UI_BG,
+                 font=("Segoe UI", 10, "bold"), anchor="center").pack(fill="x", pady=(2, 0))
+        tk.Label(heading, text="OCR and input automation control", fg=UI_MUTED, bg=UI_BG,
                  font=("Segoe UI", 10), anchor="center").pack(fill="x", pady=(4, 0))
         accent = tk.Frame(outer, bg=UI_BORDER, height=2)
         accent.pack(pady=(0, 18))
