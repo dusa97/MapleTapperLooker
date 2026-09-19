@@ -253,6 +253,23 @@ POTENTIAL_BLOCK_W_RATIO  = 250 / 50   # 210 fit "Skill Cooldowns -2 sec" with ro
 POTENTIAL_BLOCK_H_RATIO  = 70 / 15
 CUBES_REGION_FILE = _BASE_DIR / "last_cubes_region.json"
 CUBES_TARGET_FILE = _BASE_DIR / "last_cubes_target.json"
+# What the Cubes tab lets you pick, and the words the OCR'd stat line must contain for
+# each (the game's own spelling, from real captures under assets/reference/). Unit is
+# what the line's value carries: '%' for everything except cooldowns (seconds).
+POTENTIAL_STATS = (
+    ("STR",             ("str",),               "%"),
+    ("DEX",             ("dex",),               "%"),
+    ("INT",             ("int",),               "%"),
+    ("LUK",             ("luk",),               "%"),
+    ("All Stats",       ("all", "stats"),       "%"),
+    ("Attack Power",    ("attack", "power"),    "%"),
+    ("Magic Attack",    ("magic", "att"),       "%"),
+    ("Boss Damage",     ("boss", "damage"),     "%"),
+    ("Ignore Defense",  ("ignore", "defense"),  "%"),
+    ("Critical Damage", ("critical", "damage"), "%"),
+    ("Skill Cooldowns", ("skill", "cooldowns"), "sec"),
+)
+POTENTIAL_TIER_CHOICES = ("Any tier", "Rare+", "Epic+", "Unique+", "Legendary+")
 CUBES_SETTLE      = 0.35   # seconds to wait after a cube click before reading, so the panel has redrawn
                            # with the NEW lines rather than the old ones; ponytail: measured on one
                            # machine, expose in the UI if it proves resolution/lag dependent
@@ -276,7 +293,7 @@ POTENTIAL_TIER_COLOURS = {"rare": "#66FFFF", "epic": "#BB77FF", "unique": "#FFCC
 # Words as well as digits here, so Tesseract keeps its full alphabet; the stat line text is
 # bright and desaturated on a dark card, so the Flames colour mask isolates it unchanged.
 POTENTIAL_OCR_CONFIG = r'--psm 6 -c tessedit_char_whitelist=+-0123456789%ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz: '
-POTENTIAL_LINE_RE = re.compile(r"^([A-Za-z][A-Za-z ]*?):?\s*([+-]\d+(?:%|[A-Za-z]+)?)$")
+POTENTIAL_LINE_RE = re.compile(r"^([A-Za-z][A-Za-z ]*?):?\s*([+-]\d+(?:%|[A-Za-z]+)?)\d?$")  # trailing \d?: 'INT:+10%6' seen once
 POTENTIAL_VALUE_RE = re.compile(r"([+-])(\d+) ?(%|[A-Za-z]+)?")  # sign, number, unit ('' / '%' / 'sec')
 AUTOLOCATE_SCALES = np.linspace(0.5, 2.0, 31)   # search these template scales to handle different UI/DPI scaling
 # Both the BEFORE and AFTER panels show a "Combat Power Change" label (BEFORE's value is always 0), so
@@ -2557,18 +2574,34 @@ class CubesApp:
                  font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=14, pady=(10, 2))
         goal_row = tk.Frame(goal, bg=UI_SURFACE)
         goal_row.pack(fill="x", padx=14, pady=(0, 10))
-        self._target_var = tk.StringVar(value=self._load_target())
-        self._target_var.trace_add("write", lambda *_: self._parse_target())
-        entry = tk.Entry(goal_row, textvariable=self._target_var, bg=UI_BG, fg=UI_TEXT,
-                         insertbackground=UI_TEXT, relief="flat", font=("Segoe UI", 12),
-                         highlightbackground=UI_BORDER, highlightcolor=UI_ACCENT, highlightthickness=1)
-        entry.pack(side="left", fill="x", expand=True, ipady=6)
-        self._target_label = tk.Label(goal_row, text="", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9))
-        self._target_label.pack(side="left", padx=(10, 0))
-        tk.Label(goal, text='e.g. "30% str", "9% all stats", "120 max hp", "unique 30% str", or just "legendary" - '
-                            'stops when a line reaches that value (and the tier, if you named one).',
-                 fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 8), wraplength=440,
-                 justify="left").pack(anchor="w", padx=14, pady=(0, 10))
+        saved = self._load_target()
+        stat_names = [name for name, _, _ in POTENTIAL_STATS]
+        self._stat_var = tk.StringVar(value=saved.get("stat") if saved.get("stat") in stat_names else stat_names[0])
+        self._min_var = tk.StringVar(value=str(saved.get("min", "")))
+        self._tier_var = tk.StringVar(value=saved.get("tier") if saved.get("tier") in POTENTIAL_TIER_CHOICES else POTENTIAL_TIER_CHOICES[0])
+        style = ttk.Style(self.root)
+        style.configure("Cubes.TMenubutton", background=UI_BG, foreground=UI_TEXT, arrowcolor=UI_ACCENT,
+                        font=("Segoe UI", 11), padding=(10, 6), borderwidth=0)
+        style.map("Cubes.TMenubutton", background=[("active", UI_BUTTON)])
+        stat_menu = ttk.OptionMenu(goal_row, self._stat_var, self._stat_var.get(), *stat_names, style="Cubes.TMenubutton")
+        stat_menu.pack(side="left", fill="x", expand=True)
+        stat_menu["menu"].config(bg=UI_SURFACE, fg=UI_TEXT, activebackground=UI_BUTTON, activeforeground=UI_TEXT,
+                                 font=("Segoe UI", 10), bd=0)
+        tk.Label(goal_row, text=">=", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 11)).pack(side="left", padx=8)
+        min_entry = tk.Entry(goal_row, textvariable=self._min_var, width=5, bg=UI_BG, fg=UI_TEXT,
+                             insertbackground=UI_TEXT, relief="flat", font=("Segoe UI", 12), justify="center",
+                             highlightbackground=UI_BORDER, highlightcolor=UI_ACCENT, highlightthickness=1)
+        min_entry.pack(side="left", ipady=5)
+        self._unit_label = tk.Label(goal_row, text="%", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 11))
+        self._unit_label.pack(side="left", padx=(4, 10))
+        tier_menu = ttk.OptionMenu(goal_row, self._tier_var, self._tier_var.get(), *POTENTIAL_TIER_CHOICES, style="Cubes.TMenubutton")
+        tier_menu.pack(side="left")
+        tier_menu["menu"].config(bg=UI_SURFACE, fg=UI_TEXT, activebackground=UI_BUTTON, activeforeground=UI_TEXT,
+                                 font=("Segoe UI", 10), bd=0)
+        self._target_label = tk.Label(goal, text="", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9), anchor="w")
+        self._target_label.pack(fill="x", padx=14, pady=(0, 10))
+        for var in (self._stat_var, self._min_var, self._tier_var):
+            var.trace_add("write", lambda *_: self._parse_target())
 
         row = tk.Frame(outer, bg=UI_BG)
         row.pack(fill="x", pady=(12, 0))
@@ -2699,9 +2732,10 @@ class CubesApp:
     @staticmethod
     def _load_target():
         try:
-            return str(json.loads(CUBES_TARGET_FILE.read_text(encoding="utf-8")).get("target", ""))
+            data = json.loads(CUBES_TARGET_FILE.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
         except Exception:
-            return ""
+            return {}
 
     @staticmethod
     def _describe(target):
@@ -2714,16 +2748,29 @@ class CubesApp:
         return "  ".join(parts)
 
     def _parse_target(self):
-        text = self._target_var.get()
-        self.target = parse_potential_target(text)
-        if not text.strip():
-            self._target_label.config(text="", fg=UI_MUTED)
-        elif self.target is None:
-            self._target_label.config(text="?", fg=UI_PRIMARY)
+        """Compose the (words, minimum, wants_percent, tier) target from the
+        pickers - the same tuple parse_potential_target produced from typed
+        text, so the loop and matcher are unchanged. A blank minimum with a
+        tier chosen is a tier-only target (stop when the item's rank reaches
+        it); a blank minimum and 'Any tier' is no target at all."""
+        name = self._stat_var.get()
+        words, unit = next(((w, u) for n, w, u in POTENTIAL_STATS if n == name), ((), "%"))
+        self._unit_label.config(text=unit)
+        tier_choice = self._tier_var.get()
+        tier = tier_choice[:-1].lower() if tier_choice.endswith("+") else None
+        raw = self._min_var.get().strip().rstrip("%")
+        if raw.isdigit() and int(raw) > 0:
+            self.target = (words, int(raw), unit == "%", tier)
+            self._target_label.config(text=f"Stop at: {name} >= {raw}{unit if unit == '%' else ' ' + unit}"
+                                           + (f"  on a {tier} or better line" if tier else ""), fg=UI_ACCENT)
+        elif tier:
+            self.target = ((), 0, False, tier)
+            self._target_label.config(text=f"Stop at: item becomes {tier} or better", fg=UI_ACCENT)
         else:
-            self._target_label.config(text=self._describe(self.target), fg=UI_ACCENT)
+            self.target = None
+            self._target_label.config(text="Enter a minimum value, or pick a tier.", fg=UI_MUTED)
         try:
-            CUBES_TARGET_FILE.write_text(json.dumps({"target": text}), encoding="utf-8")
+            CUBES_TARGET_FILE.write_text(json.dumps({"stat": name, "min": raw, "tier": tier_choice}), encoding="utf-8")
         except Exception:
             pass
 
