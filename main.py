@@ -517,6 +517,38 @@ def tier_satisfies(tier, wanted):
     return POTENTIAL_TIERS.index(tier) >= POTENTIAL_TIERS.index(wanted)
 
 
+POTENTIAL_BASE_STATS = ("str", "dex", "int", "luk")
+
+
+def potential_total_for(lines, tiers, target):
+    """Sum of the lines that count toward *target* on this item. A line
+    counts if its stat contains the target words - or it is 'All Stats'
+    and the target is one of STR/DEX/INT/LUK, since All Stats adds to each
+    of them - AND its unit matches AND (if the target names a tier) the
+    line itself is at least that tier. So 12% LUK + 9% All Stats + 9% LUK
+    is 30% LUK, and a rare 9% LUK line does not help a 'Unique+' target.
+    Magnitude is summed so cooldowns (-2 sec, -1 sec) total 3."""
+    words, _minimum, wants_pct, wanted_tier = target
+    if not words:
+        return 0
+    counts_all_stats = len(words) == 1 and words[0] in POTENTIAL_BASE_STATS
+    total = 0
+    for line, tier in zip(lines, tiers):
+        stat, value = line
+        if value is None or not tier_satisfies(tier, wanted_tier):
+            continue
+        haystack = re.sub(r"\s+", " ", stat.lower())
+        is_match = all(w in haystack for w in words)
+        is_all_stats = counts_all_stats and "all" in haystack and "stat" in haystack
+        if not (is_match or is_all_stats):
+            continue
+        m = POTENTIAL_VALUE_RE.fullmatch(value)
+        if not m or ((m.group(3) or "") == "%") != wants_pct:
+            continue
+        total += int(m.group(2))
+    return total
+
+
 def line_matches_target(line, target):
     """Does one OCR'd (stat, value) line satisfy a parsed target? The stat
     must contain every target word ("str" matches "STR" and "str" lines
@@ -2862,7 +2894,14 @@ class CubesApp:
                 lbl.config(text=f"{entry[0]}  {entry[1]}", fg=UI_TEXT)
         good = [e for e in self.lines if e[1] is not None]
         totals = total_potential_lines(good)
-        self._total_label.config(text="\n".join(f"{stat}  {value}" for stat, value in totals) if totals else "-")
+        text = "\n".join(f"{stat}  {value}" for stat, value in totals) if totals else "-"
+        if self.target and self.target[0] and good:
+            # what the loop is actually measuring: All Stats folded in, tier filter applied
+            words, minimum, wants_pct, _ = self.target
+            counted = potential_total_for(self.lines, self.tiers, self.target)
+            unit = "%" if wants_pct else (" sec" if words == ("skill", "cooldowns") else "")
+            text += f"\n\u2192 {' '.join(words).upper()} counted: {counted}{unit}  (need {minimum}{unit})"
+        self._total_label.config(text=text)
         self._set_status(f"Read {len(good)} line(s)." if good else "Nothing readable in the box.")
 
     # ---- cube loop -------------------------------------------------------------
@@ -2919,12 +2958,13 @@ class CubesApp:
             except Exception:
                 tiers, lines = [None] * 3, []
             self.rolls += 1
-            wanted_tier = target[3]
-            if target[0]:
-                # Stat target: a line that matches AND (if a tier was named) is at
-                # least that tier itself - 'unique 30% str' wants a unique STR line.
-                hit = next((line for line, tier in zip(lines, tiers)
-                            if line_matches_target(line, target) and tier_satisfies(tier, wanted_tier)), None)
+            words, minimum, wants_pct, wanted_tier = target
+            if words:
+                # Stat target: the item's TOTAL for that stat (All Stats included,
+                # only lines at or above the chosen tier) must reach the minimum.
+                total = potential_total_for(lines, tiers, target)
+                unit = "%" if wants_pct else " sec" if words == ("skill", "cooldowns") else ""
+                hit = (f"{' '.join(words).upper()} {total}{unit} total", "") if total >= minimum else None
             else:
                 # Tier-only target: the item's rank, i.e. the first line's tier.
                 hit = ("", "") if tier_satisfies(tiers[0], wanted_tier) else None
