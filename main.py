@@ -269,6 +269,7 @@ POTENTIAL_ICON_Y_FRAC = (4 / 70, 13 / 70)       # of block height, first line
 POTENTIAL_LINE_STEP_FRAC = 25 / 70
 POTENTIAL_TIER_HUES = (("unique", 0, 50), ("legendary", 60, 110), ("rare", 115, 170), ("epic", 175, 225))
 POTENTIAL_TIERS = ("rare", "epic", "unique", "legendary")   # ascending
+POTENTIAL_TIER_COLOURS = {"rare": "#66FFFF", "epic": "#AA50FF", "unique": "#FF9628", "legendary": "#50E650"}
 # Words as well as digits here, so Tesseract keeps its full alphabet; the stat line text is
 # bright and desaturated on a dark card, so the Flames colour mask isolates it unchanged.
 POTENTIAL_OCR_CONFIG = r'--psm 6 -c tessedit_char_whitelist=+-0123456789%ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz: '
@@ -2496,13 +2497,18 @@ class CubesApp:
         card.pack(fill="x")
         tk.Label(card, text="POTENTIAL", fg=UI_MUTED, bg=UI_SURFACE,
                  font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=14, pady=(10, 2))
-        self._tier_label = tk.Label(card, text="", fg=UI_ACCENT, bg=UI_SURFACE, font=("Segoe UI", 10, "bold"), anchor="w")
-        self._tier_label.pack(fill="x", padx=14, pady=(0, 4))
-        self._line_labels = []
+        # Each line: a small square in the tier colour (as in the game), then the text.
+        self._line_labels, self._line_dots = [], []
         for _ in range(3):
-            lbl = tk.Label(card, text="-", fg=UI_TEXT, bg=UI_SURFACE, font=("Segoe UI", 13, "bold"), anchor="w")
-            lbl.pack(fill="x", padx=14, pady=(0, 2))
+            row = tk.Frame(card, bg=UI_SURFACE)
+            row.pack(fill="x", padx=14, pady=(0, 2))
+            dot = tk.Canvas(row, width=12, height=12, bg=UI_SURFACE, highlightthickness=0)
+            dot.pack(side="left", padx=(0, 10))
+            dot_id = dot.create_rectangle(1, 1, 11, 11, fill=UI_SURFACE, outline=UI_BORDER)
+            lbl = tk.Label(row, text="-", fg=UI_TEXT, bg=UI_SURFACE, font=("Segoe UI", 13, "bold"), anchor="w")
+            lbl.pack(side="left", fill="x", expand=True)
             self._line_labels.append(lbl)
+            self._line_dots.append((dot, dot_id))
         self._status = tk.Label(card, text="", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9), anchor="w")
         self._status.pack(fill="x", padx=14, pady=(4, 10))
 
@@ -2683,8 +2689,11 @@ class CubesApp:
         self._show_lines()
 
     def _show_lines(self):
-        self._tier_label.config(text=(self.tier or "").capitalize())
-        for lbl, entry in zip(self._line_labels, self.lines + [None] * 3):
+        colour = POTENTIAL_TIER_COLOURS.get(self.tier)
+        for lbl, (dot, dot_id), entry in zip(self._line_labels, self._line_dots, self.lines + [None] * 3):
+            has_line = entry is not None
+            dot.itemconfig(dot_id, fill=colour if (colour and has_line) else UI_SURFACE,
+                           outline=colour if (colour and has_line) else UI_BORDER)
             if entry is None:
                 lbl.config(text="-", fg=UI_MUTED)
             elif entry[1] is None:
