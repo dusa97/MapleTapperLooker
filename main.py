@@ -252,6 +252,10 @@ POTENTIAL_BLOCK_DY_RATIO = 12 / 15
 POTENTIAL_BLOCK_W_RATIO  = 210 / 50
 POTENTIAL_BLOCK_H_RATIO  = 70 / 15
 CUBES_REGION_FILE = _BASE_DIR / "last_cubes_region.json"
+CUBES_TARGET_FILE = _BASE_DIR / "last_cubes_target.json"
+CUBES_SETTLE      = 0.35   # seconds to wait after a cube click before reading, so the panel has redrawn
+                           # with the NEW lines rather than the old ones; ponytail: measured on one
+                           # machine, expose in the UI if it proves resolution/lag dependent
 POTENTIAL_TARGET_HEIGHT = 210    # ~30px per stat line after upscaling (3 lines in the block)
 # Words as well as digits here, so Tesseract keeps its full alphabet; the stat line text is
 # bright and desaturated on a dark card, so the Flames colour mask isolates it unchanged.
@@ -409,6 +413,46 @@ def read_potential_lines(img):
         else:
             out.append((raw, None))
     return out
+
+
+POTENTIAL_TARGET_RE = re.compile(r"^\s*(?:([+-]?\d+)\s*(%?)\s*([A-Za-z][A-Za-z ]*?)|([A-Za-z][A-Za-z ]*?)\s*\+?\s*(\d+)\s*(%?))\s*$")
+
+
+def parse_potential_target(text):
+    """Turn what the user typed into (stat_words, minimum, wants_percent).
+    Accepts "30% str", "str 30%", "str +30", "120 max hp", "max hp 120".
+    stat_words is a tuple of lowercase words that must ALL appear in the
+    stat name on the line. Returns None if it can't be understood."""
+    m = POTENTIAL_TARGET_RE.match(text or "")
+    if not m:
+        return None
+    if m.group(1) is not None:
+        number, pct, stat = m.group(1), m.group(2), m.group(3)
+    else:
+        stat, number, pct = m.group(4), m.group(5), m.group(6)
+    words = tuple(w for w in re.split(r"\s+", stat.strip().lower()) if w)
+    if not words:
+        return None
+    return words, abs(int(number)), pct == "%"
+
+
+def line_matches_target(line, target):
+    """Does one OCR'd (stat, value) line satisfy a parsed target? The stat
+    must contain every target word ("str" matches "STR" and "str" lines
+    only - "All Stats" does not contain "str", so it is not a match), the
+    value must be a positive number at least the minimum, and % must agree
+    (a flat "+30" does not satisfy "30%", and vice versa)."""
+    stat, value = line
+    if value is None:
+        return False
+    words, minimum, wants_pct = target
+    haystack = re.sub(r"\s+", " ", stat.lower())
+    if not all(w in haystack for w in words):
+        return False
+    m = re.fullmatch(r"\+(\d+)(%?)", value)
+    if not m:
+        return False
+    return int(m.group(1)) >= minimum and (m.group(2) == "%") == wants_pct
 
 
 def _read_app_version() -> str:
@@ -2319,6 +2363,45 @@ def run_flames(args, host=None):
         return app
 
 
+class MouseLock:
+    """ClipCursor pin, same technique as OverlayApp._lock_mouse: Windows drops
+    the clip on every focus change, so the loop re-applies it on a timer."""
+    def __init__(self):
+        self._rect = None
+
+    def lock(self):
+        if platform.system() != "Windows":
+            return
+        try:
+            import ctypes
+            from ctypes import wintypes
+            pt = wintypes.POINT()
+            ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+            self._rect = wintypes.RECT(pt.x, pt.y, pt.x + 1, pt.y + 1)
+            ctypes.windll.user32.ClipCursor(ctypes.byref(self._rect))
+        except Exception:
+            pass
+
+    def reassert(self):
+        if self._rect is None:
+            return
+        try:
+            import ctypes
+            ctypes.windll.user32.ClipCursor(ctypes.byref(self._rect))
+        except Exception:
+            pass
+
+    def unlock(self):
+        if platform.system() != "Windows":
+            return
+        try:
+            import ctypes
+            ctypes.windll.user32.ClipCursor(None)
+        except Exception:
+            pass
+        self._rect = None
+
+
 class CubesApp:
     """The Cubes tab: locate the Potential panel (F7) or draw a box on its
     three stat lines (F8), then read them (F9 or the button). No spam, no
@@ -2335,9 +2418,16 @@ class CubesApp:
         self._running = True
         self._selector = None
         self._requests = queue.Queue()
+        self.looping = False              # F9: cube -> read -> check, until the target shows up
+        self.target = None                # parsed by parse_potential_target
+        self.beep_enabled = True
+        self.rolls = 0
+        self._mouse = MouseLock()
+        self._loop_thread = None
         self._build(host)
         def register_hotkeys():           # off the UI thread - see OverlayApp.run for why
-            for key, action in (("f7", self._auto_locate), ("f8", self._start_selection), ("f9", self._read)):
+            for key, action in (("f7", self._auto_locate), ("f8", self._start_selection),
+                                ("f9", self._toggle_loop), ("f10", self._toggle_beep)):
                 keyboard.add_hotkey(key, self._requests.put, args=(action,), suppress=True, trigger_on_release=True)
         threading.Thread(target=register_hotkeys, daemon=True, name="hotkeys").start()
         self._tick()
@@ -2358,18 +2448,39 @@ class CubesApp:
             self._line_labels.append(lbl)
         self._status = tk.Label(card, text="", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9), anchor="w")
         self._status.pack(fill="x", padx=14, pady=(4, 10))
+
+        goal = OverlayApp._card(outer)
+        goal.pack(fill="x", pady=(12, 0))
+        tk.Label(goal, text="LOOKING FOR", fg=UI_MUTED, bg=UI_SURFACE,
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=14, pady=(10, 2))
+        goal_row = tk.Frame(goal, bg=UI_SURFACE)
+        goal_row.pack(fill="x", padx=14, pady=(0, 10))
+        self._target_var = tk.StringVar(value=self._load_target())
+        self._target_var.trace_add("write", lambda *_: self._parse_target())
+        entry = tk.Entry(goal_row, textvariable=self._target_var, bg=UI_BG, fg=UI_TEXT,
+                         insertbackground=UI_TEXT, relief="flat", font=("Segoe UI", 12),
+                         highlightbackground=UI_BORDER, highlightcolor=UI_ACCENT, highlightthickness=1)
+        entry.pack(side="left", fill="x", expand=True, ipady=6)
+        self._target_label = tk.Label(goal_row, text="", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9))
+        self._target_label.pack(side="left", padx=(10, 0))
+        tk.Label(goal, text='e.g. "30% str", "9% all stats", "120 max hp" - any line at or above that value stops the loop.',
+                 fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 8), wraplength=440,
+                 justify="left").pack(anchor="w", padx=14, pady=(0, 10))
+
         row = tk.Frame(outer, bg=UI_BG)
         row.pack(fill="x", pady=(12, 0))
         OverlayApp._button(row, "Auto-locate (F7)", self._auto_locate, UI_BUTTON, UI_TEXT).pack(
             side="left", expand=True, fill="x", padx=(0, 6))
         OverlayApp._button(row, "Choose region (F8)", self._start_selection, UI_BUTTON, UI_TEXT).pack(
             side="left", expand=True, fill="x", padx=(0, 6))
-        OverlayApp._button(row, "Read (F9)", self._read, UI_PRIMARY, UI_BG).pack(
-            side="left", expand=True, fill="x")
-        tk.Label(outer, text="F7 finds the Potential panel on screen and boxes its three lines; "
-                             "F8 lets you draw the box yourself; F9 reads what is inside it.",
+        self._loop_button = OverlayApp._button(row, "Start (F9)", self._toggle_loop, UI_PRIMARY, UI_BG)
+        self._loop_button.pack(side="left", expand=True, fill="x")
+        tk.Label(outer, text="F7 finds the Potential panel and boxes its three lines (F8 draws the box by hand). "
+                             "F9 starts cubing: Enter + click, read the three lines, stop with a beep the moment "
+                             "one matches what you are looking for. F9 again stops. F10 mutes the beep.",
                  fg=UI_MUTED, bg=UI_BG, font=("Segoe UI", 9), wraplength=460,
                  justify="left").pack(anchor="w", pady=(10, 0))
+        self._parse_target()
         self.overlay = tk.Toplevel(self.root)
         self.overlay.overrideredirect(True)
         self.overlay.attributes("-topmost", True)
@@ -2415,6 +2526,32 @@ class CubesApp:
     def _save_region(self):
         try:
             CUBES_REGION_FILE.write_text(json.dumps({"region": list(self.region)}), encoding="utf-8")
+        except Exception:
+            pass
+
+    @staticmethod
+    def _load_target():
+        try:
+            return str(json.loads(CUBES_TARGET_FILE.read_text(encoding="utf-8")).get("target", ""))
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _describe(target):
+        words, minimum, pct = target
+        return f"{' '.join(words).upper()} >= {minimum}{'%' if pct else ''}"
+
+    def _parse_target(self):
+        text = self._target_var.get()
+        self.target = parse_potential_target(text)
+        if not text.strip():
+            self._target_label.config(text="", fg=UI_MUTED)
+        elif self.target is None:
+            self._target_label.config(text="?", fg=UI_PRIMARY)
+        else:
+            self._target_label.config(text=self._describe(self.target), fg=UI_ACCENT)
+        try:
+            CUBES_TARGET_FILE.write_text(json.dumps({"target": text}), encoding="utf-8")
         except Exception:
             pass
 
@@ -2464,6 +2601,7 @@ class CubesApp:
 
     # ---- read --------------------------------------------------------------
     def _read(self):
+        """One read from the UI thread (F7 / the button)."""
         if not self.region:
             self._set_status("No box yet - press F7 or F8 first.")
             return
@@ -2472,13 +2610,15 @@ class CubesApp:
         self.overlay.withdraw()
         self.root.update_idletasks()
         try:
-            img = _grab(self.region)
-            self.lines = read_potential_lines(img)
+            self.lines = read_potential_lines(_grab(self.region))
         except Exception as error:
             self._set_status(f"Read failed: {error}")
             self.lines = []
         finally:
             self._sync_overlay()
+        self._show_lines()
+
+    def _show_lines(self):
         for lbl, entry in zip(self._line_labels, self.lines + [None] * 3):
             if entry is None:
                 lbl.config(text="-", fg=UI_MUTED)
@@ -2489,12 +2629,79 @@ class CubesApp:
         good = [e for e in self.lines if e[1] is not None]
         self._set_status(f"Read {len(good)} line(s)." if good else "Nothing readable in the box.")
 
+    # ---- cube loop -------------------------------------------------------------
+    def _toggle_beep(self):
+        self.beep_enabled = not self.beep_enabled
+        self._set_status("Beep muted." if not self.beep_enabled else "Beep on.")
+
+    def _toggle_loop(self):
+        if self.looping:
+            self._stop_loop("Stopped.")
+            return
+        if not self.region:
+            self._set_status("No box yet - press F7 or F8 first.")
+            return
+        if self.target is None:
+            self._set_status("Type what you are looking for first (e.g. 30% str).")
+            return
+        if self.root.focus_displayof() is not None:
+            self._set_status("Focus the game, then press F9.")
+            return
+        self.looping = True
+        self.rolls = 0
+        self._loop_button.config(text="Stop (F9)")
+        self.overlay.withdraw()          # the box must not be in the crops the loop takes
+        self._mouse.lock()
+        self._loop_thread = threading.Thread(target=self._cube_loop, daemon=True, name="cube-loop")
+        self._loop_thread.start()
+        self._set_status(f"Cubing until {self._describe(self.target)} ...")
+
+    def _stop_loop(self, message):
+        self.looping = False
+        self._mouse.unlock()
+        self._loop_button.config(text="Start (F9)")
+        self._sync_overlay()
+        self._set_status(message)
+
+    def _cube_loop(self):
+        """Worker: press Enter + click (one cube), wait for the panel to
+        redraw, read the three lines, stop if any satisfies the target.
+        Everything UI-facing is handed back to the Tk thread through the
+        request queue; this thread only clicks, waits and OCRs."""
+        target = self.target
+        while self.looping and self._running:
+            pydirectinput.press("enter")
+            time.sleep(OverlayApp._jittered(ENTER_INTERVAL))
+            pydirectinput.click()
+            self._mouse.reassert()
+            time.sleep(CUBES_SETTLE)
+            if not self.looping:
+                break
+            try:
+                lines = read_potential_lines(_grab(self.region))
+            except Exception:
+                lines = []
+            self.rolls += 1
+            hit = next((line for line in lines if line_matches_target(line, target)), None)
+            self._requests.put(lambda lines=lines: (setattr(self, "lines", lines), self._show_lines()))
+            if hit is not None:
+                self._requests.put(lambda hit=hit: self._on_hit(hit))
+                return
+            self._requests.put(lambda: self._set_status(f"Roll {self.rolls}: no match yet."))
+
+    def _on_hit(self, hit):
+        self._stop_loop(f"Got it after {self.rolls} roll(s): {hit[0]} {hit[1]}")
+        if self.beep_enabled:
+            threading.Thread(target=beep, daemon=True).start()
+
     # ---- lifecycle -----------------------------------------------------------
     def stop(self):
         if not self._running:
             return
         self._running = False
-        for key in ("f7", "f8", "f9"):
+        self.looping = False
+        self._mouse.unlock()
+        for key in ("f7", "f8", "f9", "f10"):
             try:
                 keyboard.remove_hotkey(key)
             except (KeyError, ValueError):
