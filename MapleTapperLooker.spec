@@ -1,9 +1,30 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 
+import subprocess
+from pathlib import Path
+
 from PyInstaller.utils.hooks import collect_all
 
 capture_datas, capture_binaries, capture_imports = collect_all('windows_capture')
+
+# Every exe must say which build it is, wherever it was built. The release
+# workflow writes its tag (v1.<run>.0) into assets/version.txt before calling
+# this spec; a local build has no such tag, so stamp `git describe` instead -
+# e.g. "v1.23.0-2-g8c0ca93" = 2 commits past v1.23.0 at commit 8c0ca93. The
+# file in the repo stays "dev": the stamped copy is written under build/ and
+# bundled from there, so a build never leaves assets/version.txt modified.
+_stamp = Path('assets/version.txt').read_text(encoding='utf-8').strip()
+if _stamp in ('', 'dev'):
+    try:
+        _stamp = subprocess.check_output(['git', 'describe', '--tags', '--always', '--dirty'],
+                                         text=True, stderr=subprocess.DEVNULL).strip()
+    except Exception:
+        _stamp = 'dev'
+_stamped_version = Path('build') / 'version' / 'version.txt'
+_stamped_version.parent.mkdir(parents=True, exist_ok=True)
+_stamped_version.write_text(_stamp + '\n', encoding='utf-8')
+print(f'Stamped version: {_stamp}')
 
 a = Analysis(
     ['main.py'],
@@ -11,7 +32,7 @@ a = Analysis(
     binaries=capture_binaries,
     datas=[('assets/logo.png', 'assets'), ('assets/reference/combat_power_label.png', 'assets/reference'),
            ('assets/digit_templates.npz', 'assets'),
-           ('assets/version.txt', 'assets')] + capture_datas,
+           (str(_stamped_version), 'assets')] + capture_datas,
     hiddenimports=capture_imports,
     hookspath=[],
     hooksconfig={},
