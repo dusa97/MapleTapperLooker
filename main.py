@@ -240,6 +240,23 @@ BEEP_HOTKEY     = "f10"   # mutes/unmutes the detection beep — starts UNMUTED
 AUTOLOCATE_HOTKEY = "f7"   # scans the screen for the Combat Power Change panel and snaps the box + cursor to it
 LABEL_TEMPLATE_PATH = Path(__file__).parent / "assets" / "reference" / "combat_power_label.png"
 AUTOLOCATE_MIN_CONFIDENCE = 0.75    # cv2.TM_CCOEFF_NORMED score below this is treated as "not found"
+
+# Cubes: the Potential panel. Anchored on its "Potential" label (assets/reference/
+# potential_label.png, cut from potential_example.png) the same way Flames anchors on
+# "Combat Power Change"; the three stat lines sit at a fixed offset below it. Ratios are
+# measured against the label's own size so they hold at any UI scale: label at (11,294)
+# 50x15, the 3-line block at (90,306) 210x70 in the reference screenshot.
+POTENTIAL_LABEL_PATH = Path(__file__).parent / "assets" / "reference" / "potential_label.png"
+POTENTIAL_BLOCK_DX_RATIO = 79 / 50
+POTENTIAL_BLOCK_DY_RATIO = 12 / 15
+POTENTIAL_BLOCK_W_RATIO  = 210 / 50
+POTENTIAL_BLOCK_H_RATIO  = 70 / 15
+CUBES_REGION_FILE = _BASE_DIR / "last_cubes_region.json"
+POTENTIAL_TARGET_HEIGHT = 210    # ~30px per stat line after upscaling (3 lines in the block)
+# Words as well as digits here, so Tesseract keeps its full alphabet; the stat line text is
+# bright and desaturated on a dark card, so the Flames colour mask isolates it unchanged.
+POTENTIAL_OCR_CONFIG = r'--psm 6 -c tessedit_char_whitelist=+-0123456789%ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz: '
+POTENTIAL_LINE_RE = re.compile(r"^([A-Za-z][A-Za-z ]*?)\s*([+-]\d+%?)$")
 AUTOLOCATE_SCALES = np.linspace(0.5, 2.0, 31)   # search these template scales to handle different UI/DPI scaling
 # Both the BEFORE and AFTER panels show a "Combat Power Change" label (BEFORE's value is always 0), so
 # template matching finds two near-identical matches — the rightmost one is always the AFTER panel, which
@@ -329,6 +346,69 @@ def _load_cv2():
         import cv2
         _cv2 = cv2
     return _cv2
+
+
+def locate_label(full_gray, tmpl_gray, max_peaks=4):
+    """Multi-scale TM_CCOEFF_NORMED search for *tmpl_gray* in *full_gray*.
+    Returns (best_score, peaks, (h, w)) where peaks are the (x, y) top-left
+    corners of every distinct match at the best scale, strongest first, and
+    (h, w) is the template size at that scale. Shared by Flames (Combat
+    Power Change label) and Cubes (Potential label)."""
+    cv2 = _load_cv2()
+    th, tw = tmpl_gray.shape
+    best_val, best_res, best_shape = -1.0, None, None
+    for scale in AUTOLOCATE_SCALES:
+        rt = cv2.resize(tmpl_gray, (max(1, round(tw * scale)), max(1, round(th * scale))))
+        if rt.shape[0] > full_gray.shape[0] or rt.shape[1] > full_gray.shape[1]:
+            continue
+        res = cv2.matchTemplate(full_gray, rt, cv2.TM_CCOEFF_NORMED)
+        _, maxval, _, _ = cv2.minMaxLoc(res)
+        if maxval > best_val:
+            best_val, best_res, best_shape = maxval, res, rt.shape
+    if best_res is None or best_val < AUTOLOCATE_MIN_CONFIDENCE:
+        return best_val, [], best_shape
+    sh, sw = best_shape
+    work = best_res.copy()
+    peaks = []
+    for _ in range(max_peaks):
+        _, maxval, _, maxloc = cv2.minMaxLoc(work)
+        if maxval < AUTOLOCATE_MIN_CONFIDENCE:
+            break
+        peaks.append(maxloc)
+        x, y = maxloc
+        work[max(0, y - sh // 2):min(work.shape[0], y + sh // 2),
+             max(0, x - sw // 2):min(work.shape[1], x + sw // 2)] = -1.0
+    return best_val, peaks, best_shape
+
+
+def read_potential_lines(img):
+    """OCR the Potential card's stat lines out of a raw crop. Returns a list
+    of (stat, value) like [("Max HP", "+120"), ("Max MP", "+60"), ("DEF",
+    "+60")]; lines Tesseract garbles come back as (raw_text, None) rather
+    than being dropped, so the UI can show what it saw."""
+    # Scale so each stat line lands near ~30px tall - the block is three lines,
+    # so target 3x that for the whole crop. Tesseract is fussy about this font's
+    # "M" at in-between scales (2.5x/3.5x/4x misread it as "W"/"hl"), while 2x
+    # and 3x read cleanly, so aim for the middle of the good range.
+    scale = max(OCR_SCALE_MIN, min(POTENTIAL_TARGET_HEIGHT / img.height, OCR_SCALE_MAX))
+    big = img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))), Image.LANCZOS)
+    hsv = np.array(big.convert("HSV"))
+    ink = (hsv[..., 2].astype(int) > OCR_MASK_VALUE_MIN) & (hsv[..., 1].astype(int) < OCR_MASK_SATURATION_MAX)
+    proc = Image.fromarray(np.where(ink, 0, 255).astype("uint8"), mode="L")
+    text = pytesseract.image_to_string(proc, config=POTENTIAL_OCR_CONFIG)
+    out = []
+    for raw in text.splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        m = POTENTIAL_LINE_RE.match(raw.replace(" ", ""))
+        if m:
+            # Tesseract drops the spaces ("MaxHP+120"); put one back before each capital run
+            stat = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", m.group(1))
+            out.append((stat, m.group(2)))
+        else:
+            out.append((raw, None))
+    return out
 
 
 def _read_app_version() -> str:
@@ -1908,45 +1988,19 @@ class OverlayApp:
         with mss.MSS() as sct:
             desktop = sct.monitors[0]
             shot = sct.grab(desktop)
+        full_gray = np.array(Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX").convert("L"))
         try:
-            cv2 = _load_cv2()
+            # Every distinct match at the best scale, not just the global best, so
+            # the BEFORE panel's near-identical label isn't missed for scoring a
+            # hair under the AFTER one.
+            best_val, peaks, best_shape = locate_label(full_gray, self._label_template_gray)
         except Exception as error:
             self._log(f"Auto-locate unavailable: {error}")
             return
-        full_gray = np.array(Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX").convert("L"))
-        tmpl_gray = self._label_template_gray
-        th, tw = tmpl_gray.shape
-
-        best_val, best_res, best_shape = -1.0, None, None
-        for scale in AUTOLOCATE_SCALES:
-            rt = cv2.resize(tmpl_gray, (max(1, round(tw * scale)), max(1, round(th * scale))))
-            if rt.shape[0] > full_gray.shape[0] or rt.shape[1] > full_gray.shape[1]:
-                continue
-            res = cv2.matchTemplate(full_gray, rt, cv2.TM_CCOEFF_NORMED)
-            _, maxval, _, _ = cv2.minMaxLoc(res)
-            if maxval > best_val:
-                best_val, best_res, best_shape = maxval, res, rt.shape
-
-        if best_val < AUTOLOCATE_MIN_CONFIDENCE:
+        if not peaks:
             self._log(f"Auto-locate: panel not found (best match {best_val:.2f}).")
             return
-
-        # Pull out every distinct match at this scale (not just the global
-        # best) by repeatedly taking the max and blanking a template-sized
-        # area around it, so the BEFORE panel's near-identical label doesn't
-        # get missed just because it scored a hair lower than the AFTER one.
         sh, sw = best_shape
-        work = best_res.copy()
-        peaks = []
-        for _ in range(4):
-            _, maxval, _, maxloc = cv2.minMaxLoc(work)
-            if maxval < AUTOLOCATE_MIN_CONFIDENCE:
-                break
-            peaks.append(maxloc)
-            x, y = maxloc
-            x0, x1 = max(0, x - sw // 2), min(work.shape[1], x + sw // 2)
-            y0, y1 = max(0, y - sh // 2), min(work.shape[0], y + sh // 2)
-            work[y0:y1, x0:x1] = -1.0
 
         # Panels always lay out left-to-right with BEFORE first, whether it's
         # a Reset x1 (BEFORE + 1 AFTER = 2 matches) or Reset x3 (BEFORE + 3
@@ -2240,19 +2294,199 @@ def run_flames(args, host=None):
         return app
 
 
-def build_cubes(host):
-    """Placeholder for the second half of the app. Returns an object with a
-    stop() so the shell can treat both tabs the same way."""
-    frame = tk.Frame(host, bg=UI_BG, padx=40, pady=30)
-    frame.pack(fill="both", expand=True)
-    tk.Label(frame, text="Cubes - nothing here yet.", fg=UI_MUTED, bg=UI_BG,
-             font=("Segoe UI", 10)).pack(pady=(40, 0))
+class CubesApp:
+    """The Cubes tab: locate the Potential panel (F7) or draw a box on its
+    three stat lines (F8), then read them (F9 or the button). No spam, no
+    detection loop - a read happens only when asked. Same stop() contract
+    as OverlayApp so the tabbed shell treats both modes alike."""
+    COLOR = UI_ACCENT
+    BORDER = 2
 
-    class _Cubes:
-        def stop(self):
-            if frame.winfo_exists():
-                frame.destroy()
-    return _Cubes()
+    def __init__(self, host):
+        self.host = host
+        self.root = host.winfo_toplevel()
+        self.region = self._load_region()
+        self.lines = []
+        self._running = True
+        self._selector = None
+        self._requests = queue.Queue()
+        self._build(host)
+        for key, action in (("f7", self._auto_locate), ("f8", self._start_selection), ("f9", self._read)):
+            keyboard.add_hotkey(key, self._requests.put, args=(action,), suppress=True, trigger_on_release=True)
+        self._tick()
+
+    # ---- UI ------------------------------------------------------------
+    def _build(self, host):
+        outer = tk.Frame(host, bg=UI_BG, padx=24, pady=8)
+        outer.pack(fill="both", expand=True)
+        self._outer = outer
+        card = OverlayApp._card(outer)
+        card.pack(fill="x")
+        tk.Label(card, text="POTENTIAL", fg=UI_MUTED, bg=UI_SURFACE,
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=14, pady=(10, 2))
+        self._line_labels = []
+        for _ in range(3):
+            lbl = tk.Label(card, text="-", fg=UI_TEXT, bg=UI_SURFACE, font=("Segoe UI", 13, "bold"), anchor="w")
+            lbl.pack(fill="x", padx=14, pady=(0, 2))
+            self._line_labels.append(lbl)
+        self._status = tk.Label(card, text="", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9), anchor="w")
+        self._status.pack(fill="x", padx=14, pady=(4, 10))
+        row = tk.Frame(outer, bg=UI_BG)
+        row.pack(fill="x", pady=(12, 0))
+        OverlayApp._button(row, "Auto-locate (F7)", self._auto_locate, UI_BUTTON, UI_TEXT).pack(
+            side="left", expand=True, fill="x", padx=(0, 6))
+        OverlayApp._button(row, "Choose region (F8)", self._start_selection, UI_BUTTON, UI_TEXT).pack(
+            side="left", expand=True, fill="x", padx=(0, 6))
+        OverlayApp._button(row, "Read (F9)", self._read, UI_PRIMARY, UI_BG).pack(
+            side="left", expand=True, fill="x")
+        tk.Label(outer, text="F7 finds the Potential panel on screen and boxes its three lines; "
+                             "F8 lets you draw the box yourself; F9 reads what is inside it.",
+                 fg=UI_MUTED, bg=UI_BG, font=("Segoe UI", 9), wraplength=460,
+                 justify="left").pack(anchor="w", pady=(10, 0))
+        self.overlay = tk.Toplevel(self.root)
+        self.overlay.overrideredirect(True)
+        self.overlay.attributes("-topmost", True)
+        self.overlay.attributes("-transparentcolor", "black")
+        self.overlay.configure(bg="black")
+        self._canvas = tk.Canvas(self.overlay, bg="black", highlightthickness=0)
+        self._canvas.pack()
+        self._rect = self._canvas.create_rectangle(0, 0, 0, 0, outline=self.COLOR, width=self.BORDER * 2)
+        self._sync_overlay()
+        self._set_status("Ready." if self.region else
+                         "No box yet - press F7 with the Potential window open, or F8 to draw one.")
+
+    def _sync_overlay(self):
+        if not self.region:
+            self.overlay.withdraw()
+            return
+        left, top, w, h = self.region
+        b = self.BORDER
+        self.overlay.geometry(f"{w + 2 * b}x{h + 2 * b}+{left - b}+{top - b}")
+        self._canvas.config(width=w + 2 * b, height=h + 2 * b)
+        self._canvas.coords(self._rect, b, b, w + b, h + b)
+        self.overlay.deiconify()
+
+    def _set_status(self, text):
+        self._status.config(text=text)
+
+    def _tick(self):
+        if not self._running:
+            return
+        while not self._requests.empty():
+            self._requests.get_nowait()()
+        self.root.after(int(RENDER_INTERVAL * 1000), self._tick)
+
+    # ---- region ----------------------------------------------------------
+    @staticmethod
+    def _load_region():
+        try:
+            r = json.loads(CUBES_REGION_FILE.read_text(encoding="utf-8")).get("region")
+            return tuple(int(v) for v in r) if r and len(r) == 4 else None
+        except Exception:
+            return None
+
+    def _save_region(self):
+        try:
+            CUBES_REGION_FILE.write_text(json.dumps({"region": list(self.region)}), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _start_selection(self):
+        if self._selector is not None:
+            return
+        self.overlay.withdraw()
+        self._set_status("Drag a box over the three Potential lines.")
+        self._selector = RegionSelector(parent=self.root, on_done=self._finish_selection)
+
+    def _finish_selection(self, region):
+        self._selector = None
+        if region is not None:
+            self.region = tuple(int(v) for v in region)
+            self._save_region()
+            self._set_status(f"Box set: {self.region}")
+        self._sync_overlay()
+
+    def _auto_locate(self):
+        self._set_status("Auto-locate: scanning the screen...")
+        self.root.update_idletasks()
+        self.overlay.withdraw()
+        try:
+            with mss.MSS() as sct:
+                desktop = sct.monitors[0]
+                shot = sct.grab(desktop)
+            full_gray = np.array(Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX").convert("L"))
+            tmpl = np.array(Image.open(POTENTIAL_LABEL_PATH).convert("L"))
+            best, peaks, shape = locate_label(full_gray, tmpl, max_peaks=1)
+        except Exception as error:
+            self._set_status(f"Auto-locate failed: {error}")
+            self._sync_overlay()
+            return
+        if not peaks:
+            self._set_status(f"Auto-locate: Potential panel not found (best match {best:.2f}).")
+            self._sync_overlay()
+            return
+        sh, sw = shape
+        x, y = peaks[0]
+        self.region = (round(desktop["left"] + x + POTENTIAL_BLOCK_DX_RATIO * sw),
+                       round(desktop["top"] + y + POTENTIAL_BLOCK_DY_RATIO * sh),
+                       round(POTENTIAL_BLOCK_W_RATIO * sw), round(POTENTIAL_BLOCK_H_RATIO * sh))
+        self._save_region()
+        self._sync_overlay()
+        self._set_status(f"Found the Potential panel (match {best:.2f}). Press F9 to read.")
+        self._read()
+
+    # ---- read --------------------------------------------------------------
+    def _read(self):
+        if not self.region:
+            self._set_status("No box yet - press F7 or F8 first.")
+            return
+        # Hide the box while grabbing so its own border is not in the crop (the
+        # Flames smudge lesson), then bring it back.
+        self.overlay.withdraw()
+        self.root.update_idletasks()
+        try:
+            img = _grab(self.region)
+            self.lines = read_potential_lines(img)
+        except Exception as error:
+            self._set_status(f"Read failed: {error}")
+            self.lines = []
+        finally:
+            self._sync_overlay()
+        for lbl, entry in zip(self._line_labels, self.lines + [None] * 3):
+            if entry is None:
+                lbl.config(text="-", fg=UI_MUTED)
+            elif entry[1] is None:
+                lbl.config(text=f"? {entry[0]}", fg=UI_MUTED)
+            else:
+                lbl.config(text=f"{entry[0]}  {entry[1]}", fg=UI_TEXT)
+        good = [e for e in self.lines if e[1] is not None]
+        self._set_status(f"Read {len(good)} line(s)." if good else "Nothing readable in the box.")
+
+    # ---- lifecycle -----------------------------------------------------------
+    def stop(self):
+        if not self._running:
+            return
+        self._running = False
+        for key in ("f7", "f8", "f9"):
+            try:
+                keyboard.remove_hotkey(key)
+            except (KeyError, ValueError):
+                pass
+        if self._selector is not None:
+            try:
+                self._selector.root.destroy()
+            except Exception:
+                pass
+            self._selector = None
+        if self.overlay is not None:
+            self.overlay.destroy()
+            self.overlay = None
+        if self._outer.winfo_exists():
+            self._outer.destroy()
+
+
+def build_cubes(host):
+    return CubesApp(host)
 
 
 def run_app(args):

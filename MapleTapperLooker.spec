@@ -31,6 +31,7 @@ a = Analysis(
     pathex=[],
     binaries=capture_binaries,
     datas=[('assets/logo.png', 'assets'), ('assets/reference/combat_power_label.png', 'assets/reference'),
+           ('assets/reference/potential_label.png', 'assets/reference'),
            ('assets/digit_templates.npz', 'assets'),
            (str(_stamped_version), 'assets')] + capture_datas,
     hiddenimports=capture_imports,
