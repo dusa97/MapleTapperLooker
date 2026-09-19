@@ -1049,24 +1049,31 @@ class OverlayApp:
         self._mute_var = None
         self._discord_var = None
 
-    def _build_window(self):
-        """Build the normal taskbar window plus the capture-safe screen overlay."""
-        root = tk.Tk()
-        root.title(f"Maple Tapper Looker {APP_VERSION}")
+    def _build_window(self, host=None):
+        """Build the normal taskbar window plus the capture-safe screen overlay.
+        With *host* (a frame inside the tabbed shell, see run_app) the Flames
+        UI is built into that frame and the shell owns the window - title,
+        icon, size, close button - so none of that is touched here."""
+        if host is None:
+            root = tk.Tk()
+            root.title(f"Maple Tapper Looker {APP_VERSION}")
+        else:
+            root = host.winfo_toplevel()
         with Image.open(Path(__file__).parent / "assets" / "logo.png") as image:
             self._logo_image = ImageTk.PhotoImage(
                 image.resize((144, 144), Image.Resampling.LANCZOS), master=root)
             self._icon_image = ImageTk.PhotoImage(
                 image.resize((256, 256), Image.Resampling.LANCZOS), master=root)
-        root.iconphoto(True, self._icon_image)
-        root.resizable(False, False)
-        root.configure(bg=UI_BG)
-        root.geometry("540x610")
-        root.minsize(500, 560)
-        root.protocol("WM_DELETE_WINDOW", self._quit)
-        root.option_add("*Font", ("Segoe UI", 10))
+        if host is None:
+            root.iconphoto(True, self._icon_image)
+            root.resizable(False, False)
+            root.configure(bg=UI_BG)
+            root.geometry("540x610")
+            root.minsize(500, 560)
+            root.protocol("WM_DELETE_WINDOW", self._quit)
+            root.option_add("*Font", ("Segoe UI", 10))
 
-        outer = tk.Frame(root, bg=UI_BG, padx=24, pady=20)
+        outer = tk.Frame(host if host is not None else root, bg=UI_BG, padx=24, pady=20)
         outer.pack(side="left", fill="both", expand=True)
         header = tk.Frame(outer, bg=UI_BG)
         header.pack(fill="x", pady=(0, 14))
@@ -1215,13 +1222,14 @@ class OverlayApp:
                             lambda e, c=corner: self._on_resize_press(e, c))
             canvas.tag_bind(f"handle_{corner}", "<B1-Motion>", self._on_resize_drag)
             canvas.tag_bind(f"handle_{corner}", "<ButtonRelease-1>", self._on_release)
-        self.root, self.overlay, self._canvas = root, overlay, canvas
+        self.root, self.overlay, self._canvas, self._outer = root, overlay, canvas, outer
         self._sync_geometry()
-        root.update_idletasks()
-        width = max(540, root.winfo_reqwidth())
-        height = max(610, root.winfo_reqheight())
-        root.geometry(f"{width}x{height}")
-        root.minsize(width, height)
+        if host is None:
+            root.update_idletasks()
+            width = max(540, root.winfo_reqwidth())
+            height = max(610, root.winfo_reqheight())
+            root.geometry(f"{width}x{height}")
+            root.minsize(width, height)
         return root
 
     @staticmethod
@@ -1388,6 +1396,16 @@ class OverlayApp:
         self._selecting = False
 
     def _quit(self):
+        self.stop()
+        self.root.destroy()
+
+    def stop(self):
+        """Release everything this mode holds - hotkeys, threads, mouse lock,
+        overlay, its widgets - but leave the Tk root alone, so the tabbed
+        shell (run_app) can keep the window and start the other mode in it.
+        Idempotent: the shell calls it on every tab switch and on close."""
+        if not self._running:
+            return
         print("\nStopped.")
         self._running = False
         self.discord.close()
@@ -1405,7 +1423,10 @@ class OverlayApp:
         self._cancel_start()
         if self.overlay is not None:
             self.overlay.destroy()
-        self.root.destroy()
+            self.overlay = None
+        outer = getattr(self, "_outer", None)
+        if outer is not None and outer.winfo_exists():
+            outer.destroy()
 
     def _lock_mouse(self):
         """Pin the cursor to its current on-screen position (Windows only) so
@@ -1757,6 +1778,8 @@ class OverlayApp:
     def _render(self):
         """Fast, OCR-free UI repaint tick — just reflects whatever state the
         background OCR loop (or the spam loop) last wrote."""
+        if not self._running:
+            return                      # stop() ran; widgets are gone, don't reschedule
         while not self._toggle_requests.empty():
             self._toggle_requests.get_nowait()
             self._toggle_enter_spam()
@@ -1975,8 +1998,8 @@ class OverlayApp:
         threading.Thread(target=smooth_move_to,
                           args=(rx + rw // 2, ry + rh // 2), daemon=True).start()
 
-    def run(self):
-        root = self._build_window()
+    def run(self, host=None):
+        root = self._build_window(host)
         self._check_tesseract()
         self._check_autolocate()
         keyboard.add_hotkey("f8", self._selection_requested.set,
@@ -2007,6 +2030,8 @@ class OverlayApp:
         self._ocr_thread = threading.Thread(target=self._ocr_loop, daemon=True)
         self._ocr_thread.start()
         root.after(int(RENDER_INTERVAL * 1000), self._render)
+        if host is not None:
+            return                      # the shell owns the mainloop
         try:
             root.mainloop()
         except KeyboardInterrupt:
@@ -2156,70 +2181,7 @@ def save_mode(mode):
         pass
 
 
-def choose_mode(default=None):
-    """Launcher: pick Flames (the reset-dialog watcher) or Cubes. Returns the
-    choice, or None if the window was closed. Deliberately dumb - one small
-    window, two buttons - because each mode owns the process while it runs
-    (global hotkeys, worker threads, its own Tk root) and hands everything
-    back when it quits (see OverlayApp._quit), so this just loops around
-    them. The last choice is highlighted so the common case is one click."""
-    choice = {"mode": None}
-    root = tk.Tk()
-    root.title(f"Maple Tapper Looker {APP_VERSION}")
-    root.configure(bg=UI_BG)
-    root.resizable(False, False)
-    root.attributes("-topmost", True)
-    frame = tk.Frame(root, bg=UI_BG, padx=28, pady=22)
-    frame.pack()
-    tk.Label(frame, text="MAPLE / TAPPER LOOKER", fg=UI_TEXT, bg=UI_BG,
-             font=("Segoe UI", 15, "bold")).pack()
-    tk.Label(frame, text=f"version {APP_VERSION}", fg=UI_ACCENT, bg=UI_BG,
-             font=("Segoe UI", 9, "bold")).pack(pady=(2, 14))
-    tk.Label(frame, text="What are you doing today?", fg=UI_MUTED, bg=UI_BG,
-             font=("Segoe UI", 10)).pack(pady=(0, 10))
-
-    def pick(mode):
-        choice["mode"] = mode
-        root.destroy()
-
-    for mode, title, blurb in (("flames", "Flames", "Watch the Combat Power reset dialog"),
-                               ("cubes", "Cubes", "Coming next")):
-        tk.Button(frame, text=f"{title}\n{blurb}", command=lambda m=mode: pick(m),
-                  bg=UI_PRIMARY if mode == default else UI_BUTTON, fg=UI_TEXT,
-                  activebackground=UI_PRIMARY_ACTIVE, activeforeground=UI_BG,
-                  relief="flat", bd=0, padx=18, pady=10, width=30, cursor="hand2",
-                  font=("Segoe UI", 11, "bold"), justify="center").pack(fill="x", pady=4)
-    tk.Label(frame, text="Closing a mode brings you back here.", fg=UI_MUTED, bg=UI_BG,
-             font=("Segoe UI", 8)).pack(pady=(12, 0))
-    root.protocol("WM_DELETE_WINDOW", root.destroy)
-    root.update_idletasks()
-    root.geometry(f"+{(root.winfo_screenwidth() - root.winfo_reqwidth()) // 2}"
-                  f"+{(root.winfo_screenheight() - root.winfo_reqheight()) // 2}")
-    root.mainloop()
-    return choice["mode"]
-
-
-def run_cubes():
-    """Placeholder for the second half of the app - a real window so the
-    launcher round-trip (pick -> run -> close -> launcher) works end to end
-    today. The cube logic replaces the body of this frame."""
-    root = tk.Tk()
-    root.title(f"Maple Tapper Looker {APP_VERSION} - Cubes")
-    root.configure(bg=UI_BG)
-    frame = tk.Frame(root, bg=UI_BG, padx=40, pady=30)
-    frame.pack()
-    tk.Label(frame, text="CUBES", fg=UI_TEXT, bg=UI_BG, font=("Segoe UI", 16, "bold")).pack()
-    tk.Label(frame, text="Nothing here yet.", fg=UI_MUTED, bg=UI_BG,
-             font=("Segoe UI", 10)).pack(pady=(6, 18))
-    tk.Button(frame, text="Back to launcher", command=root.destroy, bg=UI_BUTTON, fg=UI_TEXT,
-              activebackground=UI_PRIMARY_ACTIVE, relief="flat", padx=16, pady=6,
-              font=("Segoe UI", 10, "bold"), cursor="hand2").pack()
-    root.protocol("WM_DELETE_WINDOW", root.destroy)
-    root.mainloop()
-
-
-
-def run_flames(args):
+def run_flames(args, host=None):
         if args.region:
             region = tuple(args.region)
             save_region(region)
@@ -2263,7 +2225,84 @@ def run_flames(args):
             # The exe has no console (console=False in the spec), so the printed summary
             # is invisible there — surface it in the app's own activity log instead.
             start_capture_check(on_done=lambda summary: app._log(format_check_summary(summary).strip()))
-        app.run()
+        app.run(host)
+        return app
+
+
+def build_cubes(host):
+    """Placeholder for the second half of the app. Returns an object with a
+    stop() so the shell can treat both tabs the same way."""
+    frame = tk.Frame(host, bg=UI_BG, padx=40, pady=30)
+    frame.pack(fill="both", expand=True)
+    tk.Label(frame, text="CUBES", fg=UI_TEXT, bg=UI_BG, font=("Segoe UI", 16, "bold")).pack(pady=(40, 0))
+    tk.Label(frame, text="Nothing here yet.", fg=UI_MUTED, bg=UI_BG, font=("Segoe UI", 10)).pack(pady=(6, 0))
+
+    class _Cubes:
+        def stop(self):
+            if frame.winfo_exists():
+                frame.destroy()
+    return _Cubes()
+
+
+def run_app(args):
+    """One window, two tabs - Flames (the reset-dialog watcher) and Cubes.
+    Only one mode runs at a time: switching tabs stops the current mode
+    (hotkeys, threads, overlay - see OverlayApp.stop) and starts the other
+    inside its tab. The last tab is remembered and reopened next launch."""
+    root = tk.Tk()
+    root.title(f"Maple Tapper Looker {APP_VERSION}")
+    root.configure(bg=UI_BG)
+    root.resizable(False, False)
+    root.option_add("*Font", ("Segoe UI", 10))
+    with Image.open(Path(__file__).parent / "assets" / "logo.png") as image:
+        icon = ImageTk.PhotoImage(image.resize((256, 256), Image.Resampling.LANCZOS), master=root)
+    root.iconphoto(True, icon)
+
+    style = ttk.Style(root)
+    style.theme_use("clam")
+    style.configure("Mode.TNotebook", background=UI_BG, borderwidth=0, tabmargins=(12, 8, 0, 0))
+    style.configure("Mode.TNotebook.Tab", background=UI_SURFACE, foreground=UI_MUTED,
+                    padding=(22, 8), font=("Segoe UI", 11, "bold"), borderwidth=0)
+    style.map("Mode.TNotebook.Tab", background=[("selected", UI_BUTTON)],
+              foreground=[("selected", UI_TEXT)])
+    notebook = ttk.Notebook(root, style="Mode.TNotebook")
+    notebook.pack(fill="both", expand=True)
+    tabs = {}
+    for mode, title in (("flames", "Flames"), ("cubes", "Cubes")):
+        tabs[mode] = tk.Frame(notebook, bg=UI_BG)
+        notebook.add(tabs[mode], text=f"  {title}  ")
+    modes = list(tabs)
+
+    state = {"mode": None, "app": None}
+
+    def start(mode):
+        if state["app"] is not None:
+            state["app"].stop()
+        state["mode"], state["app"] = mode, None
+        state["app"] = run_flames(args, tabs["flames"]) if mode == "flames" else build_cubes(tabs["cubes"])
+        save_mode(mode)
+        root.update_idletasks()
+        root.geometry(f"{max(540, root.winfo_reqwidth())}x{max(650, root.winfo_reqheight())}")
+
+    def on_tab_changed(_event):
+        mode = modes[notebook.index("current")]
+        if mode != state["mode"]:
+            start(mode)
+
+    def on_close():
+        if state["app"] is not None:
+            state["app"].stop()
+        root.destroy()
+
+    notebook.bind("<<NotebookTabChanged>>", on_tab_changed)
+    root.protocol("WM_DELETE_WINDOW", on_close)
+    notebook.select(tabs[load_mode() or "flames"])
+    if state["app"] is None:            # selecting the already-current tab fires no event
+        start(modes[notebook.index("current")])
+    try:
+        root.mainloop()
+    except KeyboardInterrupt:
+        on_close()
 
 if __name__ == "__main__":
     import argparse
@@ -2287,7 +2326,7 @@ if __name__ == "__main__":
     parser.add_argument("--no-capture-check", action="store_true",
                          help="skip the startup re-check of the previous run's debug captures")
     parser.add_argument("--mode", choices=("flames", "cubes"),
-                         help="skip the launcher and open this mode directly")
+                         help="open on this tab instead of the last one used")
     parser.add_argument("--check-captures", action="store_true",
                          help="re-check the previous run's debug captures and print the result, no overlay")
     args = parser.parse_args()
@@ -2310,20 +2349,6 @@ if __name__ == "__main__":
         print("  (pass --no-elevate to skip this)")
         _relaunch_as_admin()
 
-    # Launcher loop. Each mode owns the process while it runs and releases
-    # everything on quit, so closing a mode returns here and the launcher
-    # comes back; closing the launcher exits. --mode skips the launcher (for
-    # shortcuts/scripts) and runs that one mode.
     if args.mode:
         save_mode(args.mode)
-        run_flames(args) if args.mode == "flames" else run_cubes()
-        sys.exit(0)
-    while True:
-        mode = choose_mode(default=load_mode())
-        if mode is None:
-            break
-        save_mode(mode)
-        if mode == "flames":
-            run_flames(args)
-        else:
-            run_cubes()
+    run_app(args)
