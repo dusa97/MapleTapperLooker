@@ -257,6 +257,18 @@ CUBES_SETTLE      = 0.35   # seconds to wait after a cube click before reading, 
                            # with the NEW lines rather than the old ones; ponytail: measured on one
                            # machine, expose in the UI if it proves resolution/lag dependent
 POTENTIAL_TARGET_HEIGHT = 210    # ~30px per stat line after upscaling (3 lines in the block)
+# Each stat line has a small square icon at its left whose colour is the item's potential
+# tier. Measured on the reference: 10x9 px at x 99..108, y 310..318 for the first line -
+# i.e. block-relative x 9..19, y 4..13 - and the lines are 25 px apart. Only the Rare
+# icon (102,255,255: cyan, hue 127 on PIL's 0-255 scale) has been measured directly; the
+# other three are placed by their nominal colour with wide gaps between the ranges.
+# ponytail: hue ranges are a guess for epic/unique/legendary until real samples exist -
+# grab a capture of each and tighten POTENTIAL_TIER_HUES.
+POTENTIAL_ICON_X_FRAC = (9 / 210, 19 / 210)     # of block width
+POTENTIAL_ICON_Y_FRAC = (4 / 70, 13 / 70)       # of block height, first line
+POTENTIAL_LINE_STEP_FRAC = 25 / 70
+POTENTIAL_TIER_HUES = (("unique", 0, 50), ("legendary", 60, 110), ("rare", 115, 170), ("epic", 175, 225))
+POTENTIAL_TIERS = ("rare", "epic", "unique", "legendary")   # ascending
 # Words as well as digits here, so Tesseract keeps its full alphabet; the stat line text is
 # bright and desaturated on a dark card, so the Flames colour mask isolates it unchanged.
 POTENTIAL_OCR_CONFIG = r'--psm 6 -c tessedit_char_whitelist=+-0123456789%ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz: '
@@ -385,6 +397,24 @@ def locate_label(full_gray, tmpl_gray, max_peaks=4):
     return best_val, peaks, best_shape
 
 
+def read_potential_tier(img):
+    """Tier of the item from the colour of the icon beside the first stat
+    line: 'rare' / 'epic' / 'unique' / 'legendary', or None if there is no
+    saturated icon there (panel not showing, box misplaced)."""
+    w, h = img.size
+    x0, x1 = (round(w * f) for f in POTENTIAL_ICON_X_FRAC)
+    y0, y1 = (round(h * f) for f in POTENTIAL_ICON_Y_FRAC)
+    hsv = np.array(img.convert("HSV").crop((x0, y0, max(x0 + 1, x1), max(y0 + 1, y1)))).astype(int)
+    coloured = (hsv[..., 1] > 100) & (hsv[..., 2] > 120)
+    if coloured.sum() < 6:
+        return None
+    hue = int(np.median(hsv[..., 0][coloured]))
+    for name, lo, hi in POTENTIAL_TIER_HUES:
+        if lo <= hue <= hi:
+            return name
+    return None
+
+
 def read_potential_lines(img):
     """OCR the Potential card's stat lines out of a raw crop. Returns a list
     of (stat, value) like [("Max HP", "+120"), ("Max MP", "+60"), ("DEF",
@@ -416,14 +446,26 @@ def read_potential_lines(img):
 
 
 POTENTIAL_TARGET_RE = re.compile(r"^\s*(?:([+-]?\d+)\s*(%?)\s*([A-Za-z][A-Za-z ]*?)|([A-Za-z][A-Za-z ]*?)\s*\+?\s*(\d+)\s*(%?))\s*$")
+POTENTIAL_TIER_WORD_RE = re.compile(r"\b(rare|epic|unique|legendary)\b", re.I)
 
 
 def parse_potential_target(text):
-    """Turn what the user typed into (stat_words, minimum, wants_percent).
-    Accepts "30% str", "str 30%", "str +30", "120 max hp", "max hp 120".
-    stat_words is a tuple of lowercase words that must ALL appear in the
-    stat name on the line. Returns None if it can't be understood."""
-    m = POTENTIAL_TARGET_RE.match(text or "")
+    """Turn what the user typed into (stat_words, minimum, wants_percent,
+    tier). Accepts "30% str", "str 30%", "str +30", "120 max hp", "max hp
+    120", with an optional tier word anywhere ("unique 30% str"), or a
+    tier on its own ("legendary" = stop as soon as the item is legendary,
+    whatever the lines say). stat_words is a tuple of lowercase words that
+    must ALL appear in the stat name on the line; tier is a lowercase tier
+    name or None. Returns None if it can't be understood."""
+    text = text or ""
+    tier = None
+    tm = POTENTIAL_TIER_WORD_RE.search(text)
+    if tm:
+        tier = tm.group(1).lower()
+        text = text[:tm.start()] + text[tm.end():]
+    if tier and not text.strip():
+        return (), 0, False, tier
+    m = POTENTIAL_TARGET_RE.match(text)
     if not m:
         return None
     if m.group(1) is not None:
@@ -433,7 +475,17 @@ def parse_potential_target(text):
     words = tuple(w for w in re.split(r"\s+", stat.strip().lower()) if w)
     if not words:
         return None
-    return words, abs(int(number)), pct == "%"
+    return words, abs(int(number)), pct == "%", tier
+
+
+def tier_satisfies(tier, wanted):
+    """Is the read *tier* at least the *wanted* one? None wanted = no
+    requirement; None read = unknown, never satisfies a requirement."""
+    if wanted is None:
+        return True
+    if tier is None:
+        return False
+    return POTENTIAL_TIERS.index(tier) >= POTENTIAL_TIERS.index(wanted)
 
 
 def line_matches_target(line, target):
@@ -445,7 +497,9 @@ def line_matches_target(line, target):
     stat, value = line
     if value is None:
         return False
-    words, minimum, wants_pct = target
+    words, minimum, wants_pct, _tier = target
+    if not words:
+        return False                  # tier-only target: lines never satisfy it, the tier does
     haystack = re.sub(r"\s+", " ", stat.lower())
     if not all(w in haystack for w in words):
         return False
@@ -2421,6 +2475,7 @@ class CubesApp:
         self.looping = False              # F9: cube -> read -> check, until the target shows up
         self.target = None                # parsed by parse_potential_target
         self.beep_enabled = True
+        self.tier = None
         self.rolls = 0
         self._mouse = MouseLock()
         self._loop_thread = None
@@ -2441,6 +2496,8 @@ class CubesApp:
         card.pack(fill="x")
         tk.Label(card, text="POTENTIAL", fg=UI_MUTED, bg=UI_SURFACE,
                  font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=14, pady=(10, 2))
+        self._tier_label = tk.Label(card, text="", fg=UI_ACCENT, bg=UI_SURFACE, font=("Segoe UI", 10, "bold"), anchor="w")
+        self._tier_label.pack(fill="x", padx=14, pady=(0, 4))
         self._line_labels = []
         for _ in range(3):
             lbl = tk.Label(card, text="-", fg=UI_TEXT, bg=UI_SURFACE, font=("Segoe UI", 13, "bold"), anchor="w")
@@ -2463,7 +2520,8 @@ class CubesApp:
         entry.pack(side="left", fill="x", expand=True, ipady=6)
         self._target_label = tk.Label(goal_row, text="", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9))
         self._target_label.pack(side="left", padx=(10, 0))
-        tk.Label(goal, text='e.g. "30% str", "9% all stats", "120 max hp" - any line at or above that value stops the loop.',
+        tk.Label(goal, text='e.g. "30% str", "9% all stats", "120 max hp", "unique 30% str", or just "legendary" - '
+                            'stops when a line reaches that value (and the tier, if you named one).',
                  fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 8), wraplength=440,
                  justify="left").pack(anchor="w", padx=14, pady=(0, 10))
 
@@ -2538,8 +2596,13 @@ class CubesApp:
 
     @staticmethod
     def _describe(target):
-        words, minimum, pct = target
-        return f"{' '.join(words).upper()} >= {minimum}{'%' if pct else ''}"
+        words, minimum, pct, tier = target
+        parts = []
+        if tier:
+            parts.append(tier.capitalize() + "+")
+        if words:
+            parts.append(f"{' '.join(words).upper()} >= {minimum}{'%' if pct else ''}")
+        return "  ".join(parts)
 
     def _parse_target(self):
         text = self._target_var.get()
@@ -2610,15 +2673,17 @@ class CubesApp:
         self.overlay.withdraw()
         self.root.update_idletasks()
         try:
-            self.lines = read_potential_lines(_grab(self.region))
+            img = _grab(self.region)
+            self.tier, self.lines = read_potential_tier(img), read_potential_lines(img)
         except Exception as error:
             self._set_status(f"Read failed: {error}")
-            self.lines = []
+            self.tier, self.lines = None, []
         finally:
             self._sync_overlay()
         self._show_lines()
 
     def _show_lines(self):
+        self._tier_label.config(text=(self.tier or "").capitalize())
         for lbl, entry in zip(self._line_labels, self.lines + [None] * 3):
             if entry is None:
                 lbl.config(text="-", fg=UI_MUTED)
@@ -2678,19 +2743,26 @@ class CubesApp:
             if not self.looping:
                 break
             try:
-                lines = read_potential_lines(_grab(self.region))
+                img = _grab(self.region)
+                tier, lines = read_potential_tier(img), read_potential_lines(img)
             except Exception:
-                lines = []
+                tier, lines = None, []
             self.rolls += 1
-            hit = next((line for line in lines if line_matches_target(line, target)), None)
-            self._requests.put(lambda lines=lines: (setattr(self, "lines", lines), self._show_lines()))
+            wanted_tier = target[3]
+            tier_ok = tier_satisfies(tier, wanted_tier)
+            if target[0]:                 # stat target (with or without a tier requirement)
+                hit = next((line for line in lines if line_matches_target(line, target)), None) if tier_ok else None
+            else:                         # tier-only target
+                hit = ("", "") if tier_ok else None          # message already names the tier
+            self._requests.put(lambda tier=tier, lines=lines: (setattr(self, "tier", tier),
+                                                               setattr(self, "lines", lines), self._show_lines()))
             if hit is not None:
                 self._requests.put(lambda hit=hit: self._on_hit(hit))
                 return
             self._requests.put(lambda: self._set_status(f"Roll {self.rolls}: no match yet."))
 
     def _on_hit(self, hit):
-        self._stop_loop(f"Got it after {self.rolls} roll(s): {hit[0]} {hit[1]}")
+        self._stop_loop(f"Got it after {self.rolls} roll(s): {(self.tier or '').capitalize()} {hit[0]} {hit[1]}".replace("  ", " "))
         if self.beep_enabled:
             threading.Thread(target=beep, daemon=True).start()
 
