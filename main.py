@@ -257,23 +257,26 @@ CUBES_SETTLE      = 0.35   # seconds to wait after a cube click before reading, 
                            # with the NEW lines rather than the old ones; ponytail: measured on one
                            # machine, expose in the UI if it proves resolution/lag dependent
 POTENTIAL_TARGET_HEIGHT = 210    # ~30px per stat line after upscaling (3 lines in the block)
-# Each stat line has a small square icon at its left whose colour is the item's potential
-# tier. Measured on the reference: 10x9 px at x 99..108, y 310..318 for the first line -
-# i.e. block-relative x 9..19, y 4..13 - and the lines are 25 px apart. Only the Rare
-# icon (102,255,255: cyan, hue 127 on PIL's 0-255 scale) has been measured directly; the
-# other three are placed by their nominal colour with wide gaps between the ranges.
-# ponytail: hue ranges are a guess for epic/unique/legendary until real samples exist -
-# grab a capture of each and tighten POTENTIAL_TIER_HUES.
+# EACH stat line has its own small lettered square (R/E/U/L) at its left, coloured by that
+# line's tier - an item can be L / U / U. Measured: 10x9 px at x 99..108, y 310..318 for
+# the first line, i.e. block-relative x 9..19, y 4..13, lines 25 px apart. Colours, all
+# measured on real captures under assets/reference/ (hue on PIL's 0-255 scale):
+#   rare      (102,255,255) cyan    hue 127
+#   epic      (187,119,255) purple  hue 191
+#   unique    (255,204,  0) yellow  hue  34
+#   legendary (204,255,  0) lime    hue  51
+# Unique and legendary are only 17 hue units apart, so those two ranges are tight; the
+# other gaps are wide.
 POTENTIAL_ICON_X_FRAC = (9 / 210, 19 / 210)     # of block width
 POTENTIAL_ICON_Y_FRAC = (4 / 70, 13 / 70)       # of block height, first line
 POTENTIAL_LINE_STEP_FRAC = 25 / 70
-POTENTIAL_TIER_HUES = (("unique", 0, 50), ("legendary", 60, 110), ("rare", 115, 170), ("epic", 175, 225))
+POTENTIAL_TIER_HUES = (("unique", 20, 42), ("legendary", 43, 75), ("rare", 100, 160), ("epic", 170, 220))
 POTENTIAL_TIERS = ("rare", "epic", "unique", "legendary")   # ascending
-POTENTIAL_TIER_COLOURS = {"rare": "#66FFFF", "epic": "#AA50FF", "unique": "#FF9628", "legendary": "#50E650"}
+POTENTIAL_TIER_COLOURS = {"rare": "#66FFFF", "epic": "#BB77FF", "unique": "#FFCC00", "legendary": "#CCFF00"}
 # Words as well as digits here, so Tesseract keeps its full alphabet; the stat line text is
 # bright and desaturated on a dark card, so the Flames colour mask isolates it unchanged.
 POTENTIAL_OCR_CONFIG = r'--psm 6 -c tessedit_char_whitelist=+-0123456789%ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz: '
-POTENTIAL_LINE_RE = re.compile(r"^([A-Za-z][A-Za-z ]*?)\s*([+-]\d+%?)$")
+POTENTIAL_LINE_RE = re.compile(r"^([A-Za-z][A-Za-z ]*?):?\s*([+-]\d+%?)$")
 AUTOLOCATE_SCALES = np.linspace(0.5, 2.0, 31)   # search these template scales to handle different UI/DPI scaling
 # Both the BEFORE and AFTER panels show a "Combat Power Change" label (BEFORE's value is always 0), so
 # template matching finds two near-identical matches — the rightmost one is always the AFTER panel, which
@@ -398,22 +401,26 @@ def locate_label(full_gray, tmpl_gray, max_peaks=4):
     return best_val, peaks, best_shape
 
 
-def read_potential_tier(img):
-    """Tier of the item from the colour of the icon beside the first stat
-    line: 'rare' / 'epic' / 'unique' / 'legendary', or None if there is no
-    saturated icon there (panel not showing, box misplaced)."""
+def read_potential_tiers(img):
+    """Tier of each of the three stat lines, from the colour of the lettered
+    icon beside it: a list of 3 entries, each 'rare' / 'epic' / 'unique' /
+    'legendary' or None (no saturated icon there - line absent, panel not
+    showing, box misplaced). The item's own rank is the first line's tier."""
     w, h = img.size
+    hsv_all = np.array(img.convert("HSV")).astype(int)
     x0, x1 = (round(w * f) for f in POTENTIAL_ICON_X_FRAC)
-    y0, y1 = (round(h * f) for f in POTENTIAL_ICON_Y_FRAC)
-    hsv = np.array(img.convert("HSV").crop((x0, y0, max(x0 + 1, x1), max(y0 + 1, y1)))).astype(int)
-    coloured = (hsv[..., 1] > 100) & (hsv[..., 2] > 120)
-    if coloured.sum() < 6:
-        return None
-    hue = int(np.median(hsv[..., 0][coloured]))
-    for name, lo, hi in POTENTIAL_TIER_HUES:
-        if lo <= hue <= hi:
-            return name
-    return None
+    tiers = []
+    for i in range(3):
+        y0 = round(h * (POTENTIAL_ICON_Y_FRAC[0] + i * POTENTIAL_LINE_STEP_FRAC))
+        y1 = round(h * (POTENTIAL_ICON_Y_FRAC[1] + i * POTENTIAL_LINE_STEP_FRAC))
+        hsv = hsv_all[y0:max(y0 + 1, y1), x0:max(x0 + 1, x1)]
+        coloured = (hsv[..., 1] > 100) & (hsv[..., 2] > 120)
+        tier = None
+        if coloured.sum() >= 6:
+            hue = int(np.median(hsv[..., 0][coloured]))
+            tier = next((name for name, lo, hi in POTENTIAL_TIER_HUES if lo <= hue <= hi), None)
+        tiers.append(tier)
+    return tiers
 
 
 def read_potential_lines(img):
@@ -2478,7 +2485,9 @@ class CubesApp:
     detection loop - a read happens only when asked. Same stop() contract
     as OverlayApp so the tabbed shell treats both modes alike."""
     COLOR = UI_ACCENT
-    BORDER = 2
+    BORDER = 4          # visible frame width; the frame sits OUTSIDE the capture region
+    HANDLE = 10         # corner squares you drag to resize
+    MIN_SIZE = 40
 
     def __init__(self, host):
         self.host = host
@@ -2491,7 +2500,7 @@ class CubesApp:
         self.looping = False              # F9: cube -> read -> check, until the target shows up
         self.target = None                # parsed by parse_potential_target
         self.beep_enabled = True
-        self.tier = None
+        self.tiers = [None, None, None]   # per line, see read_potential_tiers
         self.rolls = 0
         self._mouse = MouseLock()
         self._loop_thread = None
@@ -2570,14 +2579,30 @@ class CubesApp:
                  fg=UI_MUTED, bg=UI_BG, font=("Segoe UI", 9), wraplength=460,
                  justify="left").pack(anchor="w", pady=(10, 0))
         self._parse_target()
+        # Same overlay as Flames: a click-through-transparent window with a
+        # coloured frame you drag to move and corner handles you drag to
+        # resize. The frame is drawn outside the capture region so it is never
+        # in the crop the OCR reads.
         self.overlay = tk.Toplevel(self.root)
         self.overlay.overrideredirect(True)
         self.overlay.attributes("-topmost", True)
         self.overlay.attributes("-transparentcolor", "black")
         self.overlay.configure(bg="black")
-        self._canvas = tk.Canvas(self.overlay, bg="black", highlightthickness=0)
+        self._canvas = tk.Canvas(self.overlay, bg="black", highlightthickness=0, cursor="fleur")
         self._canvas.pack()
-        self._rect = self._canvas.create_rectangle(0, 0, 0, 0, outline=self.COLOR, width=self.BORDER * 2)
+        self._rect = self._canvas.create_rectangle(0, 0, 0, 0, outline=self.COLOR,
+                                                   width=self.BORDER * 2, fill="black", tags="border")
+        self._handles = {c: self._canvas.create_rectangle(0, 0, 0, 0, fill=self.COLOR, outline="",
+                                                          tags=("handle", f"handle_{c}"))
+                         for c in ("nw", "ne", "sw", "se")}
+        self._drag = {}
+        self._canvas.tag_bind("border", "<ButtonPress-1>", self._on_move_press)
+        self._canvas.tag_bind("border", "<B1-Motion>", self._on_move_drag)
+        self._canvas.tag_bind("border", "<ButtonRelease-1>", self._on_release)
+        for c in self._handles:
+            self._canvas.tag_bind(f"handle_{c}", "<ButtonPress-1>", lambda e, c=c: self._on_resize_press(e, c))
+            self._canvas.tag_bind(f"handle_{c}", "<B1-Motion>", self._on_resize_drag)
+            self._canvas.tag_bind(f"handle_{c}", "<ButtonRelease-1>", self._on_release)
         self._sync_overlay()
         self._set_status("Ready." if self.region else
                          "No box yet - press F7 with the Potential window open, or F8 to draw one.")
@@ -2587,11 +2612,57 @@ class CubesApp:
             self.overlay.withdraw()
             return
         left, top, w, h = self.region
-        b = self.BORDER
-        self.overlay.geometry(f"{w + 2 * b}x{h + 2 * b}+{left - b}+{top - b}")
-        self._canvas.config(width=w + 2 * b, height=h + 2 * b)
+        b, hs = self.BORDER, self.HANDLE
+        W, H = w + 2 * b, h + 2 * b
+        self.overlay.geometry(f"{W}x{H}+{left - b}+{top - b}")
+        self._canvas.config(width=W, height=H)
         self._canvas.coords(self._rect, b, b, w + b, h + b)
+        for c, item in self._handles.items():
+            x = 0 if "w" in c else W - hs
+            y = 0 if "n" in c else H - hs
+            self._canvas.coords(item, x, y, x + hs, y + hs)
         self.overlay.deiconify()
+
+    # ---- drag to move, corners to resize (same scheme as OverlayApp) ----
+    def _on_move_press(self, event):
+        self._drag = {"mode": "move", "sx": event.x_root, "sy": event.y_root, "orig": tuple(self.region)}
+
+    def _on_move_drag(self, event):
+        d = self._drag
+        if d.get("mode") != "move":
+            return
+        ox, oy, w, h = d["orig"]
+        self.region = (ox + event.x_root - d["sx"], oy + event.y_root - d["sy"], w, h)
+        self.overlay.geometry(f"+{self.region[0] - self.BORDER}+{self.region[1] - self.BORDER}")
+
+    def _on_resize_press(self, event, corner):
+        self._drag = {"mode": "resize", "corner": corner, "sx": event.x_root, "sy": event.y_root,
+                      "orig": tuple(self.region)}
+
+    def _on_resize_drag(self, event):
+        d = self._drag
+        if d.get("mode") != "resize":
+            return
+        dx, dy = event.x_root - d["sx"], event.y_root - d["sy"]
+        ox, oy, ow, oh = d["orig"]
+        x1, y1, x2, y2 = ox, oy, ox + ow, oy + oh
+        c = d["corner"]
+        if "n" in c:
+            y1 = min(y1 + dy, y2 - self.MIN_SIZE)
+        if "s" in c:
+            y2 = max(y2 + dy, y1 + self.MIN_SIZE)
+        if "w" in c:
+            x1 = min(x1 + dx, x2 - self.MIN_SIZE)
+        if "e" in c:
+            x2 = max(x2 + dx, x1 + self.MIN_SIZE)
+        self.region = (x1, y1, x2 - x1, y2 - y1)
+        self._sync_overlay()
+
+    def _on_release(self, _event):
+        if self._drag:
+            self._drag = {}
+            self._save_region()
+            self._set_status(f"Box: {self.region}")
 
     def _set_status(self, text):
         self._status.config(text=text)
@@ -2705,20 +2776,19 @@ class CubesApp:
         self.root.update_idletasks()
         try:
             img = _grab(self.region)
-            self.tier, self.lines = read_potential_tier(img), read_potential_lines(img)
+            self.tiers, self.lines = read_potential_tiers(img), read_potential_lines(img)
         except Exception as error:
             self._set_status(f"Read failed: {error}")
-            self.tier, self.lines = None, []
+            self.tiers, self.lines = [None] * 3, []
         finally:
             self._sync_overlay()
         self._show_lines()
 
     def _show_lines(self):
-        colour = POTENTIAL_TIER_COLOURS.get(self.tier)
-        for lbl, (dot, dot_id), entry in zip(self._line_labels, self._line_dots, self.lines + [None] * 3):
-            has_line = entry is not None
-            dot.itemconfig(dot_id, fill=colour if (colour and has_line) else UI_SURFACE,
-                           outline=colour if (colour and has_line) else UI_BORDER)
+        for lbl, (dot, dot_id), entry, tier in zip(self._line_labels, self._line_dots,
+                                                    self.lines + [None] * 3, self.tiers + [None] * 3):
+            colour = POTENTIAL_TIER_COLOURS.get(tier)
+            dot.itemconfig(dot_id, fill=colour or UI_SURFACE, outline=colour or UI_BORDER)
             if entry is None:
                 lbl.config(text="-", fg=UI_MUTED)
             elif entry[1] is None:
@@ -2780,25 +2850,29 @@ class CubesApp:
                 break
             try:
                 img = _grab(self.region)
-                tier, lines = read_potential_tier(img), read_potential_lines(img)
+                tiers, lines = read_potential_tiers(img), read_potential_lines(img)
             except Exception:
-                tier, lines = None, []
+                tiers, lines = [None] * 3, []
             self.rolls += 1
             wanted_tier = target[3]
-            tier_ok = tier_satisfies(tier, wanted_tier)
-            if target[0]:                 # stat target (with or without a tier requirement)
-                hit = next((line for line in lines if line_matches_target(line, target)), None) if tier_ok else None
-            else:                         # tier-only target
-                hit = ("", "") if tier_ok else None          # message already names the tier
-            self._requests.put(lambda tier=tier, lines=lines: (setattr(self, "tier", tier),
-                                                               setattr(self, "lines", lines), self._show_lines()))
+            if target[0]:
+                # Stat target: a line that matches AND (if a tier was named) is at
+                # least that tier itself - 'unique 30% str' wants a unique STR line.
+                hit = next((line for line, tier in zip(lines, tiers)
+                            if line_matches_target(line, target) and tier_satisfies(tier, wanted_tier)), None)
+            else:
+                # Tier-only target: the item's rank, i.e. the first line's tier.
+                hit = ("", "") if tier_satisfies(tiers[0], wanted_tier) else None
+            self._requests.put(lambda tiers=tiers, lines=lines: (setattr(self, "tiers", tiers),
+                                                                 setattr(self, "lines", lines), self._show_lines()))
             if hit is not None:
                 self._requests.put(lambda hit=hit: self._on_hit(hit))
                 return
             self._requests.put(lambda: self._set_status(f"Roll {self.rolls}: no match yet."))
 
     def _on_hit(self, hit):
-        self._stop_loop(f"Got it after {self.rolls} roll(s): {(self.tier or '').capitalize()} {hit[0]} {hit[1]}".replace("  ", " "))
+        rank = (self.tiers[0] or "").capitalize()
+        self._stop_loop(f"Got it after {self.rolls} roll(s): {rank} {hit[0]} {hit[1]}".replace("  ", " ").strip())
         if self.beep_enabled:
             threading.Thread(target=beep, daemon=True).start()
 
