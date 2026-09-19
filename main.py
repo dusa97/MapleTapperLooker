@@ -614,26 +614,27 @@ class TotalGoal:
 
 
 class ComboGoal:
-    """Stop when ALL THREE lines belong to the chosen set of stats, in any
-    mix - 'LUK' alone means three LUK/All Stats lines; 'Attack Power +
-    Boss Damage' means three lines each of which is one of those two."""
-    def __init__(self, names):
+    """Stop when at least *count* of the three lines belong to the chosen
+    set of stats, in any mix - 'LUK' alone means LUK/All Stats lines;
+    'Attack Power + Boss Damage' means lines that are either of those."""
+    def __init__(self, names, count=3):
         self.names = list(names)
+        self.count = max(1, min(3, int(count)))
         self.words = [(_stat_words(n), _stat_unit(n)) for n in self.names]
 
     def describe(self):
-        return "3 lines of " + " / ".join(self.names)
+        return f"{self.count} of 3 lines are " + " / ".join(self.names)
 
     def _matching(self, lines):
         return [any(_line_is_stat(line, w, u) for w, u in self.words) for line in lines]
 
     def check(self, lines, tiers):
-        ok = self._matching(lines)
-        return "all 3 lines match" if len(lines) >= 3 and all(ok[:3]) else None
+        n = sum(self._matching(lines)[:3])
+        return f"{n} of 3 lines match" if n >= self.count else None
 
     def progress(self, lines, tiers):
         n = sum(self._matching(lines)[:3])
-        return f"{n} of 3 lines are {' / '.join(self.names)}"
+        return f"{n} of 3 lines are {' / '.join(self.names)}  (need {self.count})"
 
 
 def line_matches_target(line, target):
@@ -2729,13 +2730,24 @@ class CubesApp:
         combo = tk.Frame(goal, bg=UI_SURFACE)
         self._combo_frame = combo
         saved_combo = set(saved.get("combo", []))
+        count_row = tk.Frame(combo, bg=UI_SURFACE)
+        count_row.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
+        tk.Label(count_row, text="At least", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 10)).pack(side="left")
+        self._count_var = tk.StringVar(value=str(saved.get("count", 3)) if str(saved.get("count", 3)) in ("1", "2", "3") else "3")
+        for n in ("1", "2", "3"):
+            tk.Radiobutton(count_row, text=n, value=n, variable=self._count_var, bg=UI_SURFACE, fg=UI_TEXT,
+                           selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
+                           highlightthickness=0, font=("Segoe UI", 10, "bold")).pack(side="left", padx=(6, 0))
+        tk.Label(count_row, text="of the 3 lines are one of:", fg=UI_MUTED, bg=UI_SURFACE,
+                 font=("Segoe UI", 10)).pack(side="left", padx=(8, 0))
+        self._count_var.trace_add("write", lambda *_: self._parse_target())
         self._combo_vars = {}
         for i, name in enumerate(stat_names):
             var = tk.BooleanVar(value=name in saved_combo)
             self._combo_vars[name] = var
             tk.Checkbutton(combo, text=name, variable=var, bg=UI_SURFACE, fg=UI_TEXT, selectcolor=UI_BG,
                            activebackground=UI_SURFACE, activeforeground=UI_TEXT, highlightthickness=0,
-                           font=("Segoe UI", 10), anchor="w").grid(row=i // 3, column=i % 3, sticky="w", padx=(0, 12), pady=1)
+                           font=("Segoe UI", 10), anchor="w").grid(row=1 + i // 3, column=i % 3, sticky="w", padx=(0, 12), pady=1)
             var.trace_add("write", lambda *_: self._parse_target())
         self._target_label = tk.Label(goal, text="", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9), anchor="w")
         self._target_label.pack(fill="x", padx=14, pady=(0, 10))
@@ -2927,9 +2939,10 @@ class CubesApp:
             self._combo_frame.pack_forget()
             self._goal_row.pack(fill="x", padx=14, pady=(0, 10), before=self._target_label)
         if mode == "combo":
-            self.target = ComboGoal(chosen) if chosen else None
-            self._target_label.config(text=("Stop when all 3 lines are " + " / ".join(chosen)) if chosen
-                                      else "Tick the stats the 3 lines may be.", fg=UI_ACCENT if chosen else UI_MUTED)
+            count = int(self._count_var.get())
+            self.target = ComboGoal(chosen, count) if chosen else None
+            self._target_label.config(text=("Stop when " + self.target.describe()) if chosen
+                                      else "Tick the stats the lines may be.", fg=UI_ACCENT if chosen else UI_MUTED)
         elif raw.isdigit() and int(raw) > 0:
             self.target = TotalGoal(name, int(raw), unit)
             self._target_label.config(text="Stop at: " + self.target.describe(), fg=UI_ACCENT)
@@ -2937,7 +2950,8 @@ class CubesApp:
             self.target = None
             self._target_label.config(text="Enter a minimum value.", fg=UI_MUTED)
         try:
-            CUBES_TARGET_FILE.write_text(json.dumps({"mode": mode, "stat": name, "min": raw, "combo": chosen}),
+            CUBES_TARGET_FILE.write_text(json.dumps({"mode": mode, "stat": name, "min": raw, "combo": chosen,
+                                                     "count": int(self._count_var.get())}),
                                          encoding="utf-8")
         except Exception:
             pass
