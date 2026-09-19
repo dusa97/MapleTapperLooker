@@ -36,6 +36,14 @@ jobs:
       - name: Install UPX
         run: choco install upx -y --no-progress
 
+      - name: Stamp version
+        shell: pwsh
+        run: |
+          $tag = "v1.$env:GITHUB_RUN_NUMBER.$([int]$env:GITHUB_RUN_ATTEMPT - 1)"
+          Set-Content -Path assets/version.txt -Value $tag -Encoding utf8 -NoNewline
+          "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "Stamped $tag"
+
       - name: Build executable
         run: python -m PyInstaller --clean --noconfirm MapleTapperLooker.spec
 
@@ -50,7 +58,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "v1.$env:GITHUB_RUN_NUMBER.$([int]$env:GITHUB_RUN_ATTEMPT - 1)"
+          $tag = $env:RELEASE_TAG
           $previous = gh release list --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName'
           if ($LASTEXITCODE -ne 0) { throw 'Could not find the previous release.' }
           $range = $env:GITHUB_SHA

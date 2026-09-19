@@ -86,7 +86,6 @@ from discord_alerts import DiscordNotifier, bind_foreground_target, target_is_cu
 try:
     import mss              # screen capture — ~2x faster and far more consistent than pyautogui.screenshot
     import pytesseract
-    import cv2              # template matching for F7 auto-locate
     import numpy as np
     from PIL import Image, ImageDraw, ImageTk
     import keyboard        # global hotkey to start/stop Enter+click spam — works even while the game has focus
@@ -310,6 +309,40 @@ PLUS_NUMBER_RE = re.compile(r'\+\d[\d,]*\d')  # "+<number>" only, by design: a n
 # not an online/self-updating system: new captures don't change live behavior until someone rebuilds
 # and redeploys the template file, so a bad capture can't silently degrade detection on its own.
 DIGIT_TEMPLATE_PATH   = Path(__file__).parent / "assets" / "digit_templates.npz"
+
+
+_cv2 = None
+
+
+def _load_cv2():
+    """cv2 is imported here, on demand, instead of at the top with everything
+    else - it is only used by F7 auto-locate (matchTemplate over the whole
+    desktop at 31 scales, which numpy can't do fast enough: an FFT version
+    measured 10x slower). Measured inside the frozen exe, `import cv2` alone
+    cost 1.27 s of a 2.65 s launch: Windows has to map and security-check the
+    86 MB cv2.pyd that was just written to %TEMP%. Deferring it moves that
+    cost from every launch to the first F7 press, where it isn't noticed.
+    Called once at startup on a background thread so even that is warm by
+    the time anyone presses F7."""
+    global _cv2
+    if _cv2 is None:
+        import cv2
+        _cv2 = cv2
+    return _cv2
+
+
+def _read_app_version() -> str:
+    """Release tag baked in by the release workflow (it overwrites
+    assets/version.txt with the tag before building); 'dev' when running
+    from source or a local build. Shown in the window title so a screenshot
+    or a bug report says which build it came from without anyone asking."""
+    try:
+        return (Path(__file__).parent / "assets" / "version.txt").read_text(encoding="utf-8").strip() or "dev"
+    except Exception:
+        return "dev"
+
+
+APP_VERSION = _read_app_version()
 TEMPLATE_GLYPH_SIZE   = (28, 40)   # (w, h) every glyph is resized to before comparison — must match
                                    # whatever size the templates in DIGIT_TEMPLATE_PATH were built at
 TEMPLATE_MIN_WIDTH    = 6          # discard thinner blobs as noise (e.g. a stray panel-border line)
@@ -437,18 +470,23 @@ def _is_comma_box(box, img_height) -> bool:
 
 
 def _resize_for_template(glyph_arr, size=TEMPLATE_GLYPH_SIZE):
-    """cv2.INTER_AREA is for shrinking and gives corrupted results when used
-    to enlarge a small image — confirmed directly: a minus sign's natural
-    ~4px-tall crop, stretched to the 40px template height with INTER_AREA,
-    produced a solid corrupted blob instead of a stretched bar, which then
-    wrongly out-scored real digits during classification. Digits are close
-    enough to the target size that this mostly didn't show up for them, but
-    it must still be handled correctly in general — use INTER_AREA only
-    when actually shrinking, INTER_LINEAR when enlarging."""
+    """Area (box) resampling is for shrinking and gives corrupted results
+    when used to enlarge a small image — confirmed directly: a minus sign's
+    natural ~4px-tall crop, stretched to the 40px template height with area
+    resampling, produced a solid corrupted blob instead of a stretched bar,
+    which then wrongly out-scored real digits during classification. Digits
+    are close enough to the target size that this mostly didn't show up for
+    them, but it must still be handled correctly in general — box only when
+    actually shrinking, bilinear when enlarging.
+
+    Done with PIL rather than cv2 so this hot path (every glyph of every
+    read) doesn't need cv2 loaded at all — see _load_cv2 for why that
+    matters. PIL's BOX/BILINEAR reproduce cv2's INTER_AREA/INTER_LINEAR
+    closely enough that classification agreed on 496/496 real glyphs."""
     h, w = glyph_arr.shape[:2]
     dst_w, dst_h = size
-    interpolation = cv2.INTER_AREA if (h >= dst_h and w >= dst_w) else cv2.INTER_LINEAR
-    return cv2.resize(glyph_arr, size, interpolation=interpolation)
+    method = Image.BOX if (h >= dst_h and w >= dst_w) else Image.BILINEAR
+    return np.asarray(Image.fromarray(glyph_arr).resize(size, method))
 
 
 def _is_plus_sign(glyph_arr, threshold=TEMPLATE_PLUS_MIN_SCORE) -> bool:
@@ -1014,7 +1052,7 @@ class OverlayApp:
     def _build_window(self):
         """Build the normal taskbar window plus the capture-safe screen overlay."""
         root = tk.Tk()
-        root.title("Maple Tapper Looker")
+        root.title(f"Maple Tapper Looker {APP_VERSION}")
         with Image.open(Path(__file__).parent / "assets" / "logo.png") as image:
             self._logo_image = ImageTk.PhotoImage(
                 image.resize((144, 144), Image.Resampling.LANCZOS), master=root)
@@ -1037,7 +1075,7 @@ class OverlayApp:
         heading.pack()
         tk.Label(heading, text="MAPLE / TAPPER LOOKER", fg=UI_TEXT, bg=UI_BG,
                  font=("Segoe UI", 16, "bold"), anchor="center").pack(fill="x")
-        tk.Label(heading, text="OCR and input automation control", fg=UI_MUTED, bg=UI_BG,
+        tk.Label(heading, text=f"OCR and input automation control  ·  {APP_VERSION}", fg=UI_MUTED, bg=UI_BG,
                  font=("Segoe UI", 10), anchor="center").pack(fill="x", pady=(4, 0))
         accent = tk.Frame(outer, bg=UI_BORDER, height=2)
         accent.pack(pady=(0, 18))
@@ -1803,8 +1841,13 @@ class OverlayApp:
         except Exception as error:
             self._autolocate_available = False
             self._log(f"Auto-locate unavailable: {error}")
-        else:
-            self._log("Auto-locate ready (currently recognizes only the Combat Power reset dialog).")
+            return
+        self._log("Auto-locate ready (currently recognizes only the Combat Power reset dialog).")
+        # Warm cv2 off the main thread — see _load_cv2. Must NOT run inline here:
+        # this is called during startup, and doing the 1.3 s import on the main
+        # thread would just move the delay to before the window instead of
+        # removing it. A failure only surfaces on F7, where _auto_locate reports it.
+        threading.Thread(target=_load_cv2, daemon=True, name="cv2-warmup").start()
 
     def _auto_locate(self):
         """F7: screenshot the whole desktop, find the 'Combat Power Change'
@@ -1829,9 +1872,12 @@ class OverlayApp:
         with mss.MSS() as sct:
             desktop = sct.monitors[0]
             shot = sct.grab(desktop)
-        full_gray = cv2.cvtColor(
-            np.array(Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")),
-            cv2.COLOR_RGB2GRAY)
+        try:
+            cv2 = _load_cv2()
+        except Exception as error:
+            self._log(f"Auto-locate unavailable: {error}")
+            return
+        full_gray = np.array(Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX").convert("L"))
         tmpl_gray = self._label_template_gray
         th, tw = tmpl_gray.shape
 
