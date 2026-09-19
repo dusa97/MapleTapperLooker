@@ -2904,6 +2904,7 @@ class CubesApp:
         self.rolls = 0
         self._loop_button.config(text="Stop (F9)")
         self.overlay.withdraw()          # the box must not be in the crops the loop takes
+        self.root.update_idletasks()     # ...so make sure it is actually gone before the first grab
         self._mouse.lock()
         self._loop_thread = threading.Thread(target=self._cube_loop, daemon=True, name="cube-loop")
         self._loop_thread.start()
@@ -2939,20 +2940,22 @@ class CubesApp:
         thread through the request queue; this thread only clicks, polls
         and OCRs."""
         target = self.target
-        try:
-            img = _grab(self.region)
-        except Exception:
-            img = None
+        time.sleep(0.1)                  # let the overlay's hide land on screen before the first grab
+        img = _grab(self.region)
         first = True
         while self.looping and self._running:
             if not first:
+                # Reference frame taken RIGHT before the click, never carried over from
+                # the previous read: anything that changed in between (box hiding, a
+                # tooltip, the cursor) must not count as "the panel redrew".
+                before = _grab(self.region)
                 pydirectinput.press("enter")
                 time.sleep(OverlayApp._jittered(ENTER_INTERVAL))
                 pydirectinput.click()
                 self._mouse.reassert()
                 if not self.looping:
                     break
-                img = self._wait_for_change(img) if img is not None else _grab(self.region)
+                img = self._wait_for_change(before)
                 if img is None:
                     self._requests.put(lambda: self._stop_loop(
                         f"Stopped after {self.rolls} roll(s): the panel did not change after a cube "
