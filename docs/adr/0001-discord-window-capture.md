@@ -24,7 +24,7 @@ Window-handle capture requires Windows 10 version 1903 or later. Runtime capabil
 
 ## Consequences
 
-This adds one native capture dependency and changes the OpenCV distribution. Recheck OCR, auto-location, video, and executable packaging.
+This adds one native capture dependency and changes the OpenCV distribution. Recheck OCR, auto-location, and executable packaging.
 A synthetic occlusion check passed from Python and a one-file executable. This does not prove compatibility with a protected game or every graphics driver.
 The target can include in-game chat or overlays rendered by the game itself. External occluder exclusion is not content redaction.
 Protected content, minimization, HDR, and exclusive fullscreen can make images unavailable or unsuitable. Text fallback remains part of the feature.

@@ -120,7 +120,7 @@ Manual Windows acceptance, in source and packaged mode:
 - Test the intended game in its supported display mode, including elevated operation. Confirm a full-window image, or clearly report capture unavailable.
 - Test target closure/minimization, network loss, app close during capture/send, and a restart with saved settings. Confirm no orphan helper.
 - With privately configured credentials, send one labeled test and one controlled confirmed-hit alert. Verify the channel mention and attachment. Never publish credentials or game screenshots.
-- Verify OCR, auto-location, video, recorded alerts, and normal controls after the OpenCV distribution change. Attach only synthetic UI evidence to the implementation PR.
+- Verify OCR, auto-location, recorded alerts, and normal controls after the OpenCV distribution change. Attach only synthetic UI evidence to the implementation PR.
 
 No real Discord request, actual-game capture, or full-app packaging check has been completed during design.
 The prototype proves only Python/native packaging feasibility and synthetic occluder exclusion.

@@ -3,16 +3,15 @@
 
 from PyInstaller.utils.hooks import collect_all
 
-video_datas, video_binaries, video_imports = collect_all('ffpyplayer')
 capture_datas, capture_binaries, capture_imports = collect_all('windows_capture')
 
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=video_binaries + capture_binaries,
+    binaries=capture_binaries,
     datas=[('assets/logo.png', 'assets'), ('assets/reference/combat_power_label.png', 'assets/reference'),
-           ('assets/digit_templates.npz', 'assets'), ('videos', 'videos')] + video_datas + capture_datas,
-    hiddenimports=video_imports + capture_imports,
+           ('assets/digit_templates.npz', 'assets')] + capture_datas,
+    hiddenimports=capture_imports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
