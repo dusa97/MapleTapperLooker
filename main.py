@@ -278,6 +278,17 @@ CUBES_CHANGE_POLL   = 0.03   # seconds between cheap pixel-difference checks whi
 CUBES_CHANGE_FRAC   = 0.004  # fraction of pixels that must differ to count as "the panel changed"
 CUBES_CHANGE_TIMEOUT = 3.0   # give up waiting after this long (no cubes left, dialog closed, ...)
 CUBES_SETTLE_MAX     = 0.5   # after the first changed frame, wait up to this long for the redraw to finish
+# The material row under the panel: the cube type in use sits on a cyan-highlighted slot
+# (rgb ~(80,197,220)), 38x38 px, always 192 px below the "Potential" label, sliding
+# sideways to whichever slot is selected. When that cube type runs out the game
+# deselects it - no cyan slot anywhere, pill reads "Select a material item to use." -
+# and that is the signal to stop instead of spamming through the game's prompts.
+# Measured on four reference screenshots; ratios are against the label size.
+CUBES_ROW_DY_RATIO  = 192 / 15      # label top -> highlight top
+CUBES_ROW_H_RATIO   = 38 / 15       # highlight height (the row of slots)
+CUBES_ROW_X0_RATIO  = -4 / 50       # search strip starts just left of the label's x
+CUBES_ROW_W_RATIO   = 400 / 50      # ...and spans the whole slot row
+CUBES_HIGHLIGHT_MIN_PX = 300        # cyan pixels needed to count as a highlighted slot (a full one is ~1400)
 POTENTIAL_TARGET_HEIGHT = 210    # ~30px per stat line after upscaling (3 lines in the block)
 # EACH stat line has its own small lettered square (R/E/U/L) at its left, coloured by that
 # line's tier - an item can be L / U / U. Measured: 10x9 px at x 99..108, y 310..318 for
@@ -2554,6 +2565,7 @@ class CubesApp:
         self.host = host
         self.root = host.winfo_toplevel()
         self.region = self._load_region()
+        self.label_box = self._load_label_box()   # where F7 last found "Potential"; None after a manual F8 box
         self.lines = []
         self._running = True
         self._selector = None
@@ -2756,11 +2768,38 @@ class CubesApp:
         except Exception:
             return None
 
+    @staticmethod
+    def _load_label_box():
+        try:
+            r = json.loads(CUBES_REGION_FILE.read_text(encoding="utf-8")).get("label")
+            return tuple(int(v) for v in r) if r and len(r) == 4 else None
+        except Exception:
+            return None
+
     def _save_region(self):
         try:
-            CUBES_REGION_FILE.write_text(json.dumps({"region": list(self.region)}), encoding="utf-8")
+            CUBES_REGION_FILE.write_text(json.dumps({"region": list(self.region) if self.region else None,
+                                                     "label": list(self.label_box) if self.label_box else None}),
+                                         encoding="utf-8")
         except Exception:
             pass
+
+    def _cubes_left(self):
+        """False when the material row shows no cyan-highlighted slot - the
+        selected cube type ran out. True if a highlight is there, and also
+        True when we can't check (box placed by hand with F8, so no label
+        position is known): never stop a run on a guess."""
+        if not self.label_box:
+            return True
+        lx, ly, sw, sh = self.label_box
+        strip = (round(lx + CUBES_ROW_X0_RATIO * sw), round(ly + CUBES_ROW_DY_RATIO * sh),
+                 round(CUBES_ROW_W_RATIO * sw), round(CUBES_ROW_H_RATIO * sh))
+        try:
+            hsv = np.array(_grab(strip).convert("HSV")).astype(int)
+        except Exception:
+            return True
+        cyan = (hsv[..., 0] > 120) & (hsv[..., 0] < 140) & (hsv[..., 1] > 120) & (hsv[..., 2] > 170)
+        return int(cyan.sum()) >= CUBES_HIGHLIGHT_MIN_PX
 
     @staticmethod
     def _load_target():
@@ -2808,6 +2847,7 @@ class CubesApp:
         self._selector = None
         if region is not None:
             self.region = tuple(int(v) for v in region)
+            self.label_box = None      # hand-placed: the cube-row check can't locate the row, so it stays off
             self._save_region()
             self._set_status(f"Box set: {self.region}")
         self._sync_overlay()
@@ -2833,6 +2873,8 @@ class CubesApp:
             return
         sh, sw = shape
         x, y = peaks[0]
+        self.label_box = (desktop["left"] + x, desktop["top"] + y, sw, sh)
+        self._save_region()
         self.region = (round(desktop["left"] + x + POTENTIAL_BLOCK_DX_RATIO * sw),
                        round(desktop["top"] + y + POTENTIAL_BLOCK_DY_RATIO * sh),
                        round(POTENTIAL_BLOCK_W_RATIO * sw), round(POTENTIAL_BLOCK_H_RATIO * sh))
@@ -2959,6 +3001,10 @@ class CubesApp:
         first = True
         while self.looping and self._running:
             if not first:
+                if not self._cubes_left():
+                    self._requests.put(lambda: self._stop_loop(
+                        f"Stopped after {self.rolls} roll(s): no cubes left (no cube selected in the material row)."))
+                    return
                 before = np.asarray(img.convert("L"), dtype=np.int16)
                 self.spamming = True
                 deadline = time.perf_counter() + CUBES_CHANGE_TIMEOUT
@@ -3071,11 +3117,24 @@ def run_app(args):
 
     style = ttk.Style(root)
     style.theme_use("clam")
-    style.configure("Mode.TNotebook", background=UI_BG, borderwidth=0, tabmargins=(12, 0, 0, 0))
+    # Conventional tab strip: a baseline the pages sit on, the active tab lifted
+    # and merged into the page (same colour, no bottom edge), inactive tabs
+    # recessed and dimmer, hover feedback, no focus ring. clam's default draws
+    # each tab as a detached chip with a dotted focus rectangle on click.
+    style.configure("Mode.TNotebook", background=UI_BG, borderwidth=0, tabmargins=(24, 10, 0, 0),
+                    lightcolor=UI_BG, darkcolor=UI_BG, bordercolor=UI_BORDER)
     style.configure("Mode.TNotebook.Tab", background=UI_SURFACE, foreground=UI_MUTED,
-                    padding=(22, 8), font=("Segoe UI", 11, "bold"), borderwidth=0)
-    style.map("Mode.TNotebook.Tab", background=[("selected", UI_BUTTON)],
-              foreground=[("selected", UI_TEXT)])
+                    padding=(26, 9), font=("Segoe UI", 11, "bold"), borderwidth=1,
+                    lightcolor=UI_SURFACE, darkcolor=UI_SURFACE, bordercolor=UI_BORDER, focuscolor=UI_BG)
+    style.map("Mode.TNotebook.Tab",
+              background=[("selected", UI_BG), ("active", UI_BUTTON)],
+              foreground=[("selected", UI_TEXT), ("active", UI_TEXT)],
+              lightcolor=[("selected", UI_BG)], darkcolor=[("selected", UI_BG)],
+              padding=[("selected", (26, 11))],          # lifted: a little taller than its neighbours
+              expand=[("selected", (0, 0, 0, 2))])       # ...and overlapping the baseline so it merges
+    style.layout("Mode.TNotebook.Tab", [("Notebook.tab", {"sticky": "nswe", "children": [
+        ("Notebook.padding", {"side": "top", "sticky": "nswe", "children": [
+            ("Notebook.label", {"side": "top", "sticky": ""})]})]})])   # drop Notebook.focus -> no dotted ring
     notebook = ttk.Notebook(root, style="Mode.TNotebook")
     notebook.pack(fill="both", expand=True)
     tabs = {}
