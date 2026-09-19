@@ -18,9 +18,22 @@ class DetectionBeepTest(unittest.TestCase):
 
     def test_audio_hotkeys_without_spam_and_cleanup(self):
         app = OverlayApp((0, 0, 100, 100), enter_spam=False)
+
+        # Hotkeys are registered on a worker thread (keyboard's hook install is
+        # slow); run THAT thread inline so the assertions below can see the
+        # registrations. Every other thread run() starts (OCR loop, probes)
+        # stays a no-op, as before.
+        class InlineThread:
+            def __init__(self, target=None, name=None, **kwargs):
+                self.target = target if name == "hotkeys" else None
+
+            def start(self):
+                if self.target is not None:
+                    self.target()
+
         with patch.object(app, "_build_window") as window, \
              patch("main.keyboard.add_hotkey") as register, \
-             patch("main.threading.Thread"), \
+             patch("main.threading.Thread", InlineThread), \
              patch("main.keyboard.remove_hotkey") as remove, \
              patch.object(app.alert, "close") as close:
             app.root = window.return_value

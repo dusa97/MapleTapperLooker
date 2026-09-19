@@ -1048,6 +1048,20 @@ def default_region() -> tuple:
 
 # ── Persistent overlay rectangle ────────────────────────────────────────────
 
+_LOGO_CACHE = {}
+
+
+def logo_photo(size, master):
+    """ImageTk.PhotoImage of assets/logo.png at *size* px. The decode +
+    LANCZOS resize is done once per size and cached (it was 58 ms of every
+    Flames start, i.e. of every tab switch); only the cheap Tk handle is
+    made per window."""
+    if size not in _LOGO_CACHE:
+        with Image.open(Path(__file__).parent / "assets" / "logo.png") as image:
+            _LOGO_CACHE[size] = image.resize((size, size), Image.Resampling.LANCZOS)
+    return ImageTk.PhotoImage(_LOGO_CACHE[size], master=master)
+
+
 def build_header(parent, logo_image):
     """The app's header - logo, name, version, subtitle, accent rule. One
     header for the whole app: in the tabbed shell it sits above the tabs
@@ -1162,12 +1176,9 @@ class OverlayApp:
             root.title(f"Maple Tapper Looker {APP_VERSION}")
         else:
             root = host.winfo_toplevel()
-        with Image.open(Path(__file__).parent / "assets" / "logo.png") as image:
-            self._logo_image = ImageTk.PhotoImage(
-                image.resize((144, 144), Image.Resampling.LANCZOS), master=root)
-            self._icon_image = ImageTk.PhotoImage(
-                image.resize((256, 256), Image.Resampling.LANCZOS), master=root)
         if host is None:
+            self._logo_image = logo_photo(144, root)
+            self._icon_image = logo_photo(256, root)
             root.iconphoto(True, self._icon_image)
             root.resizable(False, False)
             root.configure(bg=UI_BG)
@@ -1942,14 +1953,20 @@ class OverlayApp:
         self.root.after(int(RENDER_INTERVAL * 1000), self._render)
 
     def _check_tesseract(self):
-        try:
-            pytesseract.get_tesseract_version()
-        except Exception as error:
-            self._ocr_available = False
-            self.status_text = "Tesseract is unavailable - see activity"
-            self._log(f"Tesseract unavailable: {error}")
-        else:
-            self._log("Tesseract ready.")
+        """Spawns `tesseract --version` (25-120 ms) - off the UI thread, so a
+        tab switch into Flames doesn't stall on it. _ocr_available starts
+        True and only ever flips to False here, and _log is queue-based, so
+        nothing about this needs the main thread."""
+        def probe():
+            try:
+                pytesseract.get_tesseract_version()
+            except Exception as error:
+                self._ocr_available = False
+                self.status_text = "Tesseract is unavailable - see activity"
+                self._log(f"Tesseract unavailable: {error}")
+            else:
+                self._log("Tesseract ready.")
+        threading.Thread(target=probe, daemon=True, name="tesseract-probe").start()
 
     def _check_autolocate(self):
         try:
@@ -2067,19 +2084,27 @@ class OverlayApp:
         root = self._build_window(host)
         self._check_tesseract()
         self._check_autolocate()
-        keyboard.add_hotkey("f8", self._selection_requested.set,
-                            suppress=True, trigger_on_release=True)
+
+        def register_hotkeys():
+            # keyboard.add_hotkey re-installs its global Windows hook on the first
+            # call after a remove - measured up to 225 ms - which is why this runs
+            # on a worker thread: every callback here only pushes onto a queue or
+            # flips a flag (never touches Tk), so nothing about it needs the UI
+            # thread, and a tab switch into Flames stays instant.
+            keyboard.add_hotkey("f8", self._selection_requested.set,
+                                suppress=True, trigger_on_release=True)
+            keyboard.add_hotkey("f7", self._autolocate_requested.set,
+                                suppress=True, trigger_on_release=True)
+            keyboard.add_hotkey("f11", self._audio_requests.put, args=(self.alert.toggle,),
+                                suppress=True, trigger_on_release=True)
+            keyboard.add_hotkey("f12", self._audio_requests.put, args=(self.alert.reset,),
+                                suppress=True, trigger_on_release=True)
+            keyboard.add_hotkey(self.beep_hotkey, self._toggle_beep)
+            keyboard.add_hotkey(self.enter_hotkey, self._toggle_requests.put, args=(True,),
+                                suppress=True, trigger_on_release=True)
+        threading.Thread(target=register_hotkeys, daemon=True, name="hotkeys").start()
         print("[hotkey] F8: draw a new region; Escape: cancel selection.", flush=True)
-        keyboard.add_hotkey("f7", self._autolocate_requested.set,
-                            suppress=True, trigger_on_release=True)
         print("[hotkey] F7: auto-locate the Combat Power Change panel and move the box + cursor there.", flush=True)
-        keyboard.add_hotkey("f11", self._audio_requests.put, args=(self.alert.toggle,),
-                            suppress=True, trigger_on_release=True)
-        keyboard.add_hotkey("f12", self._audio_requests.put, args=(self.alert.reset,),
-                            suppress=True, trigger_on_release=True)
-        keyboard.add_hotkey(self.beep_hotkey, self._toggle_beep)
-        keyboard.add_hotkey(self.enter_hotkey, self._toggle_requests.put, args=(True,),
-                            suppress=True, trigger_on_release=True)
         print("[hotkey] F11: start recording; F11 again: save message. "
               "Repeat to replace it. See [audio] messages for recording status.", flush=True)
         print("[hotkey] F12: delete message and restore beep (mute unchanged).", flush=True)
@@ -2311,8 +2336,10 @@ class CubesApp:
         self._selector = None
         self._requests = queue.Queue()
         self._build(host)
-        for key, action in (("f7", self._auto_locate), ("f8", self._start_selection), ("f9", self._read)):
-            keyboard.add_hotkey(key, self._requests.put, args=(action,), suppress=True, trigger_on_release=True)
+        def register_hotkeys():           # off the UI thread - see OverlayApp.run for why
+            for key, action in (("f7", self._auto_locate), ("f8", self._start_selection), ("f9", self._read)):
+                keyboard.add_hotkey(key, self._requests.put, args=(action,), suppress=True, trigger_on_release=True)
+        threading.Thread(target=register_hotkeys, daemon=True, name="hotkeys").start()
         self._tick()
 
     # ---- UI ------------------------------------------------------------
@@ -2499,9 +2526,7 @@ def run_app(args):
     root.configure(bg=UI_BG)
     root.resizable(False, False)
     root.option_add("*Font", ("Segoe UI", 10))
-    with Image.open(Path(__file__).parent / "assets" / "logo.png") as image:
-        icon = ImageTk.PhotoImage(image.resize((256, 256), Image.Resampling.LANCZOS), master=root)
-        logo = ImageTk.PhotoImage(image.resize((144, 144), Image.Resampling.LANCZOS), master=root)
+    icon, logo = logo_photo(256, root), logo_photo(144, root)
     root.iconphoto(True, icon)
     root._header_images = (icon, logo)          # keep references alive for the window's lifetime
 
@@ -2532,8 +2557,27 @@ def run_app(args):
         state["mode"], state["app"] = mode, None
         state["app"] = run_flames(args, tabs["flames"]) if mode == "flames" else build_cubes(tabs["cubes"])
         save_mode(mode)
-        root.update_idletasks()
-        root.geometry(f"{max(540, root.winfo_reqwidth())}x{root.winfo_reqheight()}")
+        if state.get("size") is None:
+            # Size the window ONCE, for the taller tab, so switching never resizes
+            # it and it doesn't open small on Cubes then jump when Flames starts.
+            # Flames is the taller one; measure its content off-screen if we
+            # didn't open on it.
+            root.update_idletasks()
+            if mode != "flames":
+                # Build Flames' widgets only (no threads, no hotkeys, no OCR) into
+                # its hidden tab, measure, tear them down again.
+                probe = OverlayApp(load_region() or default_region(), enter_spam=False)
+                probe._build_window(tabs["flames"])
+                root.update_idletasks()
+                h = root.winfo_reqheight()
+                probe.overlay.destroy()
+                probe._outer.destroy()
+                root.update_idletasks()
+            else:
+                h = root.winfo_reqheight()
+            state["size"] = (max(540, root.winfo_reqwidth()), h)
+            root.geometry("%dx%d" % state["size"])
+            root.minsize(*state["size"])
 
     def on_tab_changed(_event):
         mode = modes[notebook.index("current")]
