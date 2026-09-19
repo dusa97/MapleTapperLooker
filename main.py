@@ -563,6 +563,66 @@ def potential_total_for(lines, tiers, target):
     return total
 
 
+def _stat_words(name):
+    return next((w for n, w, _u in POTENTIAL_STATS if n == name), None)
+
+
+def _line_is_stat(line, words):
+    """Does this OCR'd line belong to the stat with these match words? All
+    Stats counts as any of STR/DEX/INT/LUK."""
+    stat, value = line
+    if value is None:
+        return False
+    haystack = re.sub(r"\s+", " ", stat.lower())
+    if all(w in haystack for w in words):
+        return True
+    return len(words) == 1 and words[0] in POTENTIAL_BASE_STATS and "all" in haystack and "stat" in haystack
+
+
+class TotalGoal:
+    """Stop when the item's summed value for one stat reaches a minimum
+    (the original mode). Carries the (words, minimum, wants_pct, None)
+    tuple the matcher functions take."""
+    def __init__(self, name, minimum, unit):
+        self.name, self.minimum, self.unit = name, minimum, unit
+        self.tuple = (_stat_words(name), minimum, unit == "%", None)
+
+    def describe(self):
+        return f"{self.name} >= {self.minimum}{self.unit if self.unit == '%' else ' ' + self.unit} (total)"
+
+    def check(self, lines, tiers):
+        total = potential_total_for(lines, tiers, self.tuple)
+        return f"{self.name} {total}{self.unit if self.unit == '%' else ' ' + self.unit} total" if total >= self.minimum else None
+
+    def progress(self, lines, tiers):
+        total = potential_total_for(lines, tiers, self.tuple)
+        u = self.unit if self.unit == "%" else " " + self.unit
+        return f"{self.name.upper()} counted: {total}{u}  (need {self.minimum}{u})"
+
+
+class ComboGoal:
+    """Stop when ALL THREE lines belong to the chosen set of stats, in any
+    mix - 'LUK' alone means three LUK/All Stats lines; 'Attack Power +
+    Boss Damage' means three lines each of which is one of those two."""
+    def __init__(self, names):
+        self.names = list(names)
+        self.words = [_stat_words(n) for n in self.names]
+
+    def describe(self):
+        return "3 lines of " + " / ".join(self.names)
+
+    def _matching(self, lines):
+        return [any(_line_is_stat(line, w) for w in self.words) for line in lines]
+
+    def check(self, lines, tiers):
+        ok = self._matching(lines)
+        return "all 3 lines match" if len(lines) >= 3 and all(ok[:3]) else None
+
+    def progress(self, lines, tiers):
+        n = sum(self._matching(lines)[:3])
+        return f"{n} of 3 lines are {' / '.join(self.names)}"
+
+
 def line_matches_target(line, target):
     """Does one OCR'd (stat, value) line satisfy a parsed target? The stat
     must contain every target word ("str" matches "STR" and "str" lines
@@ -2622,10 +2682,19 @@ class CubesApp:
         goal.pack(fill="x", pady=(12, 0))
         tk.Label(goal, text="LOOKING FOR", fg=UI_MUTED, bg=UI_SURFACE,
                  font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=14, pady=(10, 2))
-        goal_row = tk.Frame(goal, bg=UI_SURFACE)
-        goal_row.pack(fill="x", padx=14, pady=(0, 10))
         saved = self._load_target()
         stat_names = [name for name, _, _ in POTENTIAL_STATS]
+        # Mode: 'total' (one stat, reach a number) or 'combo' (three lines from a set).
+        self._mode_var = tk.StringVar(value=saved.get("mode") if saved.get("mode") in ("total", "combo") else "total")
+        mode_row = tk.Frame(goal, bg=UI_SURFACE)
+        mode_row.pack(fill="x", padx=14, pady=(0, 6))
+        for value, text in (("total", "Reach a total"), ("combo", "Combination of stats")):
+            tk.Radiobutton(mode_row, text=text, value=value, variable=self._mode_var, bg=UI_SURFACE, fg=UI_TEXT,
+                           selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
+                           highlightthickness=0, font=("Segoe UI", 10)).pack(side="left", padx=(0, 14))
+        goal_row = tk.Frame(goal, bg=UI_SURFACE)
+        goal_row.pack(fill="x", padx=14, pady=(0, 10))
+        self._goal_row = goal_row
         self._stat_var = tk.StringVar(value=saved.get("stat") if saved.get("stat") in stat_names else stat_names[0])
         self._min_var = tk.StringVar(value=str(saved.get("min", "")))
         style = ttk.Style(self.root)
@@ -2643,9 +2712,21 @@ class CubesApp:
         min_entry.pack(side="left", ipady=5)
         self._unit_label = tk.Label(goal_row, text="%", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 11))
         self._unit_label.pack(side="left", padx=(4, 10))
+        # Combination: a checkbox per stat, in a grid under the mode switch.
+        combo = tk.Frame(goal, bg=UI_SURFACE)
+        self._combo_frame = combo
+        saved_combo = set(saved.get("combo", []))
+        self._combo_vars = {}
+        for i, name in enumerate(stat_names):
+            var = tk.BooleanVar(value=name in saved_combo)
+            self._combo_vars[name] = var
+            tk.Checkbutton(combo, text=name, variable=var, bg=UI_SURFACE, fg=UI_TEXT, selectcolor=UI_BG,
+                           activebackground=UI_SURFACE, activeforeground=UI_TEXT, highlightthickness=0,
+                           font=("Segoe UI", 10), anchor="w").grid(row=i // 3, column=i % 3, sticky="w", padx=(0, 12), pady=1)
+            var.trace_add("write", lambda *_: self._parse_target())
         self._target_label = tk.Label(goal, text="", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9), anchor="w")
         self._target_label.pack(fill="x", padx=14, pady=(0, 10))
-        for var in (self._stat_var, self._min_var):
+        for var in (self._stat_var, self._min_var, self._mode_var):
             var.trace_add("write", lambda *_: self._parse_target())
 
         row = tk.Frame(outer, bg=UI_BG)
@@ -2811,8 +2892,7 @@ class CubesApp:
 
     @staticmethod
     def _describe(target):
-        words, minimum, pct, _tier = target
-        return f"{' '.join(words).upper()} >= {minimum}{'%' if pct else ''} total"
+        return target.describe()
 
     def _parse_target(self):
         """Compose the (words, minimum, wants_percent, tier) target from the
@@ -2821,18 +2901,31 @@ class CubesApp:
         is no target at all. Tier is always None: the tier squares are
         informational, the goal is the numbered total."""
         name = self._stat_var.get()
-        words, unit = next(((w, u) for n, w, u in POTENTIAL_STATS if n == name), ((), "%"))
+        unit = next((u for n, _w, u in POTENTIAL_STATS if n == name), "%")
         self._unit_label.config(text=unit)
         raw = self._min_var.get().strip().rstrip("%")
-        if raw.isdigit() and int(raw) > 0:
-            self.target = (words, int(raw), unit == "%", None)
-            self._target_label.config(text=f"Stop at: {name} >= {raw}{unit if unit == '%' else ' ' + unit} (total)",
-                                      fg=UI_ACCENT)
+        mode = self._mode_var.get()
+        chosen = [n for n, v in self._combo_vars.items() if v.get()]
+        # show the controls for the active mode only
+        if mode == "combo":
+            self._goal_row.pack_forget()
+            self._combo_frame.pack(fill="x", padx=14, pady=(0, 8), before=self._target_label)
+        else:
+            self._combo_frame.pack_forget()
+            self._goal_row.pack(fill="x", padx=14, pady=(0, 10), before=self._target_label)
+        if mode == "combo":
+            self.target = ComboGoal(chosen) if chosen else None
+            self._target_label.config(text=("Stop when all 3 lines are " + " / ".join(chosen)) if chosen
+                                      else "Tick the stats the 3 lines may be.", fg=UI_ACCENT if chosen else UI_MUTED)
+        elif raw.isdigit() and int(raw) > 0:
+            self.target = TotalGoal(name, int(raw), unit)
+            self._target_label.config(text="Stop at: " + self.target.describe(), fg=UI_ACCENT)
         else:
             self.target = None
             self._target_label.config(text="Enter a minimum value.", fg=UI_MUTED)
         try:
-            CUBES_TARGET_FILE.write_text(json.dumps({"stat": name, "min": raw}), encoding="utf-8")
+            CUBES_TARGET_FILE.write_text(json.dumps({"mode": mode, "stat": name, "min": raw, "combo": chosen}),
+                                         encoding="utf-8")
         except Exception:
             pass
 
@@ -2917,12 +3010,8 @@ class CubesApp:
         good = [e for e in self.lines if e[1] is not None]
         totals = total_potential_lines(good)
         text = "\n".join(f"{stat}  {value}" for stat, value in totals) if totals else "-"
-        if self.target and self.target[0] and good:
-            # what the loop is actually measuring: All Stats folded in, tier filter applied
-            words, minimum, wants_pct, _ = self.target
-            counted = potential_total_for(self.lines, self.tiers, self.target)
-            unit = "%" if wants_pct else (" sec" if words == ("skill", "cooldowns") else "")
-            text += f"\n\u2192 {' '.join(words).upper()} counted: {counted}{unit}  (need {minimum}{unit})"
+        if self.target is not None and good:
+            text += "\n\u2192 " + self.target.progress(self.lines, self.tiers)
         self._total_label.config(text=text)
         self._set_status(f"Read {len(good)} line(s)." if good else "Nothing readable in the box.")
 
@@ -2939,7 +3028,7 @@ class CubesApp:
             self._set_status("No box yet - press F7 or F8 first.")
             return
         if self.target is None:
-            self._set_status("Type what you are looking for first (e.g. 30% str).")
+            self._set_status("Set what you are looking for first.")
             return
         if self.root.focus_displayof() is not None:
             self._set_status("Focus the game, then press F9.")
@@ -3033,13 +3122,8 @@ class CubesApp:
                 tiers, lines = read_potential_tiers(img), read_potential_lines(img)
             except Exception:
                 tiers, lines = [None] * 3, []
-            words, minimum, wants_pct, wanted_tier = target
-            if words:
-                total = potential_total_for(lines, tiers, target)
-                unit = "%" if wants_pct else " sec" if words == ("skill", "cooldowns") else ""
-                hit = (f"{' '.join(words).upper()} {total}{unit} total", "") if total >= minimum else None
-            else:
-                hit = ("", "") if tier_satisfies(tiers[0], wanted_tier) else None
+            found = target.check(lines, tiers)
+            hit = (found, "") if found else None
             self._requests.put(lambda tiers=tiers, lines=lines: (setattr(self, "tiers", tiers),
                                                                  setattr(self, "lines", lines), self._show_lines()))
             if hit is not None:
