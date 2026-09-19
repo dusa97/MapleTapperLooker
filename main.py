@@ -2137,6 +2137,134 @@ def _open_selector() -> tuple:
     return region
 
 
+
+MODE_FILE = _BASE_DIR / "last_mode.json"
+
+
+def load_mode():
+    try:
+        mode = json.loads(MODE_FILE.read_text(encoding="utf-8")).get("mode")
+        return mode if mode in ("flames", "cubes") else None
+    except Exception:
+        return None
+
+
+def save_mode(mode):
+    try:
+        MODE_FILE.write_text(json.dumps({"mode": mode}), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def choose_mode(default=None):
+    """Launcher: pick Flames (the reset-dialog watcher) or Cubes. Returns the
+    choice, or None if the window was closed. Deliberately dumb - one small
+    window, two buttons - because each mode owns the process while it runs
+    (global hotkeys, worker threads, its own Tk root) and hands everything
+    back when it quits (see OverlayApp._quit), so this just loops around
+    them. The last choice is highlighted so the common case is one click."""
+    choice = {"mode": None}
+    root = tk.Tk()
+    root.title(f"Maple Tapper Looker {APP_VERSION}")
+    root.configure(bg=UI_BG)
+    root.resizable(False, False)
+    root.attributes("-topmost", True)
+    frame = tk.Frame(root, bg=UI_BG, padx=28, pady=22)
+    frame.pack()
+    tk.Label(frame, text="MAPLE / TAPPER LOOKER", fg=UI_TEXT, bg=UI_BG,
+             font=("Segoe UI", 15, "bold")).pack()
+    tk.Label(frame, text=f"version {APP_VERSION}", fg=UI_ACCENT, bg=UI_BG,
+             font=("Segoe UI", 9, "bold")).pack(pady=(2, 14))
+    tk.Label(frame, text="What are you doing today?", fg=UI_MUTED, bg=UI_BG,
+             font=("Segoe UI", 10)).pack(pady=(0, 10))
+
+    def pick(mode):
+        choice["mode"] = mode
+        root.destroy()
+
+    for mode, title, blurb in (("flames", "Flames", "Watch the Combat Power reset dialog"),
+                               ("cubes", "Cubes", "Coming next")):
+        tk.Button(frame, text=f"{title}\n{blurb}", command=lambda m=mode: pick(m),
+                  bg=UI_PRIMARY if mode == default else UI_BUTTON, fg=UI_TEXT,
+                  activebackground=UI_PRIMARY_ACTIVE, activeforeground=UI_BG,
+                  relief="flat", bd=0, padx=18, pady=10, width=30, cursor="hand2",
+                  font=("Segoe UI", 11, "bold"), justify="center").pack(fill="x", pady=4)
+    tk.Label(frame, text="Closing a mode brings you back here.", fg=UI_MUTED, bg=UI_BG,
+             font=("Segoe UI", 8)).pack(pady=(12, 0))
+    root.protocol("WM_DELETE_WINDOW", root.destroy)
+    root.update_idletasks()
+    root.geometry(f"+{(root.winfo_screenwidth() - root.winfo_reqwidth()) // 2}"
+                  f"+{(root.winfo_screenheight() - root.winfo_reqheight()) // 2}")
+    root.mainloop()
+    return choice["mode"]
+
+
+def run_cubes():
+    """Placeholder for the second half of the app - a real window so the
+    launcher round-trip (pick -> run -> close -> launcher) works end to end
+    today. The cube logic replaces the body of this frame."""
+    root = tk.Tk()
+    root.title(f"Maple Tapper Looker {APP_VERSION} - Cubes")
+    root.configure(bg=UI_BG)
+    frame = tk.Frame(root, bg=UI_BG, padx=40, pady=30)
+    frame.pack()
+    tk.Label(frame, text="CUBES", fg=UI_TEXT, bg=UI_BG, font=("Segoe UI", 16, "bold")).pack()
+    tk.Label(frame, text="Nothing here yet.", fg=UI_MUTED, bg=UI_BG,
+             font=("Segoe UI", 10)).pack(pady=(6, 18))
+    tk.Button(frame, text="Back to launcher", command=root.destroy, bg=UI_BUTTON, fg=UI_TEXT,
+              activebackground=UI_PRIMARY_ACTIVE, relief="flat", padx=16, pady=6,
+              font=("Segoe UI", 10, "bold"), cursor="hand2").pack()
+    root.protocol("WM_DELETE_WINDOW", root.destroy)
+    root.mainloop()
+
+
+
+def run_flames(args):
+        if args.region:
+            region = tuple(args.region)
+            save_region(region)
+        else:
+            region = load_region()
+
+        # --reselect is an explicit ask, and --once has no GUI to fall back on, so
+        # both still get the blocking full-screen selector. A first launch with
+        # nothing saved yet does NOT — that used to drop straight into a
+        # full-screen click-drag prompt before the control window ever appeared,
+        # which read as the app randomly launching a screenshot tool. It now
+        # starts with a harmless placeholder box instead, so the window opens
+        # immediately and region selection stays an in-app action (F8/F7).
+        if args.reselect or (region is None and args.once):
+            print("  Opening region selector...")
+            print()
+            region = _open_selector()
+        elif region is not None:
+            print(f"  Last region: left={region[0]}  top={region[1]}  width={region[2]}  height={region[3]}")
+
+        if args.once:
+            value, _img = read_delta(region)
+            print(f"detected: {value}" if value else "no '+<number>' found")
+            sys.exit(0 if value else 1)
+
+        is_placeholder = region is None
+        if is_placeholder:
+            region = default_region()
+            print(f"  No saved region yet — starting with a placeholder box at {region}. "
+                  "Use 'Choose region' (F8) or 'Auto-locate' (F7) in the app to set the real one.")
+
+        print(f"\n  Watching region={region} — drag the box to reposition, drag a corner to resize.")
+        print("  Close the control window to quit.\n")
+        app = OverlayApp(region, is_placeholder_region=is_placeholder, enter_spam=not args.no_enter_spam,
+                         enter_hotkey=args.enter_hotkey,
+                         enter_interval=args.enter_interval,
+                         click_interval=args.click_interval,
+                         beep_hotkey=args.beep_hotkey,
+                         min_read_gap=args.interval)
+        if not args.no_capture_check:
+            # The exe has no console (console=False in the spec), so the printed summary
+            # is invisible there — surface it in the app's own activity log instead.
+            start_capture_check(on_done=lambda summary: app._log(format_check_summary(summary).strip()))
+        app.run()
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Green OCR box — reads '+<number>' deltas inside it.")
@@ -2158,6 +2286,8 @@ if __name__ == "__main__":
                          help="skip the automatic UAC elevation prompt on startup")
     parser.add_argument("--no-capture-check", action="store_true",
                          help="skip the startup re-check of the previous run's debug captures")
+    parser.add_argument("--mode", choices=("flames", "cubes"),
+                         help="skip the launcher and open this mode directly")
     parser.add_argument("--check-captures", action="store_true",
                          help="re-check the previous run's debug captures and print the result, no overlay")
     args = parser.parse_args()
@@ -2180,47 +2310,20 @@ if __name__ == "__main__":
         print("  (pass --no-elevate to skip this)")
         _relaunch_as_admin()
 
-    if args.region:
-        region = tuple(args.region)
-        save_region(region)
-    else:
-        region = load_region()
-
-    # --reselect is an explicit ask, and --once has no GUI to fall back on, so
-    # both still get the blocking full-screen selector. A first launch with
-    # nothing saved yet does NOT — that used to drop straight into a
-    # full-screen click-drag prompt before the control window ever appeared,
-    # which read as the app randomly launching a screenshot tool. It now
-    # starts with a harmless placeholder box instead, so the window opens
-    # immediately and region selection stays an in-app action (F8/F7).
-    if args.reselect or (region is None and args.once):
-        print("  Opening region selector...")
-        print()
-        region = _open_selector()
-    elif region is not None:
-        print(f"  Last region: left={region[0]}  top={region[1]}  width={region[2]}  height={region[3]}")
-
-    if args.once:
-        value, _img = read_delta(region)
-        print(f"detected: {value}" if value else "no '+<number>' found")
-        sys.exit(0 if value else 1)
-
-    is_placeholder = region is None
-    if is_placeholder:
-        region = default_region()
-        print(f"  No saved region yet — starting with a placeholder box at {region}. "
-              "Use 'Choose region' (F8) or 'Auto-locate' (F7) in the app to set the real one.")
-
-    print(f"\n  Watching region={region} — drag the box to reposition, drag a corner to resize.")
-    print("  Close the control window to quit.\n")
-    app = OverlayApp(region, is_placeholder_region=is_placeholder, enter_spam=not args.no_enter_spam,
-                     enter_hotkey=args.enter_hotkey,
-                     enter_interval=args.enter_interval,
-                     click_interval=args.click_interval,
-                     beep_hotkey=args.beep_hotkey,
-                     min_read_gap=args.interval)
-    if not args.no_capture_check:
-        # The exe has no console (console=False in the spec), so the printed summary
-        # is invisible there — surface it in the app's own activity log instead.
-        start_capture_check(on_done=lambda summary: app._log(format_check_summary(summary).strip()))
-    app.run()
+    # Launcher loop. Each mode owns the process while it runs and releases
+    # everything on quit, so closing a mode returns here and the launcher
+    # comes back; closing the launcher exits. --mode skips the launcher (for
+    # shortcuts/scripts) and runs that one mode.
+    if args.mode:
+        save_mode(args.mode)
+        run_flames(args) if args.mode == "flames" else run_cubes()
+        sys.exit(0)
+    while True:
+        mode = choose_mode(default=load_mode())
+        if mode is None:
+            break
+        save_mode(mode)
+        if mode == "flames":
+            run_flames(args)
+        else:
+            run_cubes()
