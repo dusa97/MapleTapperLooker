@@ -269,9 +269,8 @@ POTENTIAL_STATS = (
     ("Critical Damage", ("critical", "damage"), "%"),
     ("Skill Cooldowns", ("skill", "cooldowns"), "sec"),
 )
-POTENTIAL_LEGENDARY_ONLY = ("Critical Damage", "Skill Cooldowns")   # these lines only exist on legendary
-POTENTIAL_TIER_CHOICES = ("Any tier", "Rare+", "Epic+", "Unique+", "Legendary+")
-POTENTIAL_TIER_DEFAULT = "Unique+"    # rare/epic lines are never what anyone is cubing for
+# The tier squares beside each line are shown for information only; the target is
+# purely the numbered total for the picked stat, whatever tier the lines are.
 # After a cube, the loop does not read on a timer - it polls the box until the pixels
 # differ from the pre-roll frame (the panel has redrawn with NEW lines), then OCRs once.
 # A timer would read stale lines on a slow client and could stop on the previous roll.
@@ -2615,7 +2614,6 @@ class CubesApp:
         stat_names = [name for name, _, _ in POTENTIAL_STATS]
         self._stat_var = tk.StringVar(value=saved.get("stat") if saved.get("stat") in stat_names else stat_names[0])
         self._min_var = tk.StringVar(value=str(saved.get("min", "")))
-        self._tier_var = tk.StringVar(value=saved.get("tier") if saved.get("tier") in POTENTIAL_TIER_CHOICES else POTENTIAL_TIER_DEFAULT)
         style = ttk.Style(self.root)
         style.configure("Cubes.TMenubutton", background=UI_BG, foreground=UI_TEXT, arrowcolor=UI_ACCENT,
                         font=("Segoe UI", 11), padding=(10, 6), borderwidth=0)
@@ -2631,14 +2629,9 @@ class CubesApp:
         min_entry.pack(side="left", ipady=5)
         self._unit_label = tk.Label(goal_row, text="%", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 11))
         self._unit_label.pack(side="left", padx=(4, 10))
-        tier_menu = ttk.OptionMenu(goal_row, self._tier_var, self._tier_var.get(), *POTENTIAL_TIER_CHOICES, style="Cubes.TMenubutton")
-        tier_menu.pack(side="left")
-        self._tier_menu = tier_menu
-        tier_menu["menu"].config(bg=UI_SURFACE, fg=UI_TEXT, activebackground=UI_BUTTON, activeforeground=UI_TEXT,
-                                 font=("Segoe UI", 10), bd=0)
         self._target_label = tk.Label(goal, text="", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9), anchor="w")
         self._target_label.pack(fill="x", padx=14, pady=(0, 10))
-        for var in (self._stat_var, self._min_var, self._tier_var):
+        for var in (self._stat_var, self._min_var):
             var.trace_add("write", lambda *_: self._parse_target())
 
         row = tk.Frame(outer, bg=UI_BG)
@@ -2652,8 +2645,8 @@ class CubesApp:
         self._loop_button = OverlayApp._button(row, "Start (F9)", self._toggle_loop, UI_PRIMARY, UI_BG)
         self._loop_button.pack(side="left", expand=True, fill="x")
         tk.Label(outer, text="F7 finds the Potential panel and boxes its three lines (F8 draws the box by hand). "
-                             "F9 starts cubing: Enter + click, read the three lines, stop with a beep the moment "
-                             "one matches what you are looking for. F9 again stops. F10 mutes the beep.",
+                             "F9 starts cubing: Enter + click, wait for the new lines, read them, stop with a beep "
+                             "once the total for your stat reaches the number. F9 again stops. F10 mutes the beep.",
                  fg=UI_MUTED, bg=UI_BG, font=("Segoe UI", 9), wraplength=460,
                  justify="left").pack(anchor="w", pady=(10, 0))
         self._parse_target()
@@ -2777,46 +2770,28 @@ class CubesApp:
 
     @staticmethod
     def _describe(target):
-        words, minimum, pct, tier = target
-        parts = []
-        if tier:
-            parts.append(tier.capitalize() + "+")
-        if words:
-            parts.append(f"{' '.join(words).upper()} >= {minimum}{'%' if pct else ''}")
-        return "  ".join(parts)
+        words, minimum, pct, _tier = target
+        return f"{' '.join(words).upper()} >= {minimum}{'%' if pct else ''} total"
 
     def _parse_target(self):
         """Compose the (words, minimum, wants_percent, tier) target from the
         pickers - the same tuple parse_potential_target produced from typed
         text, so the loop and matcher are unchanged. A blank minimum with a
-        tier chosen is a tier-only target (stop when the item's rank reaches
-        it); a blank minimum and 'Any tier' is no target at all."""
+        is no target at all. Tier is always None: the tier squares are
+        informational, the goal is the numbered total."""
         name = self._stat_var.get()
         words, unit = next(((w, u) for n, w, u in POTENTIAL_STATS if n == name), ((), "%"))
         self._unit_label.config(text=unit)
-        if name in POTENTIAL_LEGENDARY_ONLY:
-            # No point offering a tier: these lines are legendary by definition.
-            if self._tier_var.get() != "Legendary+":
-                self._tier_var.set("Legendary+")      # re-enters this method via the trace
-                return
-            self._tier_menu.state(["disabled"])
-        else:
-            self._tier_menu.state(["!disabled"])
-        tier_choice = self._tier_var.get()
-        tier = tier_choice[:-1].lower() if tier_choice.endswith("+") else None
         raw = self._min_var.get().strip().rstrip("%")
         if raw.isdigit() and int(raw) > 0:
-            self.target = (words, int(raw), unit == "%", tier)
-            self._target_label.config(text=f"Stop at: {name} >= {raw}{unit if unit == '%' else ' ' + unit}"
-                                           + (f"  on a {tier} or better line" if tier else ""), fg=UI_ACCENT)
-        elif tier:
-            self.target = ((), 0, False, tier)
-            self._target_label.config(text=f"Stop at: item becomes {tier} or better", fg=UI_ACCENT)
+            self.target = (words, int(raw), unit == "%", None)
+            self._target_label.config(text=f"Stop at: {name} >= {raw}{unit if unit == '%' else ' ' + unit} (total)",
+                                      fg=UI_ACCENT)
         else:
             self.target = None
-            self._target_label.config(text="Enter a minimum value, or pick a tier.", fg=UI_MUTED)
+            self._target_label.config(text="Enter a minimum value.", fg=UI_MUTED)
         try:
-            CUBES_TARGET_FILE.write_text(json.dumps({"stat": name, "min": raw, "tier": tier_choice}), encoding="utf-8")
+            CUBES_TARGET_FILE.write_text(json.dumps({"stat": name, "min": raw}), encoding="utf-8")
         except Exception:
             pass
 
