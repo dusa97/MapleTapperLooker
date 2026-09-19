@@ -2740,6 +2740,7 @@ class CubesApp:
         self._running = True
         self._selector = None
         self._requests = queue.Queue()
+        self.box_visible = True           # Hide box: purely visual, reads still use self.region
         self.looping = False              # F9: cube -> read -> check, until the target shows up
         self.spamming = False             # set by the watch thread; the spam thread presses only while True
         self.target = None                # parsed by parse_potential_target
@@ -2881,6 +2882,10 @@ class CubesApp:
             side="left", expand=True, fill="x", padx=(0, 6))
         self._loop_button = OverlayApp._button(row, "Start (F9)", self._toggle_loop, UI_PRIMARY, UI_BG)
         self._loop_button.pack(side="left", expand=True, fill="x")
+        row2 = tk.Frame(outer, bg=UI_BG)
+        row2.pack(fill="x", pady=(6, 0))
+        self._box_button = OverlayApp._button(row2, "Hide box", self._toggle_box, UI_BUTTON, UI_TEXT)
+        self._box_button.pack(side="left")
         tk.Label(outer, text="F7 finds the Potential panel and boxes its three lines (F8 draws the box by hand). "
                              "F9 starts cubing: Enter + click, wait for the new lines, read them, stop with a beep "
                              "once the total for your stat reaches the number. F9 again stops. F10 mutes the beep.",
@@ -2929,7 +2934,10 @@ class CubesApp:
             x = 0 if "w" in c else W - hs
             y = 0 if "n" in c else H - hs
             self._canvas.coords(item, x, y, x + hs, y + hs)
-        self.overlay.deiconify()
+        if self.box_visible:
+            self.overlay.deiconify()
+        else:
+            self.overlay.withdraw()
 
     # ---- drag to move, corners to resize (same scheme as OverlayApp) ----
     def _on_move_press(self, event):
@@ -2974,6 +2982,13 @@ class CubesApp:
 
     def _set_status(self, text):
         self._status.config(text=text)
+
+    def _toggle_box(self):
+        """Show/hide the on-screen box - visual only, like Flames' Hide box:
+        reads screenshot self.region directly and never need the overlay."""
+        self.box_visible = not self.box_visible
+        self._box_button.config(text="Hide box" if self.box_visible else "Show box")
+        self._sync_overlay()
 
     def _tick(self):
         if not self._running:
