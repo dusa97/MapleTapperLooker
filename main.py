@@ -277,6 +277,7 @@ POTENTIAL_STATS = (
 CUBES_CHANGE_POLL   = 0.03   # seconds between cheap pixel-difference checks while waiting for the redraw
 CUBES_CHANGE_FRAC   = 0.004  # fraction of pixels that must differ to count as "the panel changed"
 CUBES_CHANGE_TIMEOUT = 3.0   # give up waiting after this long (no cubes left, dialog closed, ...)
+CUBES_SETTLE_MAX     = 0.5   # after the first changed frame, wait up to this long for the redraw to finish
 POTENTIAL_TARGET_HEIGHT = 210    # ~30px per stat line after upscaling (3 lines in the block)
 # EACH stat line has its own small lettered square (R/E/U/L) at its left, coloured by that
 # line's tier - an item can be L / U / U. Measured: 10x9 px at x 99..108, y 310..318 for
@@ -2558,6 +2559,7 @@ class CubesApp:
         self._selector = None
         self._requests = queue.Queue()
         self.looping = False              # F9: cube -> read -> check, until the target shows up
+        self.spamming = False             # set by the watch thread; the spam thread presses only while True
         self.target = None                # parsed by parse_potential_target
         self.beep_enabled = True
         self.tiers = [None, None, None]   # per line, see read_potential_tiers
@@ -2906,61 +2908,79 @@ class CubesApp:
         self.overlay.withdraw()          # the box must not be in the crops the loop takes
         self.root.update_idletasks()     # ...so make sure it is actually gone before the first grab
         self._mouse.lock()
+        self.spamming = False
         self._loop_thread = threading.Thread(target=self._cube_loop, daemon=True, name="cube-loop")
         self._loop_thread.start()
+        threading.Thread(target=self._spam_loop, daemon=True, name="cube-spam").start()
         self._set_status(f"Cubing until {self._describe(self.target)} ...")
 
     def _stop_loop(self, message):
         self.looping = False
+        self.spamming = False
         self._mouse.unlock()
         self._loop_button.config(text="Start (F9)")
         self._sync_overlay()
         self._set_status(message)
 
-    def _wait_for_change(self, before):
-        """Block until the box's pixels differ from *before* (the panel has
-        redrawn), or CUBES_CHANGE_TIMEOUT passes. Returns the new grab, or
-        None on timeout. Compares small grayscale arrays, so each poll is
-        far cheaper than an OCR."""
-        ref = np.asarray(before.convert("L"), dtype=np.int16)
-        deadline = time.perf_counter() + CUBES_CHANGE_TIMEOUT
-        while self.looping and self._running and time.perf_counter() < deadline:
-            time.sleep(CUBES_CHANGE_POLL)
-            img = _grab(self.region)
-            cur = np.asarray(img.convert("L"), dtype=np.int16)
-            if cur.shape == ref.shape and (np.abs(cur - ref) > 40).mean() >= CUBES_CHANGE_FRAC:
-                return img
-        return None
+    def _spam_loop(self):
+        """Flames' cadence: Enter and left-click on their own jittered
+        intervals, continuously, whenever self.spamming is set. The watch
+        thread clears the flag the instant the panel changes and sets it
+        again after a non-matching read - so the game gets as many presses
+        as it needs to get through its prompts, and none while we read."""
+        last_enter = last_click = last_lock = 0.0
+        next_enter = OverlayApp._jittered(ENTER_INTERVAL)
+        next_click = OverlayApp._jittered(CLICK_INTERVAL)
+        while self.looping and self._running:
+            if self.spamming:
+                now = time.perf_counter()
+                if now - last_lock >= 0.05:
+                    self._mouse.reassert()
+                    last_lock = now
+                if now - last_enter >= next_enter:
+                    pydirectinput.press("enter")
+                    last_enter = now
+                    next_enter = OverlayApp._jittered(ENTER_INTERVAL)
+                if now - last_click >= next_click:
+                    pydirectinput.click()
+                    last_click = now
+                    next_click = OverlayApp._jittered(CLICK_INTERVAL)
+            time.sleep(0.001)
 
     def _cube_loop(self):
-        """Worker. Order matters: READ FIRST - if the item already has what
-        you want, rolling would destroy it - then cube, wait until the panel
-        has actually changed (pixel difference, not a timer), read the new
-        lines, check, repeat. Everything UI-facing is handed back to the Tk
-        thread through the request queue; this thread only clicks, polls
-        and OCRs."""
+        """Watch thread. Read the current lines first (an item that already
+        matches is never rolled away). Then: spam on, poll the box until its
+        pixels change (the panel redrew with a new roll), spam OFF, OCR the
+        new lines, check the total; on a miss, spam on again. Everything
+        UI-facing goes back to the Tk thread through the request queue."""
         target = self.target
         time.sleep(0.1)                  # let the overlay's hide land on screen before the first grab
         img = _grab(self.region)
         first = True
         while self.looping and self._running:
             if not first:
-                # Reference frame taken RIGHT before the click, never carried over from
-                # the previous read: anything that changed in between (box hiding, a
-                # tooltip, the cursor) must not count as "the panel redrew".
-                before = _grab(self.region)
-                pydirectinput.press("enter")
-                time.sleep(OverlayApp._jittered(ENTER_INTERVAL))
-                pydirectinput.click()
-                self._mouse.reassert()
+                before = np.asarray(img.convert("L"), dtype=np.int16)
+                self.spamming = True
+                deadline = time.perf_counter() + CUBES_CHANGE_TIMEOUT
+                img = None
+                while self.looping and self._running and time.perf_counter() < deadline:
+                    time.sleep(CUBES_CHANGE_POLL)
+                    cur_img = _grab(self.region)
+                    cur = np.asarray(cur_img.convert("L"), dtype=np.int16)
+                    if cur.shape == before.shape and (np.abs(cur - before) > 40).mean() >= CUBES_CHANGE_FRAC:
+                        img = cur_img
+                        break
+                self.spamming = False    # freeze the inputs while we read
                 if not self.looping:
                     break
-                img = self._wait_for_change(before)
                 if img is None:
                     self._requests.put(lambda: self._stop_loop(
-                        f"Stopped after {self.rolls} roll(s): the panel did not change after a cube "
+                        f"Stopped after {self.rolls} roll(s): the panel did not change "
                         f"(out of cubes, or the dialog closed?)."))
                     return
+                # The redraw may still be animating on the first differing frame -
+                # wait for the pixels to hold still before trusting the OCR.
+                img = self._settle(img)
                 self.rolls += 1
             first = False
             try:
@@ -2969,13 +2989,10 @@ class CubesApp:
                 tiers, lines = [None] * 3, []
             words, minimum, wants_pct, wanted_tier = target
             if words:
-                # Stat target: the item's TOTAL for that stat (All Stats included,
-                # only lines at or above the chosen tier) must reach the minimum.
                 total = potential_total_for(lines, tiers, target)
                 unit = "%" if wants_pct else " sec" if words == ("skill", "cooldowns") else ""
                 hit = (f"{' '.join(words).upper()} {total}{unit} total", "") if total >= minimum else None
             else:
-                # Tier-only target: the item's rank, i.e. the first line's tier.
                 hit = ("", "") if tier_satisfies(tiers[0], wanted_tier) else None
             self._requests.put(lambda tiers=tiers, lines=lines: (setattr(self, "tiers", tiers),
                                                                  setattr(self, "lines", lines), self._show_lines()))
@@ -2984,6 +3001,20 @@ class CubesApp:
                 return
             self._requests.put(lambda: self._set_status(
                 f"Roll {self.rolls}: no match yet." if self.rolls else "Current item doesn't match - cubing..."))
+
+    def _settle(self, img):
+        """Return a grab taken once two consecutive polls agree (the panel has
+        finished redrawing), or the latest grab after CUBES_SETTLE_MAX."""
+        prev = np.asarray(img.convert("L"), dtype=np.int16)
+        deadline = time.perf_counter() + CUBES_SETTLE_MAX
+        while self.looping and self._running and time.perf_counter() < deadline:
+            time.sleep(CUBES_CHANGE_POLL)
+            img = _grab(self.region)
+            cur = np.asarray(img.convert("L"), dtype=np.int16)
+            if cur.shape == prev.shape and (np.abs(cur - prev) > 40).mean() < CUBES_CHANGE_FRAC:
+                return img
+            prev = cur
+        return img
 
     def _on_hit(self, hit):
         rank = (self.tiers[0] or "").capitalize()
