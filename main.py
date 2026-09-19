@@ -968,6 +968,29 @@ def default_region() -> tuple:
 
 # ── Persistent overlay rectangle ────────────────────────────────────────────
 
+def build_header(parent, logo_image):
+    """The app's header - logo, name, version, subtitle, accent rule. One
+    header for the whole app: in the tabbed shell it sits above the tabs
+    (run_app), and only the controls under it change per tab; when Flames
+    runs standalone (host=None) it draws the same header itself."""
+    header = tk.Frame(parent, bg=UI_BG)
+    header.pack(fill="x", pady=(0, 14))
+    tk.Label(header, image=logo_image, bg=UI_BG).pack(pady=(0, 10))
+    heading = tk.Frame(header, bg=UI_BG)
+    heading.pack()
+    tk.Label(heading, text="MAPLE / TAPPER LOOKER", fg=UI_TEXT, bg=UI_BG,
+             font=("Segoe UI", 16, "bold"), anchor="center").pack(fill="x")
+    tk.Label(heading, text=f"version {APP_VERSION}", fg=UI_ACCENT, bg=UI_BG,
+             font=("Segoe UI", 10, "bold"), anchor="center").pack(fill="x", pady=(2, 0))
+    tk.Label(heading, text="OCR and input automation control", fg=UI_MUTED, bg=UI_BG,
+             font=("Segoe UI", 10), anchor="center").pack(fill="x", pady=(4, 0))
+    accent = tk.Frame(parent, bg=UI_BORDER, height=2)
+    accent.pack(pady=(0, 18))
+    tk.Frame(accent, bg=UI_PRIMARY, width=80, height=2).pack(side="left")
+    tk.Frame(accent, bg=UI_ACCENT, width=40, height=2).pack(side="left")
+    return header
+
+
 class OverlayApp:
     """
     A violet detection box with a click-through center and four resize handles.
@@ -1073,23 +1096,11 @@ class OverlayApp:
             root.protocol("WM_DELETE_WINDOW", self._quit)
             root.option_add("*Font", ("Segoe UI", 10))
 
-        outer = tk.Frame(host if host is not None else root, bg=UI_BG, padx=24, pady=20)
+        outer = tk.Frame(host if host is not None else root, bg=UI_BG, padx=24,
+                         pady=20 if host is None else 0)
         outer.pack(side="left", fill="both", expand=True)
-        header = tk.Frame(outer, bg=UI_BG)
-        header.pack(fill="x", pady=(0, 14))
-        tk.Label(header, image=self._logo_image, bg=UI_BG).pack(pady=(0, 10))
-        heading = tk.Frame(header, bg=UI_BG)
-        heading.pack()
-        tk.Label(heading, text="MAPLE / TAPPER LOOKER", fg=UI_TEXT, bg=UI_BG,
-                 font=("Segoe UI", 16, "bold"), anchor="center").pack(fill="x")
-        tk.Label(heading, text=f"version {APP_VERSION}", fg=UI_ACCENT, bg=UI_BG,
-                 font=("Segoe UI", 10, "bold"), anchor="center").pack(fill="x", pady=(2, 0))
-        tk.Label(heading, text="OCR and input automation control", fg=UI_MUTED, bg=UI_BG,
-                 font=("Segoe UI", 10), anchor="center").pack(fill="x", pady=(4, 0))
-        accent = tk.Frame(outer, bg=UI_BORDER, height=2)
-        accent.pack(pady=(0, 18))
-        tk.Frame(accent, bg=UI_PRIMARY, width=80, height=2).pack(side="left")
-        tk.Frame(accent, bg=UI_ACCENT, width=40, height=2).pack(side="left")
+        if host is None:
+            build_header(outer, self._logo_image)
 
         status = self._card(outer)
         status.pack(fill="x")
@@ -2234,8 +2245,8 @@ def build_cubes(host):
     stop() so the shell can treat both tabs the same way."""
     frame = tk.Frame(host, bg=UI_BG, padx=40, pady=30)
     frame.pack(fill="both", expand=True)
-    tk.Label(frame, text="CUBES", fg=UI_TEXT, bg=UI_BG, font=("Segoe UI", 16, "bold")).pack(pady=(40, 0))
-    tk.Label(frame, text="Nothing here yet.", fg=UI_MUTED, bg=UI_BG, font=("Segoe UI", 10)).pack(pady=(6, 0))
+    tk.Label(frame, text="Cubes - nothing here yet.", fg=UI_MUTED, bg=UI_BG,
+             font=("Segoe UI", 10)).pack(pady=(40, 0))
 
     class _Cubes:
         def stop(self):
@@ -2256,11 +2267,17 @@ def run_app(args):
     root.option_add("*Font", ("Segoe UI", 10))
     with Image.open(Path(__file__).parent / "assets" / "logo.png") as image:
         icon = ImageTk.PhotoImage(image.resize((256, 256), Image.Resampling.LANCZOS), master=root)
+        logo = ImageTk.PhotoImage(image.resize((144, 144), Image.Resampling.LANCZOS), master=root)
     root.iconphoto(True, icon)
+    root._header_images = (icon, logo)          # keep references alive for the window's lifetime
+
+    top = tk.Frame(root, bg=UI_BG, padx=24)
+    top.pack(fill="x", pady=(16, 0))
+    build_header(top, logo)
 
     style = ttk.Style(root)
     style.theme_use("clam")
-    style.configure("Mode.TNotebook", background=UI_BG, borderwidth=0, tabmargins=(12, 8, 0, 0))
+    style.configure("Mode.TNotebook", background=UI_BG, borderwidth=0, tabmargins=(12, 0, 0, 0))
     style.configure("Mode.TNotebook.Tab", background=UI_SURFACE, foreground=UI_MUTED,
                     padding=(22, 8), font=("Segoe UI", 11, "bold"), borderwidth=0)
     style.map("Mode.TNotebook.Tab", background=[("selected", UI_BUTTON)],
@@ -2282,7 +2299,7 @@ def run_app(args):
         state["app"] = run_flames(args, tabs["flames"]) if mode == "flames" else build_cubes(tabs["cubes"])
         save_mode(mode)
         root.update_idletasks()
-        root.geometry(f"{max(540, root.winfo_reqwidth())}x{max(650, root.winfo_reqheight())}")
+        root.geometry(f"{max(540, root.winfo_reqwidth())}x{root.winfo_reqheight()}")
 
     def on_tab_changed(_event):
         mode = modes[notebook.index("current")]
