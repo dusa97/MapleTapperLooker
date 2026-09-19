@@ -1373,6 +1373,69 @@ def logo_photo(size, master):
     return ImageTk.PhotoImage(_LOGO_CACHE[size], master=master)
 
 
+def open_discord_settings(parent, discord, log, on_change=None):
+    if not discord.supported:
+        return
+    current = discord.settings
+    dialog = tk.Toplevel(parent)
+    dialog.title("Discord settings")
+    dialog.configure(bg=UI_BG)
+    dialog.resizable(False, False)
+    dialog.transient(parent)
+    body = tk.Frame(dialog, bg=UI_BG, padx=20, pady=18)
+    body.pack(fill="both", expand=True)
+    tk.Label(body, text="Posts to a server channel, mentions one user, and can include game chat. It is not a DM.",
+             bg=UI_BG, fg=UI_MUTED, justify="left", wraplength=420).pack(fill="x", pady=(0, 12))
+    tk.Label(body, text="Webhook URL", bg=UI_BG, fg=UI_TEXT, anchor="w").pack(fill="x")
+    webhook = tk.Entry(body, width=54, show="•")
+    webhook.pack(fill="x", pady=(2, 8))
+    webhook.insert(0, current.webhook_url if current else "")
+    tk.Label(body, text="Discord user ID", bg=UI_BG, fg=UI_TEXT, anchor="w").pack(fill="x")
+    user_id = tk.Entry(body, width=54)
+    user_id.pack(fill="x", pady=(2, 4))
+    user_id.insert(0, current.user_id if current else "")
+    error = tk.Label(body, text="", bg=UI_BG, fg=UI_PRIMARY_ACTIVE, anchor="w")
+    error.pack(fill="x", pady=(0, 8))
+    buttons = tk.Frame(body, bg=UI_BG)
+    buttons.pack()
+
+    def save():
+        try:
+            discord.save_settings(webhook.get(), user_id.get())
+        except ValueError as exc:
+            error.config(text=str(exc))
+            return
+        except OSError:
+            error.config(text="Could not save settings. Previous settings were kept.")
+            return
+        log("Discord settings saved.")
+        dialog.destroy()
+
+    def clear():
+        try:
+            discord.clear()
+        except OSError:
+            error.config(text="Could not clear settings.")
+            return
+        if on_change is not None:
+            on_change()
+        log("Discord settings cleared and disabled.")
+        dialog.destroy()
+
+    def test_alert():
+        if discord.settings is None:
+            error.config(text="Save valid settings before sending a test alert.")
+            return
+        if not discord.schedule("", test=True):
+            error.config(text="A Discord alert is already pending.")
+
+    OverlayApp._button(buttons, "Save", save, UI_PRIMARY, UI_BG).pack(side="left")
+    OverlayApp._button(buttons, "Cancel", dialog.destroy, UI_BUTTON, UI_TEXT).pack(side="left", padx=8)
+    OverlayApp._button(buttons, "Clear settings", clear, UI_BUTTON, UI_TEXT).pack(side="left")
+    OverlayApp._button(buttons, "Send test alert", test_alert, UI_BUTTON, UI_TEXT).pack(side="left", padx=(8, 0))
+    webhook.focus_set()
+
+
 def build_header(parent, logo_image):
     """The app's header - logo, name, version, subtitle, accent rule. One
     header for the whole app: in the tabbed shell it sits above the tabs
@@ -1408,6 +1471,7 @@ class OverlayApp:
     MIN_SIZE    = 20
 
     def __init__(self, region: tuple, enter_spam: bool = True,
+                 discord=None, discord_allowed=None,
                  enter_hotkey: str = ENTER_HOTKEY,
                  enter_interval: float = ENTER_INTERVAL,
                  click_interval: float = CLICK_INTERVAL,
@@ -1471,7 +1535,11 @@ class OverlayApp:
         self._box_visible = True
         self._box_toggle_button = None
         self._activation_target = None
-        self.discord = DiscordNotifier(log=self._log)
+        # The notifier is normally shared and owned by the tabbed shell (run_app),
+        # which also owns the per-tab on/off switches; standalone, make our own.
+        self._owns_discord = discord is None
+        self.discord = discord if discord is not None else DiscordNotifier(log=self._log)
+        self._discord_allowed = discord_allowed if discord_allowed is not None else (lambda: True)
         self._discord_button = None
         self._discord_settings_button = None
         self._mute_var = None
@@ -1563,30 +1631,33 @@ class OverlayApp:
         self._button(audio_buttons, "Reset  (F12)", lambda: self._request_audio(self.alert.reset),
                      UI_BUTTON, UI_TEXT).pack(side="left")
 
-        discord = self._card(outer)
-        discord.pack(fill="x", pady=(14, 0))
-        tk.Label(discord, text="Discord alerts", fg=UI_TEXT, bg=UI_SURFACE,
-                 font=("Segoe UI", 12, "bold"), anchor="center").pack(fill="x", padx=16, pady=(14, 3))
-        tk.Label(discord, text="Posts a server-channel mention and can include game chat. Not a DM or guaranteed notification.",
-                 fg=UI_MUTED, bg=UI_SURFACE, anchor="center", justify="center", wraplength=450).pack(
-                     fill="x", padx=16, pady=(0, 10))
-        discord_buttons = tk.Frame(discord, bg=UI_SURFACE)
-        discord_buttons.pack(padx=16, pady=(0, 14))
-        self._discord_var = tk.BooleanVar(root, value=self.discord.enabled)
-        self._discord_button = tk.Checkbutton(
-            discord_buttons, text="Discord alerts", command=self._toggle_discord, variable=self._discord_var,
-            image=self._mute_images[0], selectimage=self._mute_images[1], indicatoron=False,
-            compound="left", relief="flat", offrelief="flat", borderwidth=0, bg=UI_SURFACE,
-            fg=UI_TEXT, selectcolor=UI_SURFACE, activebackground=UI_SURFACE,
-            activeforeground=UI_TEXT, highlightbackground=UI_SURFACE, highlightcolor=UI_PRIMARY,
-            highlightthickness=1, takefocus=True, padx=6, pady=5, cursor="hand2",
-            state="normal" if self.discord.supported else "disabled")
-        self._discord_button.pack(side="left")
-        self._discord_settings_button = self._button(discord_buttons, "Discord settings", self._open_discord_settings,
-                                                      UI_BUTTON, UI_TEXT)
-        self._discord_settings_button.pack(side="left", padx=(8, 0))
-        if not self.discord.supported:
-            self._log("Discord alerts need Windows DPAPI and are unavailable here.")
+        if self._owns_discord:
+            # Standalone only: in the shell the Discord controls sit above the tabs.
+            discord = self._card(outer)
+            discord.pack(fill="x", pady=(14, 0))
+            tk.Label(discord, text="Discord alerts", fg=UI_TEXT, bg=UI_SURFACE,
+                     font=("Segoe UI", 12, "bold"), anchor="center").pack(fill="x", padx=16, pady=(14, 3))
+            discord_buttons = tk.Frame(discord, bg=UI_SURFACE)
+            discord_buttons.pack(padx=16, pady=(0, 14))
+            self._discord_var = tk.BooleanVar(root, value=self.discord.enabled)
+            self._discord_button = tk.Checkbutton(
+                discord_buttons, text="Discord alerts", command=self._toggle_discord, variable=self._discord_var,
+                image=self._mute_images[0], selectimage=self._mute_images[1], indicatoron=False,
+                compound="left", relief="flat", offrelief="flat", borderwidth=0, bg=UI_SURFACE,
+                fg=UI_TEXT, selectcolor=UI_SURFACE, activebackground=UI_SURFACE,
+                activeforeground=UI_TEXT, highlightbackground=UI_SURFACE, highlightcolor=UI_PRIMARY,
+                highlightthickness=1, takefocus=True, padx=6, pady=5, cursor="hand2",
+                state="normal" if self.discord.supported else "disabled")
+            self._discord_button.pack(side="left")
+            self._discord_settings_button = self._button(
+                discord_buttons, "Discord settings",
+                self._open_discord_settings,
+                UI_BUTTON, UI_TEXT)
+            self._discord_settings_button.pack(side="left", padx=(8, 0))
+            if not self.discord.supported:
+                self._log("Discord alerts need Windows DPAPI and are unavailable here.")
+        else:
+            self._discord_var = None
 
         activity = self._card(outer)
         activity.pack(fill="both", expand=True, pady=(14, 0))
@@ -1821,7 +1892,8 @@ class OverlayApp:
             return
         print("\nStopped.")
         self._running = False
-        self.discord.close()
+        if self._owns_discord:
+            self.discord.close()
         target = getattr(self, "_activation_target", None)
         if target is not None and hasattr(target, "close"):
             target.close()
@@ -1913,8 +1985,8 @@ class OverlayApp:
                 except (AttributeError, tk.TclError):
                     pass
             self._activation_target = bind_foreground_target(
-                self.region, own_hwnds, report=self._log if self.discord.enabled else None)
-            if self.discord.enabled and self._activation_target is None:
+                self.region, own_hwnds, report=self._log if self._discord_on() else None)
+            if self._discord_on() and self._activation_target is None:
                 self._log("Discord images unavailable for this activation; text alerts still work.")
         if value and self.enter_spam_enabled:
             self._lock_mouse()
@@ -1944,6 +2016,16 @@ class OverlayApp:
         self.beep_enabled = not self.beep_enabled
         self._log(f"Audio {'unmuted' if self.beep_enabled else 'muted'}.")
 
+    def _discord_on(self):
+        return self.discord.enabled and self._discord_allowed()
+
+    def _open_discord_settings(self):
+        """Standalone Flames: the shared dialog, parented to our own root."""
+        def cleared():
+            if self._discord_var is not None:
+                self._discord_var.set(False)
+        open_discord_settings(self.root, self.discord, self._log, on_change=cleared)
+
     def _toggle_discord(self):
         requested = not self.discord.enabled
         try:
@@ -1957,68 +2039,6 @@ class OverlayApp:
         finally:
             if self._discord_var is not None:
                 self._discord_var.set(self.discord.enabled)
-
-    def _open_discord_settings(self):
-        if not self.discord.supported:
-            return
-        current = self.discord.settings
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Discord settings")
-        dialog.configure(bg=UI_BG)
-        dialog.resizable(False, False)
-        dialog.transient(self.root)
-        body = tk.Frame(dialog, bg=UI_BG, padx=20, pady=18)
-        body.pack(fill="both", expand=True)
-        tk.Label(body, text="Posts to a server channel, mentions one user, and can include game chat. It is not a DM.",
-                 bg=UI_BG, fg=UI_MUTED, justify="left", wraplength=420).pack(fill="x", pady=(0, 12))
-        tk.Label(body, text="Webhook URL", bg=UI_BG, fg=UI_TEXT, anchor="w").pack(fill="x")
-        webhook = tk.Entry(body, width=54, show="•")
-        webhook.pack(fill="x", pady=(2, 8))
-        webhook.insert(0, current.webhook_url if current else "")
-        tk.Label(body, text="Discord user ID", bg=UI_BG, fg=UI_TEXT, anchor="w").pack(fill="x")
-        user_id = tk.Entry(body, width=54)
-        user_id.pack(fill="x", pady=(2, 4))
-        user_id.insert(0, current.user_id if current else "")
-        error = tk.Label(body, text="", bg=UI_BG, fg=UI_PRIMARY_ACTIVE, anchor="w")
-        error.pack(fill="x", pady=(0, 8))
-        buttons = tk.Frame(body, bg=UI_BG)
-        buttons.pack()
-
-        def save():
-            try:
-                self.discord.save_settings(webhook.get(), user_id.get())
-            except ValueError as exc:
-                error.config(text=str(exc))
-                return
-            except OSError:
-                error.config(text="Could not save settings. Previous settings were kept.")
-                return
-            self._log("Discord settings saved.")
-            dialog.destroy()
-
-        def clear():
-            try:
-                self.discord.clear()
-            except OSError:
-                error.config(text="Could not clear settings.")
-                return
-            if self._discord_var is not None:
-                self._discord_var.set(False)
-            self._log("Discord settings cleared and disabled.")
-            dialog.destroy()
-
-        def test_alert():
-            if self.discord.settings is None:
-                error.config(text="Save valid settings before sending a test alert.")
-                return
-            if not self.discord.schedule("", test=True):
-                error.config(text="A Discord alert is already pending.")
-
-        self._button(buttons, "Save", save, UI_PRIMARY, UI_BG).pack(side="left")
-        self._button(buttons, "Cancel", dialog.destroy, UI_BUTTON, UI_TEXT).pack(side="left", padx=8)
-        self._button(buttons, "Clear settings", clear, UI_BUTTON, UI_TEXT).pack(side="left")
-        self._button(buttons, "Send test alert", test_alert, UI_BUTTON, UI_TEXT).pack(side="left", padx=(8, 0))
-        webhook.focus_set()
 
     def _play_alert(self):
         self.alert.play(beep)
@@ -2140,7 +2160,7 @@ class OverlayApp:
                             save_success_capture(confirm_img, value)
                         except Exception:
                             pass
-                        if self.discord.enabled:
+                        if self._discord_on():
                             if target is not None and not target_is_current(target):
                                 target = None
                             if not self.discord.schedule(value, target, activation=activation):
@@ -2567,6 +2587,29 @@ def _open_selector() -> tuple:
 MODE_FILE = _BASE_DIR / "last_mode.json"
 
 
+def load_discord_modes():
+    """Which tabs may post Discord alerts: {'flames': bool, 'cubes': bool}.
+    Lives in MODE_FILE next to the last-tab choice; the webhook itself
+    stays in the DPAPI-protected DiscordSettingsStore."""
+    try:
+        data = json.loads(MODE_FILE.read_text(encoding="utf-8")).get("discord", {})
+        return {"flames": bool(data.get("flames", True)), "cubes": bool(data.get("cubes", True))}
+    except Exception:
+        return {"flames": True, "cubes": True}
+
+
+def save_discord_modes(modes):
+    try:
+        data = json.loads(MODE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+    data["discord"] = {"flames": bool(modes.get("flames")), "cubes": bool(modes.get("cubes"))}
+    try:
+        MODE_FILE.write_text(json.dumps(data), encoding="utf-8")
+    except Exception:
+        pass
+
+
 def load_mode():
     try:
         mode = json.loads(MODE_FILE.read_text(encoding="utf-8")).get("mode")
@@ -2577,12 +2620,17 @@ def load_mode():
 
 def save_mode(mode):
     try:
-        MODE_FILE.write_text(json.dumps({"mode": mode}), encoding="utf-8")
+        data = json.loads(MODE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+    data["mode"] = mode
+    try:
+        MODE_FILE.write_text(json.dumps(data), encoding="utf-8")
     except Exception:
         pass
 
 
-def run_flames(args, host=None):
+def run_flames(args, host=None, discord=None, discord_modes=None):
         if args.region:
             region = tuple(args.region)
             save_region(region)
@@ -2617,6 +2665,7 @@ def run_flames(args, host=None):
         print(f"\n  Watching region={region} — drag the box to reposition, drag a corner to resize.")
         print("  Close the control window to quit.\n")
         app = OverlayApp(region, is_placeholder_region=is_placeholder, enter_spam=not args.no_enter_spam,
+                         discord=discord, discord_allowed=(lambda: discord_modes()["flames"]) if discord_modes else None,
                          enter_hotkey=args.enter_hotkey,
                          enter_interval=args.enter_interval,
                          click_interval=args.click_interval,
@@ -2679,9 +2728,12 @@ class CubesApp:
     HANDLE = 10         # corner squares you drag to resize
     MIN_SIZE = 40
 
-    def __init__(self, host):
+    def __init__(self, host, discord=None, discord_modes=None):
         self.host = host
         self.root = host.winfo_toplevel()
+        self.discord = discord
+        self._discord_modes = discord_modes or (lambda: {"cubes": False})
+        self._activation_target = None
         self.region = self._load_region()
         self.label_box = self._load_label_box()   # where F7 last found "Potential"; None after a manual F8 box
         self.lines = []
@@ -3139,6 +3191,14 @@ class CubesApp:
         self.looping = True
         self.rolls = 0
         self._loop_button.config(text="Stop (F9)")
+        if self.discord is not None and self.discord.enabled and self._discord_modes()["cubes"]:
+            own = []
+            for w in (self.root, self.overlay):
+                try:
+                    own.append(w.winfo_id())
+                except (AttributeError, tk.TclError):
+                    pass
+            self._activation_target = bind_foreground_target(self.region, own, report=self._set_status)
         self.overlay.withdraw()          # the box must not be in the crops the loop takes
         self.root.update_idletasks()     # ...so make sure it is actually gone before the first grab
         self._mouse.lock()
@@ -3251,9 +3311,17 @@ class CubesApp:
 
     def _on_hit(self, hit):
         rank = (self.tiers[0] or "").capitalize()
-        self._stop_loop(f"Got it after {self.rolls} roll(s): {rank} {hit[0]} {hit[1]}".replace("  ", " ").strip())
+        summary = f"{rank} {hit[0]} {hit[1]}".replace("  ", " ").strip()
+        self._stop_loop(f"Got it after {self.rolls} roll(s): {summary}")
         if self.beep_enabled:
             threading.Thread(target=beep, daemon=True).start()
+        if self.discord is not None and self.discord.enabled and self._discord_modes()["cubes"]:
+            target = self._activation_target
+            if target is not None and not target_is_current(target):
+                target = None
+            lines = "; ".join(f"{s} {v}" for s, v in self.lines if v) or "no lines read"
+            self.discord.schedule(f"{summary} after {self.rolls} roll(s) [{lines}]", target)
+        self._activation_target = None
 
     # ---- lifecycle -----------------------------------------------------------
     def stop(self):
@@ -3280,8 +3348,8 @@ class CubesApp:
             self._outer.destroy()
 
 
-def build_cubes(host):
-    return CubesApp(host)
+def build_cubes(host, discord=None, discord_modes=None):
+    return CubesApp(host, discord=discord, discord_modes=discord_modes)
 
 
 def run_app(args):
@@ -3301,6 +3369,48 @@ def run_app(args):
     top = tk.Frame(root, bg=UI_BG, padx=24)
     top.pack(fill="x", pady=(16, 0))
     build_header(top, logo)
+
+    # Discord: one notifier for the whole app, with a switch per tab. The
+    # notifier's own enabled flag follows "any tab on"; each tab checks its
+    # own switch before scheduling an alert.
+    shell_log = {"fn": print}
+    discord = DiscordNotifier(log=lambda msg: shell_log["fn"](msg))
+    discord_flags = load_discord_modes()
+    strip = tk.Frame(top, bg=UI_SURFACE, highlightbackground=UI_BORDER, highlightthickness=1)
+    strip.pack(fill="x", pady=(0, 6))
+    tk.Label(strip, text="DISCORD ALERTS", fg=UI_MUTED, bg=UI_SURFACE,
+             font=("Segoe UI", 9, "bold")).pack(side="left", padx=(14, 16), pady=8)
+    mode_vars = {}
+
+    def apply_modes(*_):
+        for key, var in mode_vars.items():
+            discord_flags[key] = bool(var.get())
+        save_discord_modes(discord_flags)
+        want = any(discord_flags.values())
+        if want != discord.enabled:
+            try:
+                if not discord.set_enabled(want) and want:
+                    shell_log["fn"]("Set Discord webhook and user ID before enabling alerts.")
+                    for var in mode_vars.values():
+                        var.set(False)
+                    for key in discord_flags:
+                        discord_flags[key] = False
+                    save_discord_modes(discord_flags)
+            except OSError:
+                shell_log["fn"]("Could not save Discord settings.")
+
+    for key, text in (("flames", "Flames"), ("cubes", "Cubes")):
+        var = tk.BooleanVar(root, value=discord_flags[key] and discord.enabled)
+        mode_vars[key] = var
+        tk.Checkbutton(strip, text=text, variable=var, command=apply_modes, bg=UI_SURFACE, fg=UI_TEXT,
+                       selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
+                       highlightthickness=0, font=("Segoe UI", 10, "bold"), cursor="hand2",
+                       state="normal" if discord.supported else "disabled").pack(side="left", padx=(0, 10))
+    OverlayApp._button(strip, "Discord settings",
+                       lambda: open_discord_settings(root, discord, shell_log["fn"],
+                                                     on_change=lambda: [v.set(False) for v in mode_vars.values()]),
+                       UI_BUTTON, UI_TEXT).pack(side="right", padx=10, pady=4)
+    discord_modes = lambda: discord_flags
 
     style = ttk.Style(root)
     style.theme_use("clam")
@@ -3336,7 +3446,10 @@ def run_app(args):
         if state["app"] is not None:
             state["app"].stop()
         state["mode"], state["app"] = mode, None
-        state["app"] = run_flames(args, tabs["flames"]) if mode == "flames" else build_cubes(tabs["cubes"])
+        state["app"] = (run_flames(args, tabs["flames"], discord, discord_modes) if mode == "flames"
+                        else build_cubes(tabs["cubes"], discord, discord_modes))
+        # route the notifier's log lines into the active tab's own log
+        shell_log["fn"] = getattr(state["app"], "_log", None) or (lambda m: state["app"]._set_status(m))
         save_mode(mode)
         if state.get("size") is None:
             # Size the window ONCE, for the taller tab, so switching never resizes
@@ -3368,6 +3481,7 @@ def run_app(args):
     def on_close():
         if state["app"] is not None:
             state["app"].stop()
+        discord.close()
         root.destroy()
 
     notebook.bind("<<NotebookTabChanged>>", on_tab_changed)
