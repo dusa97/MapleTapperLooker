@@ -269,7 +269,9 @@ POTENTIAL_STATS = (
     ("Critical Damage", ("critical", "damage"), "%"),
     ("Skill Cooldowns", ("skill", "cooldowns"), "sec"),
 )
+POTENTIAL_LEGENDARY_ONLY = ("Critical Damage", "Skill Cooldowns")   # these lines only exist on legendary
 POTENTIAL_TIER_CHOICES = ("Any tier", "Rare+", "Epic+", "Unique+", "Legendary+")
+POTENTIAL_TIER_DEFAULT = "Unique+"    # rare/epic lines are never what anyone is cubing for
 CUBES_SETTLE      = 0.35   # seconds to wait after a cube click before reading, so the panel has redrawn
                            # with the NEW lines rather than the old ones; ponytail: measured on one
                            # machine, expose in the UI if it proves resolution/lag dependent
@@ -2578,7 +2580,7 @@ class CubesApp:
         stat_names = [name for name, _, _ in POTENTIAL_STATS]
         self._stat_var = tk.StringVar(value=saved.get("stat") if saved.get("stat") in stat_names else stat_names[0])
         self._min_var = tk.StringVar(value=str(saved.get("min", "")))
-        self._tier_var = tk.StringVar(value=saved.get("tier") if saved.get("tier") in POTENTIAL_TIER_CHOICES else POTENTIAL_TIER_CHOICES[0])
+        self._tier_var = tk.StringVar(value=saved.get("tier") if saved.get("tier") in POTENTIAL_TIER_CHOICES else POTENTIAL_TIER_DEFAULT)
         style = ttk.Style(self.root)
         style.configure("Cubes.TMenubutton", background=UI_BG, foreground=UI_TEXT, arrowcolor=UI_ACCENT,
                         font=("Segoe UI", 11), padding=(10, 6), borderwidth=0)
@@ -2596,6 +2598,7 @@ class CubesApp:
         self._unit_label.pack(side="left", padx=(4, 10))
         tier_menu = ttk.OptionMenu(goal_row, self._tier_var, self._tier_var.get(), *POTENTIAL_TIER_CHOICES, style="Cubes.TMenubutton")
         tier_menu.pack(side="left")
+        self._tier_menu = tier_menu
         tier_menu["menu"].config(bg=UI_SURFACE, fg=UI_TEXT, activebackground=UI_BUTTON, activeforeground=UI_TEXT,
                                  font=("Segoe UI", 10), bd=0)
         self._target_label = tk.Label(goal, text="", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9), anchor="w")
@@ -2756,6 +2759,14 @@ class CubesApp:
         name = self._stat_var.get()
         words, unit = next(((w, u) for n, w, u in POTENTIAL_STATS if n == name), ((), "%"))
         self._unit_label.config(text=unit)
+        if name in POTENTIAL_LEGENDARY_ONLY:
+            # No point offering a tier: these lines are legendary by definition.
+            if self._tier_var.get() != "Legendary+":
+                self._tier_var.set("Legendary+")      # re-enters this method via the trace
+                return
+            self._tier_menu.state(["disabled"])
+        else:
+            self._tier_menu.state(["!disabled"])
         tier_choice = self._tier_var.get()
         tier = tier_choice[:-1].lower() if tier_choice.endswith("+") else None
         raw = self._min_var.get().strip().rstrip("%")
