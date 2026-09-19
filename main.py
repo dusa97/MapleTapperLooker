@@ -267,8 +267,13 @@ POTENTIAL_STATS = (
     ("Boss Damage",     ("boss", "damage"),     "%"),
     ("Ignore Defense",  ("ignore", "defense"),  "%"),
     ("Critical Damage", ("critical", "damage"), "%"),
+    ("Item Drop Rate",  ("drop", "rate"),       "%"),   # 'item' is OCR-flaky ('Iterm' seen); 'drop rate' is enough
+    ("Mesos Obtained",  ("mesos", "obtained"),  "%"),
     ("Skill Cooldowns", ("skill", "cooldowns"), "sec"),
 )
+# Attack Power / Magic ATT also come as FLAT lines ('Attack Power +32'); those are not the
+# ones anyone cubes for and are ignored automatically because every option above is
+# defined by unit - a flat value never counts toward a % goal, in total or combo mode.
 # The tier squares beside each line are shown for information only; the target is
 # purely the numbered total for the picked stat, whatever tier the lines are.
 # After a cube, the loop does not read on a timer - it polls the box until the pixels
@@ -567,11 +572,19 @@ def _stat_words(name):
     return next((w for n, w, _u in POTENTIAL_STATS if n == name), None)
 
 
-def _line_is_stat(line, words):
-    """Does this OCR'd line belong to the stat with these match words? All
-    Stats counts as any of STR/DEX/INT/LUK."""
+def _stat_unit(name):
+    return next((u for n, _w, u in POTENTIAL_STATS if n == name), "%")
+
+
+def _line_is_stat(line, words, unit="%"):
+    """Does this OCR'd line belong to the stat with these match words, in
+    the right unit? A flat 'Attack Power +32' is not the % stat of the
+    same name. All Stats counts as any of STR/DEX/INT/LUK."""
     stat, value = line
     if value is None:
+        return False
+    m = POTENTIAL_VALUE_RE.fullmatch(value)
+    if not m or (m.group(3) or "") != unit:
         return False
     haystack = re.sub(r"\s+", " ", stat.lower())
     if all(w in haystack for w in words):
@@ -606,13 +619,13 @@ class ComboGoal:
     Boss Damage' means three lines each of which is one of those two."""
     def __init__(self, names):
         self.names = list(names)
-        self.words = [_stat_words(n) for n in self.names]
+        self.words = [(_stat_words(n), _stat_unit(n)) for n in self.names]
 
     def describe(self):
         return "3 lines of " + " / ".join(self.names)
 
     def _matching(self, lines):
-        return [any(_line_is_stat(line, w) for w in self.words) for line in lines]
+        return [any(_line_is_stat(line, w, u) for w, u in self.words) for line in lines]
 
     def check(self, lines, tiers):
         ok = self._matching(lines)
