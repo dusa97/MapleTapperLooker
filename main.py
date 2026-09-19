@@ -249,7 +249,7 @@ AUTOLOCATE_MIN_CONFIDENCE = 0.75    # cv2.TM_CCOEFF_NORMED score below this is t
 POTENTIAL_LABEL_PATH = Path(__file__).parent / "assets" / "reference" / "potential_label.png"
 POTENTIAL_BLOCK_DX_RATIO = 79 / 50
 POTENTIAL_BLOCK_DY_RATIO = 12 / 15
-POTENTIAL_BLOCK_W_RATIO  = 210 / 50
+POTENTIAL_BLOCK_W_RATIO  = 250 / 50   # 210 fit "Skill Cooldowns -2 sec" with room; longer names exist
 POTENTIAL_BLOCK_H_RATIO  = 70 / 15
 CUBES_REGION_FILE = _BASE_DIR / "last_cubes_region.json"
 CUBES_TARGET_FILE = _BASE_DIR / "last_cubes_target.json"
@@ -276,7 +276,8 @@ POTENTIAL_TIER_COLOURS = {"rare": "#66FFFF", "epic": "#BB77FF", "unique": "#FFCC
 # Words as well as digits here, so Tesseract keeps its full alphabet; the stat line text is
 # bright and desaturated on a dark card, so the Flames colour mask isolates it unchanged.
 POTENTIAL_OCR_CONFIG = r'--psm 6 -c tessedit_char_whitelist=+-0123456789%ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz: '
-POTENTIAL_LINE_RE = re.compile(r"^([A-Za-z][A-Za-z ]*?):?\s*([+-]\d+%?)$")
+POTENTIAL_LINE_RE = re.compile(r"^([A-Za-z][A-Za-z ]*?):?\s*([+-]\d+(?:%|[A-Za-z]+)?)$")
+POTENTIAL_VALUE_RE = re.compile(r"([+-])(\d+) ?(%|[A-Za-z]+)?")  # sign, number, unit ('' / '%' / 'sec')
 AUTOLOCATE_SCALES = np.linspace(0.5, 2.0, 31)   # search these template scales to handle different UI/DPI scaling
 # Both the BEFORE and AFTER panels show a "Combat Power Change" label (BEFORE's value is always 0), so
 # template matching finds two near-identical matches — the rightmost one is always the AFTER panel, which
@@ -445,9 +446,10 @@ def read_potential_lines(img):
             continue
         m = POTENTIAL_LINE_RE.match(raw.replace(" ", ""))
         if m:
-            # Tesseract drops the spaces ("MaxHP+120"); put one back before each capital run
+            # Tesseract drops the spaces ("MaxHP+120", "-2sec"); put them back
             stat = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", m.group(1))
-            out.append((stat, m.group(2)))
+            value = re.sub(r"(?<=\d)(?=[A-Za-z])", " ", m.group(2))
+            out.append((stat, value))
         else:
             out.append((raw, None))
     return out
@@ -511,10 +513,13 @@ def line_matches_target(line, target):
     haystack = re.sub(r"\s+", " ", stat.lower())
     if not all(w in haystack for w in words):
         return False
-    m = re.fullmatch(r"\+(\d+)(%?)", value)
+    m = POTENTIAL_VALUE_RE.fullmatch(value)
     if not m:
         return False
-    return int(m.group(1)) >= minimum and (m.group(2) == "%") == wants_pct
+    # Magnitude, so "Skill Cooldowns -2 sec" satisfies a target of "2 skill
+    # cooldowns" - for that stat more negative is better and the sign is the
+    # game's, not the user's.
+    return int(m.group(2)) >= minimum and ((m.group(3) or "") == "%") == wants_pct
 
 
 def total_potential_lines(lines):
@@ -524,12 +529,14 @@ def total_potential_lines(lines):
     insensitively with whitespace collapsed, so "Max HP" and "MAX HP" add."""
     totals = {}
     for stat, value in lines:
-        m = re.fullmatch(r"([+-])(\d+)(%?)", value or "")
+        m = POTENTIAL_VALUE_RE.fullmatch(value or "")
         if not m:
             continue
-        key = (re.sub(r"\s+", " ", stat.strip().upper()), m.group(3))
+        unit = m.group(3) or ""
+        key = (re.sub(r"\s+", " ", stat.strip().upper()), unit)
         totals[key] = totals.get(key, 0) + int(m.group(1) + m.group(2))
-    return [(stat, f"{n:+d}{pct}") for (stat, pct), n in totals.items()]
+    return [(stat, f"{n:+d}{unit if unit == '%' else (' ' + unit if unit else '')}")
+            for (stat, unit), n in totals.items()]
 
 
 def _read_app_version() -> str:
