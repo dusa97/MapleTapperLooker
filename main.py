@@ -510,6 +510,21 @@ def line_matches_target(line, target):
     return int(m.group(1)) >= minimum and (m.group(2) == "%") == wants_pct
 
 
+def total_potential_lines(lines):
+    """Sum the read lines by stat, keeping % and flat values apart, in first-
+    seen order: [("STR","+12%"),("STR","+9%"),("LUK","+9%")] ->
+    [("STR","+21%"),("LUK","+9%")]. Stat names are compared case-
+    insensitively with whitespace collapsed, so "Max HP" and "MAX HP" add."""
+    totals = {}
+    for stat, value in lines:
+        m = re.fullmatch(r"([+-])(\d+)(%?)", value or "")
+        if not m:
+            continue
+        key = (re.sub(r"\s+", " ", stat.strip().upper()), m.group(3))
+        totals[key] = totals.get(key, 0) + int(m.group(1) + m.group(2))
+    return [(stat, f"{n:+d}{pct}") for (stat, pct), n in totals.items()]
+
+
 def _read_app_version() -> str:
     """Release tag baked in by the release workflow (it overwrites
     assets/version.txt with the tag before building); 'dev' when running
@@ -2512,6 +2527,14 @@ class CubesApp:
         self._status = tk.Label(card, text="", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9), anchor="w")
         self._status.pack(fill="x", padx=14, pady=(4, 10))
 
+        total = OverlayApp._card(outer)
+        total.pack(fill="x", pady=(12, 0))
+        tk.Label(total, text="TOTAL", fg=UI_MUTED, bg=UI_SURFACE,
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=14, pady=(10, 2))
+        self._total_label = tk.Label(total, text="-", fg=UI_TEXT, bg=UI_SURFACE,
+                                     font=("Segoe UI", 12, "bold"), anchor="w", justify="left")
+        self._total_label.pack(fill="x", padx=14, pady=(0, 10))
+
         goal = OverlayApp._card(outer)
         goal.pack(fill="x", pady=(12, 0))
         tk.Label(goal, text="LOOKING FOR", fg=UI_MUTED, bg=UI_SURFACE,
@@ -2536,6 +2559,8 @@ class CubesApp:
         OverlayApp._button(row, "Auto-locate (F7)", self._auto_locate, UI_BUTTON, UI_TEXT).pack(
             side="left", expand=True, fill="x", padx=(0, 6))
         OverlayApp._button(row, "Choose region (F8)", self._start_selection, UI_BUTTON, UI_TEXT).pack(
+            side="left", expand=True, fill="x", padx=(0, 6))
+        OverlayApp._button(row, "Read", self._read, UI_BUTTON, UI_TEXT).pack(
             side="left", expand=True, fill="x", padx=(0, 6))
         self._loop_button = OverlayApp._button(row, "Start (F9)", self._toggle_loop, UI_PRIMARY, UI_BG)
         self._loop_button.pack(side="left", expand=True, fill="x")
@@ -2701,6 +2726,8 @@ class CubesApp:
             else:
                 lbl.config(text=f"{entry[0]}  {entry[1]}", fg=UI_TEXT)
         good = [e for e in self.lines if e[1] is not None]
+        totals = total_potential_lines(good)
+        self._total_label.config(text="\n".join(f"{stat}  {value}" for stat, value in totals) if totals else "-")
         self._set_status(f"Read {len(good)} line(s)." if good else "Nothing readable in the box.")
 
     # ---- cube loop -------------------------------------------------------------
