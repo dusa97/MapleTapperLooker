@@ -7,6 +7,13 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_all
 
 capture_datas, capture_binaries, capture_imports = collect_all('windows_capture')
+# collect_all() silently returns nothing when the package isn't installed - which
+# shipped a build whose Discord alerts always said "Game image unavailable" (the
+# capture helper threw ModuleNotFoundError inside a bare except). Fail the build
+# instead: a release without screenshots is a bug, not a variant.
+if not capture_binaries and not capture_datas:
+    raise SystemExit("windows_capture is not installed in this environment - run "
+                     "`pip install -r requirements.txt` before building (Discord alert images need it).")
 
 # Every exe must say which build it is, wherever it was built. The release
 # workflow writes its tag (v1.<run>.0) into assets/version.txt before calling
