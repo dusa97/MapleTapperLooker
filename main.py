@@ -3067,16 +3067,14 @@ class CubesApp:
             lbl.pack(side="left", fill="x", expand=True)
             self._line_labels.append(lbl)
             self._line_dots.append((dot, dot_id))
+        # The totals sit in the same card, under the three lines.
+        tk.Label(card, text="TOTAL", fg=UI_MUTED, bg=UI_SURFACE,
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=14, pady=(8, 2))
+        self._total_label = tk.Label(card, text="-", fg=UI_TEXT, bg=UI_SURFACE,
+                                     font=("Segoe UI", 12, "bold"), anchor="w", justify="left")
+        self._total_label.pack(fill="x", padx=14)
         self._status = tk.Label(card, text="", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9), anchor="w")
         self._status.pack(fill="x", padx=14, pady=(4, 10))
-
-        total = OverlayApp._card(outer)
-        total.pack(fill="x", pady=(12, 0))
-        tk.Label(total, text="TOTAL", fg=UI_MUTED, bg=UI_SURFACE,
-                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=14, pady=(10, 2))
-        self._total_label = tk.Label(total, text="-", fg=UI_TEXT, bg=UI_SURFACE,
-                                     font=("Segoe UI", 12, "bold"), anchor="w", justify="left")
-        self._total_label.pack(fill="x", padx=14, pady=(0, 10))
 
         cube = OverlayApp._card(outer)
         cube.pack(fill="x", pady=(12, 0))
