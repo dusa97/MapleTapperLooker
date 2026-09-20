@@ -40,6 +40,7 @@ a = Analysis(
     datas=[('assets/logo.png', 'assets'), ('assets/cube_glowing.png', 'assets'), ('assets/cube_bright.png', 'assets'),
            ('assets/reference/combat_power_label.png', 'assets/reference'),
            ('assets/reference/potential_label.png', 'assets/reference'),
+           ('assets/reference/remaining_label.png', 'assets/reference'),
            ('assets/digit_templates.npz', 'assets'),
            (str(_stamped_version), 'assets')] + capture_datas,
     hiddenimports=capture_imports,

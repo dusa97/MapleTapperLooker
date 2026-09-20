@@ -248,6 +248,10 @@ AUTOLOCATE_MIN_CONFIDENCE = 0.75    # cv2.TM_CCOEFF_NORMED score below this is t
 # measured against the label's own size so they hold at any UI scale: label at (11,294)
 # 50x15, the 3-line block at (90,306) 210x70 in the reference screenshot.
 POTENTIAL_LABEL_PATH = Path(__file__).parent / "assets" / "reference" / "potential_label.png"
+# "Remaining" text above the cube-count pill in the Bright reset dialog. The pill sits at a
+# different place on Reset x1 and Reset x3, but always straight under this label.
+REMAINING_LABEL_PATH = Path(__file__).parent / "assets" / "reference" / "remaining_label.png"
+REMAINING_COUNT_BOX = (0.0, 3.5, 1.0, 1.6)      # (dx, dy, w, h) in "Remaining" label units
 POTENTIAL_BLOCK_DX_RATIO = 79 / 50
 POTENTIAL_BLOCK_DY_RATIO = 12 / 15
 POTENTIAL_BLOCK_W_RATIO  = 250 / 50   # 210 fit "Skill Cooldowns -2 sec" with room; longer names exist
@@ -337,7 +341,7 @@ class CubeProfile:
         self.label_path = label_path
         self.pick_label = pick_label          # "only": one label expected; "rightmost": AFTER card of a BEFORE/AFTER pair
         self.cubes_left = cubes_left          # "highlight": cyan slot in the material row; "count": OCR a remaining-count pill
-        self.count_box = count_box            # (dx, dy, w, h) ratios of the label for the count pill, when cubes_left == "count"
+        self.count_box = count_box            # unused since the pill is anchored to the "Remaining" label (see REMAINING_COUNT_BOX)
         self.commit_on_match = commit_on_match  # False: the game shows the result before you commit, so a match means STOP, don't press
         self.block_dx, self.block_dy, self.block_w, self.block_h = block
         self.icon_x, self.icon_y, self.line_step = icon_x, icon_y, line_step
@@ -3184,6 +3188,7 @@ class CubesApp:
         # Bright 'Reset x3' shows three AFTER cards: every one is read before the next
         # roll. panels = one box per card; region = their union (the overlay box).
         self.panels = self._load_panels() or ([tuple(self.region)] if self.region else [])
+        self.count_box = self._load_box("count")      # the Remaining pill, located by F7 (Bright)
         self.profile = active_cube_profile()
         self.lines = []
         self._running = True
@@ -3247,26 +3252,41 @@ class CubesApp:
         self._cube_note.pack(side="left")
         tk.Label(card, text="POTENTIAL", fg=UI_MUTED, bg=UI_SURFACE,
                  font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=14, pady=(0, 2))
-        # Each line: a small square in the tier colour (as in the game), then the text.
-        self._line_labels, self._line_dots = [], []
-        for _ in range(3):
-            row = tk.Frame(card, bg=UI_SURFACE)
-            row.pack(fill="x", padx=14, pady=(0, 2))
-            dot = tk.Canvas(row, width=12, height=12, bg=UI_SURFACE, highlightthickness=0)
-            dot.pack(side="left", padx=(0, 10))
-            dot_id = dot.create_rectangle(1, 1, 11, 11, fill=UI_SURFACE, outline=UI_BORDER)
-            lbl = tk.Label(row, text="-", fg=UI_TEXT, bg=UI_SURFACE, font=("Segoe UI", 13, "bold"), anchor="w")
-            lbl.pack(side="left", fill="x", expand=True)
-            self._line_labels.append(lbl)
-            self._line_dots.append((dot, dot_id))
-        # The totals sit in the same card, under the three lines.
-        tk.Label(card, text="TOTAL", fg=UI_MUTED, bg=UI_SURFACE,
-                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=14, pady=(8, 2))
-        self._total_label = tk.Label(card, text="-", fg=UI_TEXT, bg=UI_SURFACE,
-                                     font=("Segoe UI", 12, "bold"), anchor="w", justify="left")
-        self._total_label.pack(fill="x", padx=14)
+        # One column per AFTER card (Bright Reset x3 shows three); only as many
+        # as F7 found are visible. Each: header, three lines with a tier square,
+        # and that card's own totals.
+        cols_frame = tk.Frame(card, bg=UI_SURFACE)
+        cols_frame.pack(fill="x", padx=14)
+        self._cols_frame = cols_frame
+        self._cols = []
+        for k in range(3):
+            col = tk.Frame(cols_frame, bg=UI_SURFACE)
+            head = tk.Label(col, text=f"AFTER #{k + 1}", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9, "bold"),
+                            anchor="w")
+            head.pack(fill="x", pady=(0, 2))
+            lines, dots = [], []
+            for _ in range(3):
+                row = tk.Frame(col, bg=UI_SURFACE)
+                row.pack(fill="x", pady=(0, 2))
+                dot = tk.Canvas(row, width=12, height=12, bg=UI_SURFACE, highlightthickness=0)
+                dot.pack(side="left", padx=(0, 8))
+                dot_id = dot.create_rectangle(1, 1, 11, 11, fill=UI_SURFACE, outline=UI_BORDER)
+                lbl = tk.Label(row, text="-", fg=UI_TEXT, bg=UI_SURFACE, font=("Segoe UI", 13, "bold"), anchor="w")
+                lbl.pack(side="left", fill="x", expand=True)
+                lines.append(lbl)
+                dots.append((dot, dot_id))
+            tk.Label(col, text="TOTAL", fg=UI_MUTED, bg=UI_SURFACE,
+                     font=("Segoe UI", 9, "bold"), anchor="w").pack(fill="x", pady=(8, 2))
+            total = tk.Label(col, text="-", fg=UI_TEXT, bg=UI_SURFACE, font=("Segoe UI", 12, "bold"),
+                             anchor="w", justify="left")
+            total.pack(fill="x")
+            self._cols.append({"frame": col, "head": head, "lines": lines, "dots": dots, "total": total})
+        self._line_labels, self._line_dots = self._cols[0]["lines"], self._cols[0]["dots"]
+        self._total_label = self._cols[0]["total"]
         self._status = tk.Label(card, text="", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9), anchor="w")
         self._status.pack(fill="x", padx=14, pady=(4, 10))
+        self.results = []
+        self._layout_columns()
 
         goal = OverlayApp._card(outer)
         goal.pack(fill="x", pady=(12, 0))
@@ -3591,6 +3611,14 @@ class CubesApp:
             return None
 
     @staticmethod
+    def _load_box(key):
+        try:
+            r = json.loads(CUBES_REGION_FILE.read_text(encoding="utf-8")).get(key)
+            return tuple(int(v) for v in r) if r and len(r) == 4 else None
+        except Exception:
+            return None
+
+    @staticmethod
     def _load_panels():
         try:
             ps = json.loads(CUBES_REGION_FILE.read_text(encoding="utf-8")).get("panels")
@@ -3610,6 +3638,7 @@ class CubesApp:
         try:
             CUBES_REGION_FILE.write_text(json.dumps({"region": list(self.region) if self.region else None,
                                                      "panels": [list(p) for p in self.panels],
+                                                     "count": list(self.count_box) if self.count_box else None,
                                                      "label": list(self.label_box) if self.label_box else None}),
                                          encoding="utf-8")
         except Exception:
@@ -3620,20 +3649,19 @@ class CubesApp:
         selected cube type ran out. True if a highlight is there, and also
         True when we can't check (box placed by hand with F8, so no label
         position is known): never stop a run on a guess."""
-        if not self.label_box:
-            return True
         if self.profile.cubes_left == "count":
-            lx, ly, sw, sh = self.label_box
-            dx, dy, w, h = self.profile.count_box
-            box = (round(lx + dx * sw), round(ly + dy * sh), round(w * sw), round(h * sh))
+            if not self.count_box:
+                return True
             try:
-                img = _grab(box)
+                img = _grab(self.count_box)
                 big = img.resize((img.width * 4, img.height * 4), Image.LANCZOS)
                 txt = pytesseract.image_to_string(big, config="--psm 7 -c tessedit_char_whitelist=0123456789").strip()
             except Exception:
                 return True
             # Unreadable = don't stop on a guess; a clean "0" = out of cubes.
             return not (txt.isdigit() and int(txt) == 0)
+        if not self.label_box:
+            return True
         strip = self.profile.row_for(self.label_box)
         try:
             hsv = np.array(_grab(strip).convert("HSV")).astype(int)
@@ -3731,6 +3759,8 @@ class CubesApp:
         if region is not None:
             self.region = tuple(int(v) for v in region)
             self.panels = [self.region]
+            self.results = []
+            self._layout_columns()
             self.label_box = None      # hand-placed: the cube-row check can't locate the row, so it stays off
             self._save_region()
             self._set_status(f"Box set: {self.region}")
@@ -3759,7 +3789,15 @@ class CubesApp:
         if self.profile.pick_label == "rightmost":
             # Reset dialog: BEFORE is the leftmost label; every other one is an AFTER
             # card (1 on Reset x1, 3 on Reset x3). All of them get read each roll.
-            afters = sorted(peaks)[1:] or peaks
+            found = sorted(peaks)
+            if len(found) >= 2:
+                # The card the cursor is on is highlighted and its label scores too low
+                # to match, so fill the gaps: cards are evenly spaced, so walk from the
+                # leftmost label in steps of the smallest gap seen.
+                step = min(b[0] - a[0] for a, b in zip(found, found[1:]))
+                count = round((found[-1][0] - found[0][0]) / step) + 1
+                found = [(found[0][0] + k * step, found[0][1]) for k in range(count)]
+            afters = found[1:] or found
         else:
             afters = peaks[:1]
         x, y = afters[-1]
@@ -3767,10 +3805,42 @@ class CubesApp:
         self.panels = [tuple(self.profile.block_for((desktop["left"] + px, desktop["top"] + py), (sh, sw)))
                        for px, py in afters]
         self.region = self._union(self.panels)
+        self.results = []
+        self.count_box = None
+        if self.profile.cubes_left == "count":
+            try:
+                rbest, rpeaks, (rh, rw) = locate_label(full_gray, self._remaining_gray(), max_peaks=1)
+                if rpeaks:
+                    rx, ry = rpeaks[0]
+                    dx, dy, w, h = REMAINING_COUNT_BOX
+                    self.count_box = (desktop["left"] + rx + round(dx * rw), desktop["top"] + ry + round(dy * rh),
+                                      round(w * rw), round(h * rh))
+            except Exception:
+                pass
         self._save_region()
         self._sync_overlay()
+        try:        # what F7 saw: the labels it matched and the boxes it derived (for support)
+            dbg = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+            draw = ImageDraw.Draw(dbg)
+            for px, py in peaks:
+                draw.rectangle((px, py, px + sw, py + sh), outline="yellow", width=2)
+            for px, py, pw, ph in self.panels + ([self.count_box] if self.count_box else []):
+                draw.rectangle((px - desktop["left"], py - desktop["top"], px - desktop["left"] + pw,
+                                py - desktop["top"] + ph), outline="red", width=2)
+            DEBUG_CAPTURE_DIR.mkdir(exist_ok=True)
+            dbg.save(DEBUG_CAPTURE_DIR / "cubes_autolocate.png")
+        except Exception:
+            pass
         self._set_status(f"Found {len(self.panels)} Potential panel(s) (match {best:.2f}). Press F9 to read.")
         self._read()
+
+    _remaining_cache = None
+
+    @classmethod
+    def _remaining_gray(cls):
+        if cls._remaining_cache is None:
+            cls._remaining_cache = np.array(Image.open(REMAINING_LABEL_PATH).convert("L"))
+        return cls._remaining_cache
 
     @staticmethod
     def _union(boxes):
@@ -3807,6 +3877,7 @@ class CubesApp:
         try:
             img = _grab(self.region)
             results = self._read_panels(img)
+            self.results = results
             self._shown_panel = next((i for i, (t, l) in enumerate(results)
                                       if self.target is not None and self.target.check(l, t)), 0)
             self.tiers, self.lines = results[self._shown_panel]
@@ -3817,25 +3888,50 @@ class CubesApp:
             self._sync_overlay()
         self._show_lines()
 
+    def _layout_columns(self):
+        """Show one column per panel: a single card gets the full width and
+        the big font; three cards sit side by side in a smaller font."""
+        n = max(1, min(3, len(self.panels)))
+        multi = n > 1
+        wrap = 140 if multi else 450          # equal thirds of the card, or the full width
+        for k, col in enumerate(self._cols):
+            col["frame"].grid_forget()
+            self._cols_frame.columnconfigure(k, weight=1 if k < n else 0, uniform="after")
+            if k < n:
+                col["frame"].grid(row=0, column=k, sticky="nsew", padx=(0, 10 if k < n - 1 else 0))
+            col["head"].pack_forget()
+            if multi:
+                col["head"].pack(fill="x", pady=(0, 2), before=col["lines"][0].master)
+            for lbl in col["lines"]:
+                lbl.config(font=("Segoe UI", 10 if multi else 13, "bold"), wraplength=wrap - 20)
+            col["total"].config(font=("Segoe UI", 10 if multi else 12, "bold"), wraplength=wrap)
+
     def _show_lines(self):
-        for lbl, (dot, dot_id), entry, tier in zip(self._line_labels, self._line_dots,
-                                                    self.lines + [None] * 3, self.tiers + [None] * 3):
-            colour = POTENTIAL_TIER_COLOURS.get(tier)
-            dot.itemconfig(dot_id, fill=colour or UI_SURFACE, outline=colour or UI_BORDER)
-            if entry is None:
-                lbl.config(text="-", fg=UI_MUTED)
-            elif entry[1] is None:
-                lbl.config(text=f"? {entry[0]}", fg=UI_MUTED)
-            else:
-                lbl.config(text=f"{entry[0]}  {entry[1]}", fg=UI_TEXT)
-        good = [e for e in self.lines if e[1] is not None]
-        totals = total_potential_lines(good)
-        text = "\n".join(f"{stat}  {value}" for stat, value in totals) if totals else "-"
-        if self.target is not None and good:
-            text += "\n\u2192 " + self.target.progress(self.lines, self.tiers)
-        self._total_label.config(text=text)
+        self._layout_columns()
+        results = self.results or [(self.tiers, self.lines)]
+        good_total = 0
+        for k, col in enumerate(self._cols[:max(1, len(self.panels))]):
+            tiers, lines = results[k] if k < len(results) else ([None] * 3, [])
+            for lbl, (dot, dot_id), entry, tier in zip(col["lines"], col["dots"], lines + [None] * 3, tiers + [None] * 3):
+                colour = POTENTIAL_TIER_COLOURS.get(tier)
+                dot.itemconfig(dot_id, fill=colour or UI_SURFACE, outline=colour or UI_BORDER)
+                if entry is None:
+                    lbl.config(text="-", fg=UI_MUTED)
+                elif entry[1] is None:
+                    lbl.config(text=f"? {entry[0]}", fg=UI_MUTED)
+                else:
+                    lbl.config(text=f"{entry[0]}  {entry[1]}", fg=UI_TEXT)
+            good = [e for e in lines if e[1] is not None]
+            good_total += len(good)
+            totals = total_potential_lines(good)
+            text = "\n".join(f"{stat}  {value}" for stat, value in totals) if totals else "-"
+            matched = self.target is not None and good and self.target.check(lines, tiers)
+            if self.target is not None and good and len(self.panels) <= 1:   # progress line only when there is room
+                text += "\n\u2192 " + self.target.progress(lines, tiers)
+            col["total"].config(text=text, fg=UI_ACCENT if matched else UI_TEXT)
+            col["head"].config(fg=UI_ACCENT if matched else UI_MUTED)
         which = f" (AFTER #{self._shown_panel + 1} of {len(self.panels)})" if len(self.panels) > 1 else ""
-        self._set_status(f"Read {len(good)} line(s){which}." if good else "Nothing readable in the box.")
+        self._set_status(f"Read {good_total} line(s){which}." if good_total else "Nothing readable in the box.")
 
     # ---- cube loop -------------------------------------------------------------
     def _toggle_beep(self):
@@ -3954,8 +4050,9 @@ class CubesApp:
                     break
             tiers, lines = results[which]
             self._shown_panel = which
-            self._requests.put(lambda tiers=tiers, lines=lines: (setattr(self, "tiers", tiers),
-                                                                 setattr(self, "lines", lines), self._show_lines()))
+            self._requests.put(lambda tiers=tiers, lines=lines, results=results: (
+                setattr(self, "tiers", tiers), setattr(self, "lines", lines),
+                setattr(self, "results", results), self._show_lines()))
             if hit is not None:
                 self._requests.put(lambda hit=hit: self._on_hit(hit))
                 return
