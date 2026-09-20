@@ -3035,6 +3035,83 @@ class MouseLock:
         self._rect = None
 
 
+def mix_colour(a, b, t):
+    """Blend two '#RRGGBB' colours: t=0 -> a, t=1 -> b."""
+    ca, cb = [int(a[i:i + 2], 16) for i in (1, 3, 5)], [int(b[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(f"{round(x + (y - x) * t):02x}" for x, y in zip(ca, cb))
+
+
+class CubeToggle(tk.Canvas):
+    """A slide switch for the cube type, after the uiverse 'holo toggle': a
+    pill track with the cube pictures at both ends, a glowing thumb that
+    slides to the chosen side, and the track/thumb glow in that cube's
+    colour (cyan for Glowing, magenta for Bright)."""
+    W, H, PAD = 150, 44, 4
+    COLOURS = {"glowing": "#50C4D9", "bright": "#C43FCB"}
+
+    def __init__(self, master, variable, keys=("glowing", "bright")):
+        super().__init__(master, width=self.W + 2 * 46, height=self.H, bg=UI_SURFACE, highlightthickness=0,
+                         cursor="hand2")
+        self.var, self.keys = variable, keys
+        self._icons = {}
+        for key in keys:
+            with Image.open(Path(__file__).parent / "assets" / f"cube_{key}.png") as im:
+                im = im.convert("RGBA").resize((40, 38), Image.Resampling.NEAREST)
+                dim = im.copy()
+                dim.putalpha(dim.getchannel("A").point(lambda a: a * 0.35))
+                bg = Image.new("RGBA", im.size, UI_SURFACE)
+                self._icons[key] = (ImageTk.PhotoImage(Image.alpha_composite(bg, im), master=master),
+                                    ImageTk.PhotoImage(Image.alpha_composite(bg, dim), master=master))
+        x0 = 46
+        self._x0 = x0
+        self._track = self.create_rounded(x0, self.PAD, x0 + self.W, self.H - self.PAD, 18, fill=UI_BG, outline=UI_BORDER)
+        self._glow = [self.create_oval(0, 0, 0, 0, fill="", outline="", width=0) for _ in range(3)]
+        self._thumb = self.create_oval(0, 0, 0, 0, fill=UI_TEXT, outline="")
+        self._core = self.create_oval(0, 0, 0, 0, fill=UI_BG, outline="")
+        self._label = self.create_text(0, self.H / 2, text="", fill=UI_TEXT, font=("Segoe UI", 9, "bold"))
+        self._pics = [self.create_image(23, self.H / 2, image=self._icons[keys[0]][0]),
+                      self.create_image(x0 + self.W + 23, self.H / 2, image=self._icons[keys[1]][0])]
+        self._pos = 1.0 if variable.get() == keys[1] else 0.0
+        self._draw()
+        self.bind("<Button-1>", lambda e: variable.set(keys[1] if variable.get() == keys[0] else keys[0]))
+        variable.trace_add("write", lambda *_: self._animate())
+
+    def create_rounded(self, x1, y1, x2, y2, r, **kw):
+        pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2, x2 - r, y2,
+               x1 + r, y2, x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+        return self.create_polygon(pts, smooth=True, **kw)
+
+    def _draw(self):
+        on = self.var.get() == self.keys[1]
+        colour = self.COLOURS[self.keys[1] if on else self.keys[0]]
+        r = (self.H - 2 * self.PAD) / 2 - 3
+        cx = self._x0 + self.PAD + 3 + r + self._pos * (self.W - 2 * (self.PAD + 3 + r))
+        cy = self.H / 2
+        self.itemconfig(self._track, outline=colour)
+        for i, item in enumerate(self._glow):        # soft halo: filled discs, dimmer as they grow
+            g = r + 3 + 3 * i
+            self.coords(item, cx - g, cy - g, cx + g, cy + g)
+            self.itemconfig(item, fill=mix_colour(colour, UI_BG, 0.55 + 0.15 * i))
+        self.coords(self._thumb, cx - r, cy - r, cx + r, cy + r)
+        self.itemconfig(self._thumb, fill=colour)
+        self.coords(self._core, cx - r / 2, cy - r / 2, cx + r / 2, cy + r / 2)
+        # the active cube's name sits on the free side of the track
+        self.coords(self._label, self._x0 + self.W * (0.36 if on else 0.64), cy)
+        self.itemconfig(self._label, text=self.keys[1 if on else 0].upper(), fill=colour)
+        for i, item in enumerate(self._pics):
+            self.itemconfig(item, image=self._icons[self.keys[i]][0 if (i == 1) == on else 1])
+        self.tag_raise(self._thumb); self.tag_raise(self._core)
+
+    def _animate(self, step=0):
+        target = 1.0 if self.var.get() == self.keys[1] else 0.0
+        self._pos += (target - self._pos) * 0.45
+        if abs(target - self._pos) < 0.02 or step > 12:
+            self._pos = target
+        self._draw()
+        if self._pos != target:
+            self.after(16, self._animate, step + 1)
+
+
 def build_action_bar(bottom, buttons, primary, on_hide_box):
     """The controls pinned under a tab, Cubes-style, used by Flames too so
     the tabs match: one full-width row of buttons with the primary action
@@ -3160,10 +3237,8 @@ class CubesApp:
         tk.Label(cube_row, text="CUBE TYPE", fg=UI_MUTED, bg=UI_SURFACE,
                  font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 14))
         self._cube_var = tk.StringVar(value=next((k for k, v in CUBE_PROFILES.items() if v is self.profile), CUBE_TYPE_DEFAULT))
-        for key, prof in CUBE_PROFILES.items():
-            tk.Radiobutton(cube_row, text=prof.name, value=key, variable=self._cube_var, bg=UI_SURFACE, fg=UI_TEXT,
-                           selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
-                           highlightthickness=0, font=("Segoe UI", 10, "bold")).pack(side="left", padx=(0, 12))
+        self._cube_toggle = CubeToggle(cube_row, self._cube_var, tuple(CUBE_PROFILES))
+        self._cube_toggle.pack(side="left", padx=(0, 12))
         self._cube_note = tk.Label(cube_row, text="", fg=UI_PRIMARY, bg=UI_SURFACE, font=("Segoe UI", 9))
         self._cube_note.pack(side="left")
         tk.Label(card, text="POTENTIAL", fg=UI_MUTED, bg=UI_SURFACE,
@@ -3284,17 +3359,34 @@ class CubesApp:
         rows_box = tk.Frame(perstat, bg=UI_SURFACE)
         rows_box.pack(fill="x")
 
+        def free_stats(except_var=None):
+            taken = {v.get() for _r, v, _c in self._perstat_rows if v is not except_var}
+            return [n for n in stat_names if n not in taken]
+
+        def refresh_menus():
+            # A stat picked in one row is removed from every other row's list.
+            for _row, stat_var, _count in self._perstat_rows:
+                menu = getattr(stat_var, "_menu", None)
+                if menu is None:
+                    continue
+                menu.delete(0, "end")
+                for name in free_stats(stat_var):
+                    menu.add_command(label=name, command=lambda n=name, v=stat_var: v.set(n))
+        self._refresh_perstat_menus = refresh_menus
+
         def add_row(stat=None, count="1"):
             if len(self._perstat_rows) >= 3:
                 return
             row = tk.Frame(rows_box, bg=UI_SURFACE)
             row.pack(fill="x", pady=2)
-            stat_var = tk.StringVar(value=stat if stat in stat_names else stat_names[0])
+            free = free_stats()
+            stat_var = tk.StringVar(value=stat if stat in free else (free[0] if free else stat_names[0]))
             count_var = tk.StringVar(value=count if count in ("1", "2", "3") else "1")
             menu = ttk.OptionMenu(row, stat_var, stat_var.get(), *stat_names, style="Cubes.TMenubutton")
             menu.pack(side="left", fill="x", expand=True)
             menu["menu"].config(bg=UI_SURFACE, fg=UI_TEXT, activebackground=UI_BUTTON, activeforeground=UI_TEXT,
                                 font=("Segoe UI", 10), bd=0)
+            stat_var._menu = menu["menu"]
             tk.Label(row, text="x", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 11)).pack(side="left", padx=8)
             for n in ("1", "2", "3"):
                 tk.Radiobutton(row, text=n, value=n, variable=count_var, bg=UI_SURFACE, fg=UI_TEXT, selectcolor=UI_BG,
@@ -3562,8 +3654,9 @@ class CubesApp:
         raw = self._min_var.get().strip().rstrip("%")
         modes = [k for k, v in self._mode_vars.items() if v.get()]
         chosen = [n for n, v in self._combo_vars.items() if v.get()]
+        self._refresh_perstat_menus()
         needs = {}
-        for _row, stat_var, count_var in self._perstat_rows:      # same stat twice adds up
+        for _row, stat_var, count_var in self._perstat_rows:
             needs[stat_var.get()] = needs.get(stat_var.get(), 0) + int(count_var.get())
         self._add_row_button.config(state="normal" if len(self._perstat_rows) < 3 else "disabled")
         frames = {"total": self._goal_row, "combo": self._combo_frame, "perstat": self._perstat_frame}
