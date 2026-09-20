@@ -1725,7 +1725,7 @@ class OverlayApp:
         self.enter_spam_enabled = enter_spam
         self.enter_hotkey       = enter_hotkey
         self._reads             = 0            # OCR reads completed; the input thread waits on it
-        self.resets             = 0            # press sequences sent since the last F9 start
+        self.resets             = 0            # box changes (= resets seen) since the last F9 start
         self.enter_interval     = enter_interval
         self.click_interval     = click_interval
         self.enter_on           = False
@@ -2170,7 +2170,7 @@ class OverlayApp:
         self.enter_on = value
         self._activation += 1
         if value:
-            self.resets = 0                       # press sequences sent this activation
+            self.resets = 0                       # resets seen this activation
             previous = getattr(self, "_activation_target", None)
             if previous is not None and hasattr(previous, "close"):
                 previous.close()
@@ -2265,7 +2265,6 @@ class OverlayApp:
                     continue
                 self._reassert_mouse_lock()
                 before = np.asarray(_grab(tuple(self.region), sct).convert("L"), dtype=np.int16)
-                self.resets += 1
                 pydirectinput.click()
                 for _ in range(CUBES_SEQUENCE_ENTERS):
                     time.sleep(self._jittered(CUBES_PRESS_GAP))
@@ -2288,6 +2287,11 @@ class OverlayApp:
                     elif diff < CUBES_CHANGE_FRAC:
                         break                           # changed and now still
                     prev = cur
+                # Count resets by what happened on screen, not by sequences sent: when the
+                # game is still animating, a sequence lands on nothing and the next one
+                # does the work - counting sends reported about double the real number.
+                if changed:
+                    self.resets += 1
                 # Let the OCR thread finish one read of the settled frame before pressing again.
                 reads, deadline = self._reads, time.perf_counter() + FLAMES_READ_WAIT
                 while active() and self._reads == reads and time.perf_counter() < deadline:
