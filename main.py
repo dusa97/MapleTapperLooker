@@ -283,8 +283,10 @@ CUBES_CHANGE_POLL   = 0.03   # seconds between cheap pixel-difference checks whi
 CUBES_CHANGE_FRAC   = 0.004  # fraction of pixels that must differ to count as "the panel changed"
 CUBES_CHANGE_TIMEOUT = 3.0   # give up waiting after this long (no cubes left, dialog closed, ...)
 CUBES_SETTLE_MAX     = 0.5   # after the first changed frame, wait up to this long for the redraw to finish
-CUBES_ENTER_INTERVAL = 0.08  # Cubes spam cadence - twice Flames' rate (0.16 / 0.24); the read pause
-CUBES_CLICK_INTERVAL = 0.12  # between rolls is where the time goes, not the presses themselves
+# One cube is exactly one fixed input sequence - left click, Enter, Enter - with a short gap
+# between presses so the game registers each. No continuous spam: a fixed sequence can't
+# land a press mid-read, so there is nothing to freeze and no race with the change detector.
+CUBES_PRESS_GAP = 0.05       # seconds between the presses of one sequence (jittered +/-30%)
 # The material row under the panel: the cube type in use sits on a cyan-highlighted slot
 # (rgb ~(80,197,220)), 38x38 px, always 192 px below the "Potential" label, sliding
 # sideways to whichever slot is selected. When that cube type runs out the game
@@ -2822,7 +2824,6 @@ class CubesApp:
         self._requests = queue.Queue()
         self.box_visible = True           # Hide box: purely visual, reads still use self.region
         self.looping = False              # F9: cube -> read -> check, until the target shows up
-        self.spamming = False             # set by the watch thread; the spam thread presses only while True
         self.target = None                # parsed by parse_potential_target
         self.beep_enabled = True
         self.tiers = [None, None, None]   # per line, see read_potential_tiers
@@ -2988,8 +2989,8 @@ class CubesApp:
         self._box_button = OverlayApp._button(row2, "Hide box", self._toggle_box, UI_BUTTON, UI_TEXT)
         self._box_button.pack(side="left")
         tk.Label(outer, text="F7 finds the Potential panel and boxes its three lines (F8 draws the box by hand). "
-                             "F9 starts cubing: Enter + click, wait for the new lines, read them, stop with a beep "
-                             "once the total for your stat reaches the number. F9 again stops. F10 mutes the beep.",
+                             "F9 starts cubing: click, Enter, Enter, wait for the new lines, read them, stop with a "
+                             "beep once your goal is met. F9 again stops. F10 mutes the beep.",
                  fg=UI_MUTED, bg=UI_BG, font=("Segoe UI", 9), wraplength=460,
                  justify="left").pack(anchor="w", pady=(10, 0))
         self._parse_target()
@@ -3345,44 +3346,26 @@ class CubesApp:
         self.overlay.withdraw()          # the box must not be in the crops the loop takes
         self.root.update_idletasks()     # ...so make sure it is actually gone before the first grab
         self._mouse.lock()
-        self.spamming = False
         self._loop_thread = threading.Thread(target=self._cube_loop, daemon=True, name="cube-loop")
         self._loop_thread.start()
-        threading.Thread(target=self._spam_loop, daemon=True, name="cube-spam").start()
         self._set_status(f"Cubing until {self._describe(self.target)} ...")
 
     def _stop_loop(self, message):
         self.looping = False
-        self.spamming = False
         self._mouse.unlock()
         self._loop_button.config(text="Start (F9)")
         self._sync_overlay()
         self._set_status(message)
 
-    def _spam_loop(self):
-        """Flames' cadence: Enter and left-click on their own jittered
-        intervals, continuously, whenever self.spamming is set. The watch
-        thread clears the flag the instant the panel changes and sets it
-        again after a non-matching read - so the game gets as many presses
-        as it needs to get through its prompts, and none while we read."""
-        last_enter = last_click = last_lock = 0.0
-        next_enter = OverlayApp._jittered(CUBES_ENTER_INTERVAL)
-        next_click = OverlayApp._jittered(CUBES_CLICK_INTERVAL)
-        while self.looping and self._running:
-            if self.spamming:
-                now = time.perf_counter()
-                if now - last_lock >= 0.05:
-                    self._mouse.reassert()
-                    last_lock = now
-                if now - last_enter >= next_enter:
-                    pydirectinput.press("enter")
-                    last_enter = now
-                    next_enter = OverlayApp._jittered(CUBES_ENTER_INTERVAL)
-                if now - last_click >= next_click:
-                    pydirectinput.click()
-                    last_click = now
-                    next_click = OverlayApp._jittered(CUBES_CLICK_INTERVAL)
-            time.sleep(0.001)
+    def _press_sequence(self):
+        """One cube: left click, Enter, Enter, with a small jittered gap."""
+        pydirectinput.click()
+        self._mouse.reassert()
+        for _ in range(2):
+            time.sleep(OverlayApp._jittered(CUBES_PRESS_GAP))
+            if not self.looping:
+                return
+            pydirectinput.press("enter")
 
     def _cube_loop(self):
         """Watch thread. Read the current lines first (an item that already
@@ -3401,7 +3384,7 @@ class CubesApp:
                         f"Stopped after {self.rolls} roll(s): no cubes left (no cube selected in the material row)."))
                     return
                 before = np.asarray(img.convert("L"), dtype=np.int16)
-                self.spamming = True
+                self._press_sequence()
                 deadline = time.perf_counter() + CUBES_CHANGE_TIMEOUT
                 img = None
                 while self.looping and self._running and time.perf_counter() < deadline:
@@ -3411,11 +3394,6 @@ class CubesApp:
                     if cur.shape == before.shape and (np.abs(cur - before) > 40).mean() >= CUBES_CHANGE_FRAC:
                         img = cur_img
                         break
-                # Freeze the inputs the moment the panel changes. Pressing through the
-                # read was tried and races: the game cubes again mid-OCR, the next
-                # "before" frame is stale, and the change-wait times out. The read is
-                # ~140 ms; the freeze is what makes it trustworthy.
-                self.spamming = False
                 if not self.looping:
                     break
                 if img is None:
@@ -3434,8 +3412,6 @@ class CubesApp:
                 tiers, lines = [None] * 3, []
             found = target.check(lines, tiers)
             hit = (found, "") if found else None
-            if hit is not None:
-                self.spamming = False    # stop the presses NOW, before the UI round-trip
             self._requests.put(lambda tiers=tiers, lines=lines: (setattr(self, "tiers", tiers),
                                                                  setattr(self, "lines", lines), self._show_lines()))
             if hit is not None:
