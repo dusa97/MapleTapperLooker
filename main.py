@@ -3147,6 +3147,67 @@ def build_action_bar(bottom, buttons, primary, on_hide_box):
     return primary_button, box_button
 
 
+HELP_SECTIONS = (
+    ("Flames  (Combat Power reset dialog)", (
+        "1. In the game, open the reset dialog for the item (Reset x1 or Reset x3).",
+        "2. Press Locate (F7): the box snaps onto the AFTER Combat Power number(s). Or press Region (F8) and drag a box over the number yourself.",
+        "3. Click into the game and press F9. Each reset is one left click + Enter presses; the app then waits for the number to redraw, reads it, and goes again.",
+        "4. It stops with the sound the moment a positive change (+number) appears, and says how many resets it took. Discord gets a ping with a screenshot if enabled.",
+        "F9 again stops. F10 mutes, F11 records your own message, F12 puts the beep back. Hide box hides the on-screen box.",
+    )),
+    ("Glowing cubes  (Potential window)", (
+        "1. Open the item's Potential window and select the Glowing cube in the material row (the cyan-highlighted slot).",
+        "2. Cube type: Glowing. Press Locate (F7): the box lands on the three Potential lines.",
+        "3. Set what you are looking for. Reach a total (e.g. STR >= 30%), Combination (N of the 3 lines from the stats you tick) and Lines per stat (e.g. LUK x2 + All Stats x1) can be ticked together - any one of them being met stops the run. 'all legendary' on a goal also needs all three lines legendary. 'All Stats counts as STR / DEX / INT / LUK' adds All Stats lines to those totals.",
+        "4. Click into the game and press F9. The current lines are read first (a match is never rolled away); then click + Enter, wait for the new lines, read, repeat.",
+        "5. It stops with the sound on a match, when no cube is highlighted any more (out of cubes), or if the panel stops changing.",
+    )),
+    ("Bright cubes  (BEFORE / AFTER reset dialog)", (
+        "1. Open the Bright cube reset dialog. Reset x1 (one AFTER card) and Reset x3 (three AFTER cards) both work.",
+        "2. Cube type: Bright. Press Locate (F7): every AFTER card gets a box, and the Remaining count is found too. Start re-locates automatically, so switching x1 / x3 is fine.",
+        "3. Set your goal the same way as for Glowing. Click into the game and press F9: it presses Reset, waits for the cards to redraw, and reads every AFTER card on its own (each shows its lines, totals and progress).",
+        "4. On a match it STOPS WITHOUT pressing anything - the match is showing in the AFTER card it names. Pick that card in the game and close the dialog to keep it (pressing Reset would roll it away).",
+        "5. It also stops when the Remaining count reads 0.",
+    )),
+    ("Settings and Log", (
+        "Settings: Discord alerts per tab (webhook + user ID), and the detection sound - mute, record your own message, volume, test.",
+        "Log: everything both tabs did, with timestamps - why a run stopped, what was read, hits.",
+    )),
+)
+
+
+def build_help_tab(host):
+    """The Help tab: how to use each mode, as short numbered steps."""
+    canvas = tk.Canvas(host, bg=UI_BG, highlightthickness=0, bd=0)
+    vbar = ttk.Scrollbar(host, orient="vertical", command=canvas.yview)
+    canvas.configure(yscrollcommand=vbar.set)
+    vbar.pack(side="right", fill="y")
+    canvas.pack(side="left", fill="both", expand=True)
+    body = tk.Frame(canvas, bg=UI_BG, padx=24, pady=8)
+    win = canvas.create_window((0, 0), window=body, anchor="nw")
+    body.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+    canvas.bind("<Configure>", lambda e: canvas.itemconfigure(win, width=e.width))
+    wrap = APP_WIDTH - 110
+    for title, steps in HELP_SECTIONS:
+        card = OverlayApp._card(body)
+        card.pack(fill="x", pady=(0, 12))
+        tk.Label(card, text=title, fg=UI_TEXT, bg=UI_SURFACE, font=("Segoe UI", 12, "bold"),
+                 anchor="w").pack(fill="x", padx=16, pady=(12, 4))
+        for step in steps:
+            tk.Label(card, text=step, fg=UI_MUTED, bg=UI_SURFACE, anchor="w", justify="left",
+                     wraplength=wrap, font=("Segoe UI", 10)).pack(fill="x", padx=16, pady=(0, 6))
+        tk.Frame(card, bg=UI_SURFACE, height=6).pack()
+
+    def wheel(event):
+        canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+    widgets = [body, canvas]
+    for card in body.winfo_children():
+        widgets.append(card)
+        widgets.extend(card.winfo_children())
+    for w in widgets:
+        w.bind("<MouseWheel>", wheel, add="+")
+
+
 def build_log_tab(host):
     """The Log tab: every line from both tabs' activity logs, in order, tagged
     with the tab it came from. Returns the append(line) callable."""
@@ -4220,11 +4281,13 @@ def run_app(args):
     notebook = ttk.Notebook(root, style="Mode.TNotebook")
     notebook.pack(fill="both", expand=True)
     tabs = {}
-    for mode, title in (("flames", "Flames"), ("cubes", "Cubes"), ("log", "Log"), ("settings", "Settings")):
+    for mode, title in (("flames", "Flames"), ("cubes", "Cubes"), ("log", "Log"), ("settings", "Settings"),
+                        ("help", "Help")):
         tabs[mode] = tk.Frame(notebook, bg=UI_BG)
         notebook.add(tabs[mode], text=f"  {title}  ")
     modes = list(tabs)
     log_append = build_log_tab(tabs["log"])
+    build_help_tab(tabs["help"])
     mirrors = {m: (lambda line, m=m: log_append(f"{line[:10]}[{m.capitalize()}] {line[10:]}")) for m in ("flames", "cubes")}
     build_settings(tabs["settings"], discord, discord_flags, audio, lambda msg: shell_log["fn"](msg))
 
