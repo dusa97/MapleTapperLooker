@@ -282,7 +282,8 @@ POTENTIAL_STATS = (
 CUBES_CHANGE_POLL   = 0.03   # seconds between cheap pixel-difference checks while waiting for the redraw
 CUBES_CHANGE_FRAC   = 0.004  # fraction of pixels that must differ to count as "the panel changed"
 CUBES_CHANGE_TIMEOUT = 3.0   # give up waiting after this long (no cubes left, dialog closed, ...)
-CUBES_SETTLE_MAX     = 0.5   # after the first changed frame, wait up to this long for the redraw to finish
+CUBES_SETTLE_MAX     = 1.5   # after the first changed frame, wait up to this long for the panel to be back and still
+CUBES_MIN_TEXT_INK   = 0.008 # fraction of OCR-mask ink that means "the stat lines are on screen" (real panels 0.02-0.05)
 # One cube is exactly one fixed input sequence - left click, Enter, Enter - with a short gap
 # between presses so the game registers each. No continuous spam: a fixed sequence can't
 # land a press mid-read, so there is nothing to freeze and no race with the change detector.
@@ -3501,6 +3502,9 @@ class CubesApp:
                     self._requests.put(lambda: self._stop_loop(
                         f"Stopped after {self.rolls} roll(s): no cubes left (no cube selected in the material row)."))
                     return
+                if not self._has_text(img):
+                    # Caught the panel mid-blink; get a real frame to compare against.
+                    img = self._settle(img)
                 before = np.asarray(img.convert("L"), dtype=np.int16)
                 img = None
                 # A single missed press must not end a run: if the panel doesn't change,
@@ -3547,16 +3551,28 @@ class CubesApp:
             self._requests.put(lambda: self._set_status(
                 f"Roll {self.rolls}: no match yet." if self.rolls else "Current item doesn't match - cubing..."))
 
+    @staticmethod
+    def _has_text(img):
+        """Does the crop contain stat-line text? On a re-roll the panel
+        vanishes for a moment and comes back, so the first 'change' the
+        detector sees is often the BLANK. A real panel is 2-5% text ink
+        (bright + desaturated pixels, the OCR mask); a blank is ~0%."""
+        hsv = np.array(img.convert("HSV")).astype(int)
+        ink = (hsv[..., 2] > OCR_MASK_VALUE_MIN) & (hsv[..., 1] < OCR_MASK_SATURATION_MAX)
+        return ink.mean() >= CUBES_MIN_TEXT_INK
+
     def _settle(self, img):
-        """Return a grab taken once two consecutive polls agree (the panel has
-        finished redrawing), or the latest grab after CUBES_SETTLE_MAX."""
+        """Return a grab taken once the panel is BACK (has text) and two
+        consecutive polls agree (it has finished redrawing), or the latest
+        grab after CUBES_SETTLE_MAX."""
         prev = np.asarray(img.convert("L"), dtype=np.int16)
         deadline = time.perf_counter() + CUBES_SETTLE_MAX
         while self.looping and self._running and time.perf_counter() < deadline:
             time.sleep(CUBES_CHANGE_POLL)
             img = _grab(self.region)
             cur = np.asarray(img.convert("L"), dtype=np.int16)
-            if cur.shape == prev.shape and (np.abs(cur - prev) > 40).mean() < CUBES_CHANGE_FRAC:
+            still = cur.shape == prev.shape and (np.abs(cur - prev) > 40).mean() < CUBES_CHANGE_FRAC
+            if still and self._has_text(img):
                 return img
             prev = cur
         return img
