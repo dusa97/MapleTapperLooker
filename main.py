@@ -2884,9 +2884,33 @@ class CubesApp:
 
     # ---- UI ------------------------------------------------------------
     def _build(self, host):
-        outer = tk.Frame(host, bg=UI_BG, padx=24, pady=8)
-        outer.pack(fill="both", expand=True)
-        self._outer = outer
+        shell = tk.Frame(host, bg=UI_BG, padx=24, pady=8)
+        shell.pack(fill="both", expand=True)
+        self._outer = shell
+        # Buttons pinned at the bottom; everything else scrolls above them, so ticking
+        # several goal kinds can't push Start off the window (the window height is fixed).
+        bottom = tk.Frame(shell, bg=UI_BG)
+        bottom.pack(side="bottom", fill="x")
+        canvas = tk.Canvas(shell, bg=UI_BG, highlightthickness=0, bd=0)
+        vbar = ttk.Scrollbar(shell, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vbar.set)
+        vbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        outer = tk.Frame(canvas, bg=UI_BG)
+        win = canvas.create_window((0, 0), window=outer, anchor="nw")
+        outer.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(win, width=e.width))
+
+        def wheel(event):
+            canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+        # Tk only delivers wheel events to the widget under the cursor, so bind on
+        # every descendant; re-run after sections are re-packed.
+        def bind_wheel(widget=None):
+            widget = widget or outer
+            widget.bind("<MouseWheel>", wheel, add="+")
+            for child in widget.winfo_children():
+                bind_wheel(child)
+        self._bind_wheel = bind_wheel
         card = OverlayApp._card(outer)
         card.pack(fill="x")
         tk.Label(card, text="POTENTIAL", fg=UI_MUTED, bg=UI_SURFACE,
@@ -3034,7 +3058,7 @@ class CubesApp:
         for var in (self._stat_var, self._min_var, *self._mode_vars.values()):
             var.trace_add("write", lambda *_: self._parse_target())
 
-        row = tk.Frame(outer, bg=UI_BG)
+        row = tk.Frame(bottom, bg=UI_BG)
         row.pack(fill="x", pady=(12, 0))
         OverlayApp._button(row, "Auto-locate (F7)", self._auto_locate, UI_BUTTON, UI_TEXT).pack(
             side="left", expand=True, fill="x", padx=(0, 6))
@@ -3044,16 +3068,17 @@ class CubesApp:
             side="left", expand=True, fill="x", padx=(0, 6))
         self._loop_button = OverlayApp._button(row, "Start (F9)", self._toggle_loop, UI_PRIMARY, UI_BG)
         self._loop_button.pack(side="left", expand=True, fill="x")
-        row2 = tk.Frame(outer, bg=UI_BG)
+        row2 = tk.Frame(bottom, bg=UI_BG)
         row2.pack(fill="x", pady=(6, 0))
         self._box_button = OverlayApp._button(row2, "Hide box", self._toggle_box, UI_BUTTON, UI_TEXT)
         self._box_button.pack(side="left")
-        tk.Label(outer, text="F7 finds the Potential panel and boxes its three lines (F8 draws the box by hand). "
+        tk.Label(bottom, text="F7 finds the Potential panel and boxes its three lines (F8 draws the box by hand). "
                              "F9 starts cubing: click, Enter, Enter, wait for the new lines, read them, stop with a "
                              "beep once your goal is met. F9 again stops. F10 mutes the beep.",
                  fg=UI_MUTED, bg=UI_BG, font=("Segoe UI", 9), wraplength=460,
                  justify="left").pack(anchor="w", pady=(10, 0))
         self._parse_target()
+        self._bind_wheel()
         # Same overlay as Flames: a click-through-transparent window with a
         # coloured frame you drag to move and corner handles you drag to
         # resize. The frame is drawn outside the capture region so it is never
