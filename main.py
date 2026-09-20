@@ -3073,11 +3073,19 @@ class CubesApp:
         row2.pack(fill="x", pady=(6, 0))
         self._box_button = OverlayApp._button(row2, "Hide box", self._toggle_box, UI_BUTTON, UI_TEXT)
         self._box_button.pack(side="left")
-        tk.Label(bottom, text="F7 finds the Potential panel and boxes its three lines (F8 draws the box by hand). "
-                             "F9 starts cubing: click, Enter, Enter, wait for the new lines, read them, stop with a "
-                             "beep once your goal is met. F9 again stops. F10 mutes the beep.",
-                 fg=UI_MUTED, bg=UI_BG, font=("Segoe UI", 9), wraplength=460,
-                 justify="left").pack(anchor="w", pady=(10, 0))
+        # Activity log under the buttons, like Flames': every status message is
+        # kept with a timestamp, so "why did it stop" is always answerable.
+        log_card = OverlayApp._card(bottom)
+        log_card.pack(fill="x", pady=(10, 0))
+        tk.Label(log_card, text="Recent activity", fg=UI_TEXT, bg=UI_SURFACE,
+                 font=("Segoe UI", 11, "bold"), anchor="w").pack(fill="x", padx=14, pady=(8, 2))
+        self._log_list = tk.Text(log_card, bg=UI_SURFACE, fg=UI_MUTED, selectbackground=UI_BORDER,
+                                 selectforeground=UI_TEXT, highlightthickness=0, borderwidth=0, wrap="word",
+                                 height=5, width=1, font=("Segoe UI", 10), state="disabled")
+        log_scroll = ttk.Scrollbar(log_card, command=self._log_list.yview)
+        log_scroll.pack(side="right", fill="y", pady=(0, 10))
+        self._log_list.config(yscrollcommand=log_scroll.set)
+        self._log_list.pack(fill="x", padx=(14, 0), pady=(0, 10))
         self._parse_target()
         self._bind_wheel()
         # Same overlay as Flames: a click-through-transparent window with a
@@ -3170,6 +3178,18 @@ class CubesApp:
 
     def _set_status(self, text):
         self._status.config(text=text)
+        self._log(text)
+
+    def _log(self, message):
+        """Append to the activity list (UI thread only - the loop thread
+        already routes everything through _set_status via the request queue)."""
+        widget = getattr(self, "_log_list", None)
+        if widget is None or not widget.winfo_exists():
+            return
+        widget.config(state="normal")
+        widget.insert(tk.END, f"{time.strftime('%H:%M:%S')}  {message}\n")
+        widget.config(state="disabled")
+        widget.yview_moveto(1)
 
     def _set_cube_type(self):
         """Switch the active profile: which label F7 anchors on and where the
