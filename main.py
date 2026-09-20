@@ -1501,16 +1501,12 @@ def logo_photo(size, master):
     return ImageTk.PhotoImage(_LOGO_CACHE[size], master=master)
 
 
-def open_settings(parent, discord, discord_flags, audio, log, on_change=None):
-    """One dialog for the app-wide settings: which tabs post to Discord (plus
-    the webhook), and the detection audio (mute, record a message, reset)."""
-    dialog = tk.Toplevel(parent)
-    dialog.title("Settings")
-    dialog.configure(bg=UI_BG)
-    dialog.resizable(False, False)
-    dialog.transient(parent)
-    body = tk.Frame(dialog, bg=UI_BG, padx=20, pady=16)
-    body.pack()
+def build_settings(host, discord, discord_flags, audio, log, on_change=None):
+    """The Settings tab: which tabs post to Discord (plus the webhook), and
+    the detection audio (mute, record a message, reset) shared by both tabs."""
+    dialog = host.winfo_toplevel()
+    body = tk.Frame(host, bg=UI_BG, padx=24, pady=8)
+    body.pack(fill="x")
 
     card = OverlayApp._card(body)
     card.pack(fill="x")
@@ -1570,13 +1566,6 @@ def open_settings(parent, discord, discord_flags, audio, log, on_change=None):
     OverlayApp._button(row, "Record message", lambda: audio.alert.toggle(), UI_BUTTON, UI_TEXT).pack(side="left")
     OverlayApp._button(row, "Reset to beep", lambda: audio.alert.reset(), UI_BUTTON, UI_TEXT).pack(side="left", padx=(8, 0))
     OverlayApp._button(row, "Test", audio.play, UI_BUTTON, UI_TEXT).pack(side="left", padx=(8, 0))
-
-    OverlayApp._button(body, "Close", dialog.destroy, UI_PRIMARY, UI_BG).pack(pady=(14, 0))
-    dialog.update_idletasks()
-    x = parent.winfo_rootx() + (parent.winfo_width() - dialog.winfo_reqwidth()) // 2
-    y = parent.winfo_rooty() + 120
-    dialog.geometry(f"+{max(0, x)}+{max(0, y)}")
-    dialog.grab_set()
 
 
 def open_discord_settings(parent, discord, log, on_change=None):
@@ -1677,7 +1666,7 @@ class OverlayApp:
     MIN_SIZE    = 20
 
     def __init__(self, region: tuple, enter_spam: bool = True,
-                 discord=None, discord_allowed=None, audio=None,
+                 discord=None, discord_allowed=None, audio=None, mirror=None,
                  enter_hotkey: str = ENTER_HOTKEY,
                  enter_interval: float = ENTER_INTERVAL,
                  click_interval: float = CLICK_INTERVAL,
@@ -1729,6 +1718,7 @@ class OverlayApp:
         self.beep_hotkey  = beep_hotkey
         # Audio is shared with Cubes and owned by the shell when hosted; standalone
         # Flames makes its own. beep_enabled mirrors the shared mute flag.
+        self._mirror = mirror or (lambda line: None)     # the shell's combined Log tab
         self._audio = audio if audio is not None else SharedAudio(log=self._log)
         self.alert = self._audio.alert
         self.beep_enabled = not self._audio.muted
@@ -1776,8 +1766,10 @@ class OverlayApp:
             root.option_add("*Font", ("Segoe UI", 10))
 
         outer = tk.Frame(host if host is not None else root, bg=UI_BG, padx=24,
-                         pady=20 if host is None else 0)
+                         pady=20 if host is None else 8)
         outer.pack(side="left", fill="both", expand=True)
+        bottom = tk.Frame(outer, bg=UI_BG)          # the Cubes-style control bar, pinned
+        bottom.pack(side="bottom", fill="both", expand=True)
         if host is None:
             build_header(outer, self._logo_image)
 
@@ -1790,18 +1782,9 @@ class OverlayApp:
                                       fg=UI_MUTED, bg=UI_SURFACE, anchor="center", justify="center",
                                       wraplength=450)
         self._detail_label.pack(fill="x", padx=16, pady=(0, 12))
-        buttons = tk.Frame(status, bg=UI_SURFACE)
-        buttons.pack(padx=16, pady=(0, 14))
-        self._start_button = self._button(buttons, f"Start watching  ({self.enter_hotkey.upper()})", self._start_or_stop,
-                                          UI_PRIMARY, UI_BG)
-        self._start_button.pack(side="left")
-        self._button(buttons, "Choose region  (F8)", self._request_selection,
-                     UI_BUTTON, UI_TEXT).pack(side="left", padx=(10, 0))
-        self._button(buttons, "Auto-locate  (F7)", self._request_autolocate,
-                     UI_BUTTON, UI_TEXT).pack(side="left", padx=(10, 0))
-        self._box_toggle_button = self._button(buttons, "Hide box", self._toggle_box_visibility,
-                                               UI_BUTTON, UI_TEXT)
-        self._box_toggle_button.pack(side="left", padx=(10, 0))
+        self._start_button, self._box_toggle_button, self._activity_list = build_action_bar(
+            bottom, [("Auto-locate (F7)", self._request_autolocate), ("Choose region (F8)", self._request_selection)],
+            (f"Start watching  ({self.enter_hotkey.upper()})", self._start_or_stop), self._toggle_box_visibility)
         tk.Label(status, text="Auto-locate currently only recognizes the Combat Power reset dialog.",
                  fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 8), anchor="center",
                  justify="center", wraplength=450).pack(fill="x", padx=16, pady=(0, 12))
@@ -1869,24 +1852,6 @@ class OverlayApp:
         else:
             self._discord_var = None
 
-        activity = self._card(outer)
-        activity.pack(fill="both", expand=True, pady=(14, 0))
-        tk.Label(activity, text="Recent activity", fg=UI_TEXT, bg=UI_SURFACE,
-                 font=("Segoe UI", 12, "bold"), anchor="center").pack(fill="x", padx=16, pady=(14, 6))
-        self._activity_list = tk.Text(activity, bg=UI_SURFACE, fg=UI_MUTED,
-                                      selectbackground=UI_BORDER, selectforeground=UI_TEXT,
-                                      highlightthickness=0, borderwidth=0, wrap="word",
-                                      height=6, width=1, font=("Segoe UI", 10), state="disabled")
-        style = ttk.Style(root)
-        style.theme_use("clam")
-        style.configure("Vertical.TScrollbar", background=UI_BUTTON,
-                        troughcolor=UI_SURFACE, arrowcolor=UI_TEXT,
-                        bordercolor=UI_SURFACE, lightcolor=UI_BUTTON, darkcolor=UI_BUTTON)
-        style.map("Vertical.TScrollbar", background=[("active", UI_PRIMARY_ACTIVE)])
-        scroll = ttk.Scrollbar(activity, command=self._activity_list.yview)
-        scroll.pack(side="right", fill="y", pady=(0, 12))
-        self._activity_list.config(yscrollcommand=scroll.set)
-        self._activity_list.pack(fill="both", expand=True, padx=12, pady=(0, 12))
         if self._is_placeholder_region:
             self._log("No saved region yet — press 'Choose region' (F8) or 'Auto-locate' (F7) to set one.")
         else:
@@ -2487,8 +2452,9 @@ class OverlayApp:
             except queue.Empty:
                 break
             self._activity_lines.append(line)
+            self._mirror(line)
             activity_changed = True
-        self._activity_lines = self._activity_lines[-6:]
+        self._activity_lines = self._activity_lines[-40:]
         if self._activity_list and activity_changed:
             self._activity_list.config(state="normal")
             self._activity_list.delete("1.0", tk.END)
@@ -2878,7 +2844,7 @@ def save_mode(mode):
         pass
 
 
-def run_flames(args, host=None, discord=None, discord_modes=None, audio=None):
+def run_flames(args, host=None, discord=None, discord_modes=None, audio=None, mirror=None):
         if args.region:
             region = tuple(args.region)
             save_region(region)
@@ -2914,7 +2880,7 @@ def run_flames(args, host=None, discord=None, discord_modes=None, audio=None):
         print("  Close the control window to quit.\n")
         app = OverlayApp(region, is_placeholder_region=is_placeholder, enter_spam=not args.no_enter_spam,
                          discord=discord, discord_allowed=(lambda: discord_modes()["flames"]) if discord_modes else None,
-                         audio=audio,
+                         audio=audio, mirror=mirror,
                          enter_hotkey=args.enter_hotkey,
                          enter_interval=args.enter_interval,
                          click_interval=args.click_interval,
@@ -2967,6 +2933,70 @@ class MouseLock:
         self._rect = None
 
 
+def build_action_bar(bottom, buttons, primary, on_hide_box):
+    """The controls pinned under a tab, Cubes-style, used by Flames too so
+    the tabs match: one full-width row of buttons with the primary action
+    last, a 'Hide box' toggle, then the Recent activity log.
+    Returns (primary_button, box_button, log_text)."""
+    row = tk.Frame(bottom, bg=UI_BG)
+    row.pack(fill="x", pady=(12, 0))
+    for text, command in buttons:
+        OverlayApp._button(row, text, command, UI_BUTTON, UI_TEXT).pack(
+            side="left", expand=True, fill="x", padx=(0, 6))
+    primary_button = OverlayApp._button(row, primary[0], primary[1], UI_PRIMARY, UI_BG)
+    primary_button.pack(side="left", expand=True, fill="x")
+    row2 = tk.Frame(bottom, bg=UI_BG)
+    row2.pack(fill="x", pady=(6, 0))
+    box_button = OverlayApp._button(row2, "Hide box", on_hide_box, UI_BUTTON, UI_TEXT)
+    box_button.pack(side="left")
+    log_card = OverlayApp._card(bottom)
+    log_card.pack(fill="both", expand=True, pady=(10, 0))
+    tk.Label(log_card, text="Recent activity", fg=UI_TEXT, bg=UI_SURFACE,
+             font=("Segoe UI", 11, "bold"), anchor="w").pack(fill="x", padx=14, pady=(8, 2))
+    log = tk.Text(log_card, bg=UI_SURFACE, fg=UI_MUTED, selectbackground=UI_BORDER,
+                  selectforeground=UI_TEXT, highlightthickness=0, borderwidth=0, wrap="word",
+                  height=5, width=1, font=("Segoe UI", 10), state="disabled")
+    style = ttk.Style(bottom)
+    style.theme_use("clam")
+    style.configure("Vertical.TScrollbar", background=UI_BUTTON, troughcolor=UI_SURFACE, arrowcolor=UI_TEXT,
+                    bordercolor=UI_SURFACE, lightcolor=UI_BUTTON, darkcolor=UI_BUTTON)
+    style.map("Vertical.TScrollbar", background=[("active", UI_PRIMARY_ACTIVE)])
+    scroll = ttk.Scrollbar(log_card, command=log.yview)
+    scroll.pack(side="right", fill="y", pady=(0, 10))
+    log.config(yscrollcommand=scroll.set)
+    log.pack(fill="both", expand=True, padx=(14, 0), pady=(0, 10))
+    return primary_button, box_button, log
+
+
+def build_log_tab(host):
+    """The Log tab: every line from both tabs' activity logs, in order, tagged
+    with the tab it came from. Returns the append(line) callable."""
+    body = tk.Frame(host, bg=UI_BG, padx=24, pady=8)
+    body.pack(fill="both", expand=True)
+    card = OverlayApp._card(body)
+    card.pack(fill="both", expand=True)
+    tk.Label(card, text="Activity from both tabs", fg=UI_TEXT, bg=UI_SURFACE,
+             font=("Segoe UI", 11, "bold"), anchor="w").pack(fill="x", padx=14, pady=(8, 2))
+    text = tk.Text(card, bg=UI_SURFACE, fg=UI_MUTED, selectbackground=UI_BORDER, selectforeground=UI_TEXT,
+                   highlightthickness=0, borderwidth=0, wrap="word", width=1, font=("Segoe UI", 10),
+                   state="disabled")
+    scroll = ttk.Scrollbar(card, command=text.yview)
+    scroll.pack(side="right", fill="y", pady=(0, 10))
+    text.config(yscrollcommand=scroll.set)
+    text.pack(fill="both", expand=True, padx=(14, 0), pady=(0, 10))
+
+    def append(line):
+        if not text.winfo_exists():
+            return
+        text.config(state="normal")
+        text.insert(tk.END, line + "\n")
+        if int(text.index("end-1c").split(".")[0]) > 500:      # ponytail: keep the last 500 lines
+            text.delete("1.0", "2.0")
+        text.config(state="disabled")
+        text.yview_moveto(1)
+    return append
+
+
 class CubesApp:
     """The Cubes tab: locate the Potential panel (F7) or draw a box on its
     three stat lines (F8), then read them (F9 or the button). No spam, no
@@ -2977,9 +3007,10 @@ class CubesApp:
     HANDLE = 10         # corner squares you drag to resize
     MIN_SIZE = 40
 
-    def __init__(self, host, discord=None, discord_modes=None, audio=None):
+    def __init__(self, host, discord=None, discord_modes=None, audio=None, mirror=None):
         self.host = host
         self._audio = audio
+        self._mirror = mirror or (lambda line: None)
         self.root = host.winfo_toplevel()
         self.discord = discord
         self._discord_modes = discord_modes or (lambda: {"cubes": False})
@@ -3184,33 +3215,9 @@ class CubesApp:
         for var in (self._stat_var, self._min_var, *self._mode_vars.values()):
             var.trace_add("write", lambda *_: self._parse_target())
 
-        row = tk.Frame(bottom, bg=UI_BG)
-        row.pack(fill="x", pady=(12, 0))
-        OverlayApp._button(row, "Auto-locate (F7)", self._auto_locate, UI_BUTTON, UI_TEXT).pack(
-            side="left", expand=True, fill="x", padx=(0, 6))
-        OverlayApp._button(row, "Choose region (F8)", self._start_selection, UI_BUTTON, UI_TEXT).pack(
-            side="left", expand=True, fill="x", padx=(0, 6))
-        OverlayApp._button(row, "Read", self._read, UI_BUTTON, UI_TEXT).pack(
-            side="left", expand=True, fill="x", padx=(0, 6))
-        self._loop_button = OverlayApp._button(row, "Start (F9)", self._toggle_loop, UI_PRIMARY, UI_BG)
-        self._loop_button.pack(side="left", expand=True, fill="x")
-        row2 = tk.Frame(bottom, bg=UI_BG)
-        row2.pack(fill="x", pady=(6, 0))
-        self._box_button = OverlayApp._button(row2, "Hide box", self._toggle_box, UI_BUTTON, UI_TEXT)
-        self._box_button.pack(side="left")
-        # Activity log under the buttons, like Flames': every status message is
-        # kept with a timestamp, so "why did it stop" is always answerable.
-        log_card = OverlayApp._card(bottom)
-        log_card.pack(fill="x", pady=(10, 0))
-        tk.Label(log_card, text="Recent activity", fg=UI_TEXT, bg=UI_SURFACE,
-                 font=("Segoe UI", 11, "bold"), anchor="w").pack(fill="x", padx=14, pady=(8, 2))
-        self._log_list = tk.Text(log_card, bg=UI_SURFACE, fg=UI_MUTED, selectbackground=UI_BORDER,
-                                 selectforeground=UI_TEXT, highlightthickness=0, borderwidth=0, wrap="word",
-                                 height=5, width=1, font=("Segoe UI", 10), state="disabled")
-        log_scroll = ttk.Scrollbar(log_card, command=self._log_list.yview)
-        log_scroll.pack(side="right", fill="y", pady=(0, 10))
-        self._log_list.config(yscrollcommand=log_scroll.set)
-        self._log_list.pack(fill="x", padx=(14, 0), pady=(0, 10))
+        self._loop_button, self._box_button, self._log_list = build_action_bar(
+            bottom, [("Auto-locate (F7)", self._auto_locate), ("Choose region (F8)", self._start_selection),
+                     ("Read", self._read)], ("Start (F9)", self._toggle_loop), self._toggle_box)
         self._parse_target()
         self._bind_wheel()
         # Same overlay as Flames: a click-through-transparent window with a
@@ -3308,11 +3315,13 @@ class CubesApp:
     def _log(self, message):
         """Append to the activity list (UI thread only - the loop thread
         already routes everything through _set_status via the request queue)."""
+        line = f"{time.strftime('%H:%M:%S')}  {message}"
+        self._mirror(line)
         widget = getattr(self, "_log_list", None)
         if widget is None or not widget.winfo_exists():
             return
         widget.config(state="normal")
-        widget.insert(tk.END, f"{time.strftime('%H:%M:%S')}  {message}\n")
+        widget.insert(tk.END, line + "\n")
         widget.config(state="disabled")
         widget.yview_moveto(1)
 
@@ -3745,8 +3754,8 @@ class CubesApp:
             self._outer.destroy()
 
 
-def build_cubes(host, discord=None, discord_modes=None, audio=None):
-    return CubesApp(host, discord=discord, discord_modes=discord_modes, audio=audio)
+def build_cubes(host, discord=None, discord_modes=None, audio=None, mirror=None):
+    return CubesApp(host, discord=discord, discord_modes=discord_modes, audio=audio, mirror=mirror)
 
 
 def run_app(args):
@@ -3774,11 +3783,6 @@ def run_app(args):
     discord = DiscordNotifier(log=lambda msg: shell_log["fn"](msg))
     discord_flags = load_discord_modes()
     audio = SharedAudio(log=lambda msg: shell_log["fn"](msg))
-    bar = tk.Frame(top, bg=UI_BG)
-    bar.pack(fill="x", pady=(0, 6))
-    OverlayApp._button(bar, "Settings",
-                       lambda: open_settings(root, discord, discord_flags, audio, shell_log["fn"]),
-                       UI_BUTTON, UI_TEXT).pack(side="right")
     discord_modes = lambda: discord_flags
 
     style = ttk.Style(root)
@@ -3804,10 +3808,13 @@ def run_app(args):
     notebook = ttk.Notebook(root, style="Mode.TNotebook")
     notebook.pack(fill="both", expand=True)
     tabs = {}
-    for mode, title in (("flames", "Flames"), ("cubes", "Cubes")):
+    for mode, title in (("flames", "Flames"), ("cubes", "Cubes"), ("log", "Log"), ("settings", "Settings")):
         tabs[mode] = tk.Frame(notebook, bg=UI_BG)
         notebook.add(tabs[mode], text=f"  {title}  ")
     modes = list(tabs)
+    log_append = build_log_tab(tabs["log"])
+    mirrors = {m: (lambda line, m=m: log_append(f"{line[:10]}[{m.capitalize()}] {line[10:]}")) for m in ("flames", "cubes")}
+    build_settings(tabs["settings"], discord, discord_flags, audio, lambda msg: shell_log["fn"](msg))
 
     state = {"mode": None, "app": None}
 
@@ -3815,8 +3822,9 @@ def run_app(args):
         if state["app"] is not None:
             state["app"].stop()
         state["mode"], state["app"] = mode, None
-        state["app"] = (run_flames(args, tabs["flames"], discord, discord_modes, audio) if mode == "flames"
-                        else build_cubes(tabs["cubes"], discord, discord_modes, audio))
+        state["app"] = (run_flames(args, tabs["flames"], discord, discord_modes, audio, mirrors["flames"])
+                        if mode == "flames"
+                        else build_cubes(tabs["cubes"], discord, discord_modes, audio, mirrors["cubes"]))
         # route the notifier's log lines into the active tab's own log
         shell_log["fn"] = getattr(state["app"], "_log", None) or (lambda m: state["app"]._set_status(m))
         save_mode(mode)
@@ -3829,7 +3837,7 @@ def run_app(args):
             if mode != "flames":
                 # Build Flames' widgets only (no threads, no hotkeys, no OCR) into
                 # its hidden tab, measure, tear them down again.
-                probe = OverlayApp(load_region() or default_region(), enter_spam=False)
+                probe = OverlayApp(load_region() or default_region(), enter_spam=False, audio=audio)
                 probe._build_window(tabs["flames"])
                 root.update_idletasks()
                 h = root.winfo_reqheight()
@@ -3844,7 +3852,7 @@ def run_app(args):
 
     def on_tab_changed(_event):
         mode = modes[notebook.index("current")]
-        if mode != state["mode"]:
+        if mode in ("flames", "cubes") and mode != state["mode"]:   # Log/Settings leave the running tab alone
             start(mode)
 
     def on_close():
