@@ -197,11 +197,11 @@ class DetectionBeepTest(unittest.TestCase):
         app = OverlayApp((0, 0, 100, 100))
         app.root = Mock()
         app._activity_list = Mock()
-        for index in range(8):
+        for index in range(45):
             app._log(f"event {index}")
         app._render()
-        self.assertEqual(len(app._activity_lines), 6)
-        self.assertEqual(app._activity_list.insert.call_count, 6)
+        self.assertEqual(len(app._activity_lines), 40)
+        self.assertEqual(app._activity_list.insert.call_count, 40)
 
 
 if __name__ == "__main__":
