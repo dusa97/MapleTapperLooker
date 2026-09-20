@@ -1501,6 +1501,84 @@ def logo_photo(size, master):
     return ImageTk.PhotoImage(_LOGO_CACHE[size], master=master)
 
 
+def open_settings(parent, discord, discord_flags, audio, log, on_change=None):
+    """One dialog for the app-wide settings: which tabs post to Discord (plus
+    the webhook), and the detection audio (mute, record a message, reset)."""
+    dialog = tk.Toplevel(parent)
+    dialog.title("Settings")
+    dialog.configure(bg=UI_BG)
+    dialog.resizable(False, False)
+    dialog.transient(parent)
+    body = tk.Frame(dialog, bg=UI_BG, padx=20, pady=16)
+    body.pack()
+
+    card = OverlayApp._card(body)
+    card.pack(fill="x")
+    tk.Label(card, text="Discord alerts", fg=UI_TEXT, bg=UI_SURFACE, font=("Segoe UI", 12, "bold"),
+             anchor="w").pack(fill="x", padx=16, pady=(12, 2))
+    tk.Label(card, text="Post a server-channel mention (with a game screenshot) when a tab gets a hit.",
+             fg=UI_MUTED, bg=UI_SURFACE, anchor="w", wraplength=420, justify="left").pack(fill="x", padx=16)
+    row = tk.Frame(card, bg=UI_SURFACE)
+    row.pack(fill="x", padx=16, pady=(8, 12))
+    mode_vars = {}
+
+    def apply_modes(*_):
+        for key, var in mode_vars.items():
+            discord_flags[key] = bool(var.get())
+        save_discord_modes(discord_flags)
+        want = any(discord_flags.values())
+        if want != discord.enabled:
+            try:
+                if not discord.set_enabled(want) and want:
+                    log("Set the Discord webhook and user ID first (button below).")
+                    for var in mode_vars.values():
+                        var.set(False)
+                    for key in discord_flags:
+                        discord_flags[key] = False
+                    save_discord_modes(discord_flags)
+            except OSError:
+                log("Could not save Discord settings.")
+        if on_change:
+            on_change()
+
+    for key, text in (("flames", "Flames"), ("cubes", "Cubes")):
+        var = tk.BooleanVar(dialog, value=discord_flags[key] and discord.enabled)
+        mode_vars[key] = var
+        tk.Checkbutton(row, text=f"Alert on {text} hits", variable=var, command=apply_modes, bg=UI_SURFACE,
+                       fg=UI_TEXT, selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
+                       highlightthickness=0, font=("Segoe UI", 10, "bold"), cursor="hand2",
+                       state="normal" if discord.supported else "disabled").pack(side="left", padx=(0, 16))
+    OverlayApp._button(row, "Webhook & user ID...",
+                       lambda: open_discord_settings(dialog, discord, log,
+                                                     on_change=lambda: [v.set(False) for v in mode_vars.values()]),
+                       UI_BUTTON, UI_TEXT).pack(side="right")
+
+    card = OverlayApp._card(body)
+    card.pack(fill="x", pady=(12, 0))
+    tk.Label(card, text="Detection audio", fg=UI_TEXT, bg=UI_SURFACE, font=("Segoe UI", 12, "bold"),
+             anchor="w").pack(fill="x", padx=16, pady=(12, 2))
+    tk.Label(card, text="Plays on a hit in either tab. Record your own message or use the built-in beep. "
+                        "F10 mutes/unmutes, F11 records, F12 resets to the beep.",
+             fg=UI_MUTED, bg=UI_SURFACE, anchor="w", wraplength=420, justify="left").pack(fill="x", padx=16)
+    row = tk.Frame(card, bg=UI_SURFACE)
+    row.pack(fill="x", padx=16, pady=(8, 12))
+    mute_var = tk.BooleanVar(dialog, value=audio.muted)
+    tk.Checkbutton(row, text="Mute", variable=mute_var, command=lambda: audio.set_muted(mute_var.get()),
+                   bg=UI_SURFACE, fg=UI_TEXT, selectcolor=UI_BG, activebackground=UI_SURFACE,
+                   activeforeground=UI_TEXT, highlightthickness=0, font=("Segoe UI", 10, "bold"),
+                   cursor="hand2").pack(side="left", padx=(0, 16))
+    OverlayApp._button(row, "Record message", lambda: audio.alert.toggle(), UI_BUTTON, UI_TEXT).pack(side="left")
+    OverlayApp._button(row, "Reset to beep", lambda: audio.alert.reset(), UI_BUTTON, UI_TEXT).pack(side="left", padx=(8, 0))
+    OverlayApp._button(row, "Test", audio.play, UI_BUTTON, UI_TEXT).pack(side="left", padx=(8, 0))
+
+    OverlayApp._button(body, "Close", dialog.destroy, UI_PRIMARY, UI_BG).pack(pady=(14, 0))
+    dialog.update_idletasks()
+    x = parent.winfo_rootx() + (parent.winfo_width() - dialog.winfo_reqwidth()) // 2
+    y = parent.winfo_rooty() + 120
+    dialog.geometry(f"+{max(0, x)}+{max(0, y)}")
+    dialog.grab_set()
+
+
 def open_discord_settings(parent, discord, log, on_change=None):
     if not discord.supported:
         return
@@ -1599,7 +1677,7 @@ class OverlayApp:
     MIN_SIZE    = 20
 
     def __init__(self, region: tuple, enter_spam: bool = True,
-                 discord=None, discord_allowed=None,
+                 discord=None, discord_allowed=None, audio=None,
                  enter_hotkey: str = ENTER_HOTKEY,
                  enter_interval: float = ENTER_INTERVAL,
                  click_interval: float = CLICK_INTERVAL,
@@ -1649,8 +1727,11 @@ class OverlayApp:
 
         # F10 mutes/unmutes the beep entirely — starts unmuted.
         self.beep_hotkey  = beep_hotkey
-        self.beep_enabled = True
-        self.alert = RecordedAlert(_BASE_DIR / "detection_message.wav")
+        # Audio is shared with Cubes and owned by the shell when hosted; standalone
+        # Flames makes its own. beep_enabled mirrors the shared mute flag.
+        self._audio = audio if audio is not None else SharedAudio(log=self._log)
+        self.alert = self._audio.alert
+        self.beep_enabled = not self._audio.muted
         self._audio_requests = queue.SimpleQueue()
         self._toggle_requests = queue.SimpleQueue()
         self._selection_requested = threading.Event()
@@ -1725,39 +1806,40 @@ class OverlayApp:
                  fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 8), anchor="center",
                  justify="center", wraplength=450).pack(fill="x", padx=16, pady=(0, 12))
 
-        audio = self._card(outer)
-        audio.pack(fill="x", pady=(14, 0))
-        tk.Label(audio, text="Detection audio", fg=UI_TEXT, bg=UI_SURFACE,
-                 font=("Segoe UI", 12, "bold"), anchor="center").pack(fill="x", padx=16, pady=(14, 3))
-        tk.Label(audio, text="Record a message or use the built-in beep.", fg=UI_MUTED,
-                 bg=UI_SURFACE, anchor="center").pack(fill="x", padx=16, pady=(0, 10))
-        audio_buttons = tk.Frame(audio, bg=UI_SURFACE)
-        audio_buttons.pack(padx=16, pady=(0, 14))
-        self._record_button = self._button(audio_buttons, "Record  (F11)",
-                                           lambda: self._request_audio(self.alert.toggle), UI_BUTTON, UI_TEXT)
-        self._record_button.pack(side="left")
-        self._mute_images = []
-        for selected in (False, True):
-            image = Image.new("RGB", (168, 84), UI_SURFACE)
-            draw = ImageDraw.Draw(image)
-            draw.rounded_rectangle((0, 0, 167, 83), radius=42,
-                                   fill=UI_PRIMARY if selected else UI_BORDER)
-            x = 87 if selected else 6
-            draw.ellipse((x, 6, x + 75, 77), fill="white")
-            self._mute_images.append(ImageTk.PhotoImage(
-                image.resize((56, 28), Image.Resampling.LANCZOS), master=root))
-        self._mute_var = tk.BooleanVar(root, value=False)
-        self._mute_button = tk.Checkbutton(
-            audio_buttons, text="Mute  (F10)", command=self._toggle_beep, variable=self._mute_var,
-            image=self._mute_images[0], selectimage=self._mute_images[1],
-            indicatoron=False, compound="left", relief="flat", offrelief="flat",
-            borderwidth=0, bg=UI_SURFACE, fg=UI_TEXT, selectcolor=UI_SURFACE,
-            activebackground=UI_SURFACE, activeforeground=UI_TEXT,
-            highlightbackground=UI_SURFACE, highlightcolor=UI_PRIMARY,
-            highlightthickness=1, takefocus=True, padx=6, pady=5, cursor="hand2")
-        self._mute_button.pack(side="left", padx=8)
-        self._button(audio_buttons, "Reset  (F12)", lambda: self._request_audio(self.alert.reset),
-                     UI_BUTTON, UI_TEXT).pack(side="left")
+        if self._owns_discord:      # standalone only: hosted, audio lives in Settings
+            audio = self._card(outer)
+            audio.pack(fill="x", pady=(14, 0))
+            tk.Label(audio, text="Detection audio", fg=UI_TEXT, bg=UI_SURFACE,
+                     font=("Segoe UI", 12, "bold"), anchor="center").pack(fill="x", padx=16, pady=(14, 3))
+            tk.Label(audio, text="Record a message or use the built-in beep.", fg=UI_MUTED,
+                     bg=UI_SURFACE, anchor="center").pack(fill="x", padx=16, pady=(0, 10))
+            audio_buttons = tk.Frame(audio, bg=UI_SURFACE)
+            audio_buttons.pack(padx=16, pady=(0, 14))
+            self._record_button = self._button(audio_buttons, "Record  (F11)",
+                                               lambda: self._request_audio(self.alert.toggle), UI_BUTTON, UI_TEXT)
+            self._record_button.pack(side="left")
+            self._mute_images = []
+            for selected in (False, True):
+                image = Image.new("RGB", (168, 84), UI_SURFACE)
+                draw = ImageDraw.Draw(image)
+                draw.rounded_rectangle((0, 0, 167, 83), radius=42,
+                                       fill=UI_PRIMARY if selected else UI_BORDER)
+                x = 87 if selected else 6
+                draw.ellipse((x, 6, x + 75, 77), fill="white")
+                self._mute_images.append(ImageTk.PhotoImage(
+                    image.resize((56, 28), Image.Resampling.LANCZOS), master=root))
+            self._mute_var = tk.BooleanVar(root, value=False)
+            self._mute_button = tk.Checkbutton(
+                audio_buttons, text="Mute  (F10)", command=self._toggle_beep, variable=self._mute_var,
+                image=self._mute_images[0], selectimage=self._mute_images[1],
+                indicatoron=False, compound="left", relief="flat", offrelief="flat",
+                borderwidth=0, bg=UI_SURFACE, fg=UI_TEXT, selectcolor=UI_SURFACE,
+                activebackground=UI_SURFACE, activeforeground=UI_TEXT,
+                highlightbackground=UI_SURFACE, highlightcolor=UI_PRIMARY,
+                highlightthickness=1, takefocus=True, padx=6, pady=5, cursor="hand2")
+            self._mute_button.pack(side="left", padx=8)
+            self._button(audio_buttons, "Reset  (F12)", lambda: self._request_audio(self.alert.reset),
+                         UI_BUTTON, UI_TEXT).pack(side="left")
 
         if self._owns_discord:
             # Standalone only: in the shell the Discord controls sit above the tabs.
@@ -2026,7 +2108,8 @@ class OverlayApp:
         if target is not None and hasattr(target, "close"):
             target.close()
         self._unlock_mouse()
-        self.alert.close()
+        if self._owns_discord:
+            self._audio.close()
         hotkeys = ["f7", "f8", "f11", "f12", self.beep_hotkey, self.enter_hotkey]
         for hk in hotkeys:
             try:
@@ -2139,10 +2222,10 @@ class OverlayApp:
         self._log(f"F9: {'started' if self.enter_on else 'paused'}.")
 
     def _toggle_beep(self):
-        """Hotkey callback — mutes/unmutes the detection beep, independent of
-        the Enter+Click spam state."""
-        self.beep_enabled = not self.beep_enabled
-        self._log(f"Audio {'unmuted' if self.beep_enabled else 'muted'}.")
+        """Hotkey callback — mutes/unmutes the detection audio (shared with
+        Cubes), independent of the Enter+Click spam state."""
+        self._audio.set_muted(not self._audio.muted)
+        self.beep_enabled = not self._audio.muted
 
     def _discord_on(self):
         return self.discord.enabled and self._discord_allowed()
@@ -2169,7 +2252,8 @@ class OverlayApp:
                 self._discord_var.set(self.discord.enabled)
 
     def _play_alert(self):
-        self.alert.play(beep)
+        if not self._audio.muted:
+            self.alert.play(beep)
 
     @staticmethod
     def _jittered(interval, spread=SPAM_JITTER):
@@ -2383,16 +2467,19 @@ class OverlayApp:
                            "Stop watching" if self.enter_on else "Start watching")
             self._start_button.config(text=f"{button_text}  ({self.enter_hotkey.upper()})",
                                       state="normal" if self._ocr_available and not self._selecting else "disabled")
-            if self.beep_enabled:
-                self._mute_button.deselect()
-            else:
-                self._mute_button.select()
+            self.beep_enabled = not self._audio.muted
+            if self._mute_button is not None:
+                if self.beep_enabled:
+                    self._mute_button.deselect()
+                else:
+                    self._mute_button.select()
             if self._discord_button is not None:
                 if self.discord.enabled:
                     self._discord_button.select()
                 else:
                     self._discord_button.deselect()
-            self._record_button.config(text=("Save message" if self.alert.recording else "Record") + "  (F11)")
+            if self._record_button is not None:
+                self._record_button.config(text=("Save message" if self.alert.recording else "Record") + "  (F11)")
         activity_changed = False
         for _ in range(100):
             try:
@@ -2715,6 +2802,39 @@ def _open_selector() -> tuple:
 MODE_FILE = _BASE_DIR / "last_mode.json"
 
 
+class SharedAudio:
+    """The detection sound for the whole app: the recorded message (or the
+    built-in beep as fallback) and a mute flag, shared by Flames and Cubes
+    and controlled from Settings. Mute persists in MODE_FILE."""
+    def __init__(self, log=None):
+        self.alert = RecordedAlert(_BASE_DIR / "detection_message.wav")
+        self.log = log or (lambda m: None)
+        try:
+            self.muted = bool(json.loads(MODE_FILE.read_text(encoding="utf-8")).get("muted", False))
+        except Exception:
+            self.muted = False
+
+    def play(self):
+        if not self.muted:
+            threading.Thread(target=lambda: self.alert.play(beep), daemon=True).start()
+
+    def set_muted(self, muted):
+        self.muted = bool(muted)
+        try:
+            data = json.loads(MODE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+        data["muted"] = self.muted
+        try:
+            MODE_FILE.write_text(json.dumps(data), encoding="utf-8")
+        except Exception:
+            pass
+        self.log(f"Audio {'muted' if self.muted else 'unmuted'}.")
+
+    def close(self):
+        self.alert.close()
+
+
 def load_discord_modes():
     """Which tabs may post Discord alerts: {'flames': bool, 'cubes': bool}.
     Lives in MODE_FILE next to the last-tab choice; the webhook itself
@@ -2758,7 +2878,7 @@ def save_mode(mode):
         pass
 
 
-def run_flames(args, host=None, discord=None, discord_modes=None):
+def run_flames(args, host=None, discord=None, discord_modes=None, audio=None):
         if args.region:
             region = tuple(args.region)
             save_region(region)
@@ -2794,6 +2914,7 @@ def run_flames(args, host=None, discord=None, discord_modes=None):
         print("  Close the control window to quit.\n")
         app = OverlayApp(region, is_placeholder_region=is_placeholder, enter_spam=not args.no_enter_spam,
                          discord=discord, discord_allowed=(lambda: discord_modes()["flames"]) if discord_modes else None,
+                         audio=audio,
                          enter_hotkey=args.enter_hotkey,
                          enter_interval=args.enter_interval,
                          click_interval=args.click_interval,
@@ -2856,8 +2977,9 @@ class CubesApp:
     HANDLE = 10         # corner squares you drag to resize
     MIN_SIZE = 40
 
-    def __init__(self, host, discord=None, discord_modes=None):
+    def __init__(self, host, discord=None, discord_modes=None, audio=None):
         self.host = host
+        self._audio = audio
         self.root = host.winfo_toplevel()
         self.discord = discord
         self._discord_modes = discord_modes or (lambda: {"cubes": False})
@@ -3435,8 +3557,12 @@ class CubesApp:
 
     # ---- cube loop -------------------------------------------------------------
     def _toggle_beep(self):
-        self.beep_enabled = not self.beep_enabled
-        self._set_status("Beep muted." if not self.beep_enabled else "Beep on.")
+        if self._audio is not None:
+            self._audio.set_muted(not self._audio.muted)
+            self.beep_enabled = not self._audio.muted
+        else:
+            self.beep_enabled = not self.beep_enabled
+        self._set_status("Audio muted." if not self.beep_enabled else "Audio on.")
 
     def _toggle_loop(self):
         if self.looping:
@@ -3582,7 +3708,9 @@ class CubesApp:
         summary = f"{rank} {hit[0]} {hit[1]}".replace("  ", " ").strip()
         tail = "" if self.profile.commit_on_match else " - it's showing in AFTER; close the dialog to keep it (Reset would roll it away)."
         self._stop_loop(f"Got it after {self.rolls} roll(s): {summary}{tail}")
-        if self.beep_enabled:
+        if self._audio is not None:
+            self._audio.play()
+        elif self.beep_enabled:
             threading.Thread(target=beep, daemon=True).start()
         if self.discord is not None and self.discord.enabled and self._discord_modes()["cubes"]:
             target = self._activation_target
@@ -3617,8 +3745,8 @@ class CubesApp:
             self._outer.destroy()
 
 
-def build_cubes(host, discord=None, discord_modes=None):
-    return CubesApp(host, discord=discord, discord_modes=discord_modes)
+def build_cubes(host, discord=None, discord_modes=None, audio=None):
+    return CubesApp(host, discord=discord, discord_modes=discord_modes, audio=audio)
 
 
 def run_app(args):
@@ -3645,40 +3773,12 @@ def run_app(args):
     shell_log = {"fn": print}
     discord = DiscordNotifier(log=lambda msg: shell_log["fn"](msg))
     discord_flags = load_discord_modes()
-    strip = tk.Frame(top, bg=UI_SURFACE, highlightbackground=UI_BORDER, highlightthickness=1)
-    strip.pack(fill="x", pady=(0, 6))
-    tk.Label(strip, text="DISCORD ALERTS", fg=UI_MUTED, bg=UI_SURFACE,
-             font=("Segoe UI", 9, "bold")).pack(side="left", padx=(14, 16), pady=8)
-    mode_vars = {}
-
-    def apply_modes(*_):
-        for key, var in mode_vars.items():
-            discord_flags[key] = bool(var.get())
-        save_discord_modes(discord_flags)
-        want = any(discord_flags.values())
-        if want != discord.enabled:
-            try:
-                if not discord.set_enabled(want) and want:
-                    shell_log["fn"]("Set Discord webhook and user ID before enabling alerts.")
-                    for var in mode_vars.values():
-                        var.set(False)
-                    for key in discord_flags:
-                        discord_flags[key] = False
-                    save_discord_modes(discord_flags)
-            except OSError:
-                shell_log["fn"]("Could not save Discord settings.")
-
-    for key, text in (("flames", "Flames"), ("cubes", "Cubes")):
-        var = tk.BooleanVar(root, value=discord_flags[key] and discord.enabled)
-        mode_vars[key] = var
-        tk.Checkbutton(strip, text=text, variable=var, command=apply_modes, bg=UI_SURFACE, fg=UI_TEXT,
-                       selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
-                       highlightthickness=0, font=("Segoe UI", 10, "bold"), cursor="hand2",
-                       state="normal" if discord.supported else "disabled").pack(side="left", padx=(0, 10))
-    OverlayApp._button(strip, "Discord settings",
-                       lambda: open_discord_settings(root, discord, shell_log["fn"],
-                                                     on_change=lambda: [v.set(False) for v in mode_vars.values()]),
-                       UI_BUTTON, UI_TEXT).pack(side="right", padx=10, pady=4)
+    audio = SharedAudio(log=lambda msg: shell_log["fn"](msg))
+    bar = tk.Frame(top, bg=UI_BG)
+    bar.pack(fill="x", pady=(0, 6))
+    OverlayApp._button(bar, "Settings",
+                       lambda: open_settings(root, discord, discord_flags, audio, shell_log["fn"]),
+                       UI_BUTTON, UI_TEXT).pack(side="right")
     discord_modes = lambda: discord_flags
 
     style = ttk.Style(root)
@@ -3715,8 +3815,8 @@ def run_app(args):
         if state["app"] is not None:
             state["app"].stop()
         state["mode"], state["app"] = mode, None
-        state["app"] = (run_flames(args, tabs["flames"], discord, discord_modes) if mode == "flames"
-                        else build_cubes(tabs["cubes"], discord, discord_modes))
+        state["app"] = (run_flames(args, tabs["flames"], discord, discord_modes, audio) if mode == "flames"
+                        else build_cubes(tabs["cubes"], discord, discord_modes, audio))
         # route the notifier's log lines into the active tab's own log
         shell_log["fn"] = getattr(state["app"], "_log", None) or (lambda m: state["app"]._set_status(m))
         save_mode(mode)
@@ -3751,6 +3851,7 @@ def run_app(args):
         if state["app"] is not None:
             state["app"].stop()
         discord.close()
+        audio.close()
         root.destroy()
 
     notebook.bind("<<NotebookTabChanged>>", on_tab_changed)
