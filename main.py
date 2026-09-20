@@ -3187,9 +3187,11 @@ class CubesApp:
         self.label_box = self._load_label_box()   # where F7 last found "Potential"; None after a manual F8 box
         # Bright 'Reset x3' shows three AFTER cards: every one is read before the next
         # roll. panels = one box per card; region = their union (the overlay box).
-        self.panels = self._load_panels() or ([tuple(self.region)] if self.region else [])
-        self.count_box = self._load_box("count")      # the Remaining pill, located by F7 (Bright)
         self.profile = active_cube_profile()
+        self.panels = self._load_panels() or ([tuple(self.region)] if self.region else [])
+        if self.profile.pick_label != "rightmost":     # several cards only exist on the Bright reset dialog
+            self.panels = self.panels[:1]
+        self.count_box = self._load_box("count")      # the Remaining pill, located by F7 (Bright)
         self.lines = []
         self._running = True
         self._selector = None
@@ -3576,6 +3578,13 @@ class CubesApp:
         key = self._cube_var.get()
         self.profile = CUBE_PROFILES.get(key, CUBE_PROFILES[CUBE_TYPE_DEFAULT])
         self._cube_note.config(text="")
+        # Several cards only exist on the Bright Reset x3 dialog: any other cube
+        # type is one panel until F7 says otherwise.
+        if self.profile.pick_label != "rightmost" and len(self.panels) > 1:
+            self.panels = [tuple(self.region)] if self.region else []
+            self.results = []
+        if hasattr(self, "_cols"):
+            self._layout_columns()
         self._tint(CUBE_TINTS.get(key, UI_BG))
         try:
             data = json.loads(MODE_FILE.read_text(encoding="utf-8"))
