@@ -786,18 +786,21 @@ class LegendaryOnly:
         return self.goal.progress(self._legendary(lines, tiers), tiers) + f"  [{n}/3 legendary]"
 
 
-class AllOfGoal:
-    """Every enabled goal must be satisfied by the same roll. This is how
+class AnyOfGoal:
+    """The roll stops as soon as ANY enabled goal is satisfied. This is how
     the three goal kinds combine when more than one is ticked."""
     def __init__(self, goals):
         self.goals = list(goals)
 
     def describe(self):
-        return "  AND  ".join(g.describe() for g in self.goals)
+        return "  OR  ".join(g.describe() for g in self.goals)
 
     def check(self, lines, tiers):
-        results = [g.check(lines, tiers) for g in self.goals]
-        return " + ".join(results) if all(results) else None
+        for g in self.goals:
+            found = g.check(lines, tiers)
+            if found:
+                return found
+        return None
 
     def progress(self, lines, tiers):
         return "\n\u2192 ".join(g.progress(lines, tiers) for g in self.goals)
@@ -3286,7 +3289,7 @@ class CubesApp:
             self.target = None
             self._target_label.config(text="; ".join(problems).capitalize() + ".", fg=UI_PRIMARY)
         else:
-            self.target = goals[0] if len(goals) == 1 else AllOfGoal(goals)
+            self.target = goals[0] if len(goals) == 1 else AnyOfGoal(goals)
             self._target_label.config(text="Stop when: " + self.target.describe(), fg=UI_ACCENT)
         try:
             CUBES_TARGET_FILE.write_text(json.dumps({"modes": modes, "stat": name, "min": raw, "combo": chosen,
