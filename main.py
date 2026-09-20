@@ -4276,7 +4276,7 @@ def run_app(args):
 
     notebook.bind("<<NotebookTabChanged>>", on_tab_changed)
     root.protocol("WM_DELETE_WINDOW", on_close)
-    notebook.select(tabs["flames"])         # always open on Flames (the last tab is not remembered)
+    notebook.select(tabs[load_mode() or "flames"])    # reopen on the tab used last time
     if state["app"] is None:            # selecting the already-current tab fires no event
         start(modes[notebook.index("current")])
     try:
