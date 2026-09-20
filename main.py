@@ -501,15 +501,25 @@ def locate_label(full_gray, tmpl_gray, max_peaks=4):
     Power Change label) and Cubes (Potential label)."""
     cv2 = _load_cv2()
     th, tw = tmpl_gray.shape
-    best_val, best_res, best_shape = -1.0, None, None
-    for scale in AUTOLOCATE_SCALES:
+
+    def match(img, scale):
         rt = cv2.resize(tmpl_gray, (max(1, round(tw * scale)), max(1, round(th * scale))))
-        if rt.shape[0] > full_gray.shape[0] or rt.shape[1] > full_gray.shape[1]:
-            continue
-        res = cv2.matchTemplate(full_gray, rt, cv2.TM_CCOEFF_NORMED)
-        _, maxval, _, _ = cv2.minMaxLoc(res)
+        if rt.shape[0] > img.shape[0] or rt.shape[1] > img.shape[1]:
+            return -1.0, None, rt.shape
+        res = cv2.matchTemplate(img, rt, cv2.TM_CCOEFF_NORMED)
+        return cv2.minMaxLoc(res)[1], res, rt.shape
+
+    # Coarse-to-fine: pick the scale on a half-size desktop (4x cheaper per pass,
+    # 31 passes), then match at full size only at that scale and its neighbours.
+    # A full-size sweep of a 4480x1440 desktop took ~4 s; this is under 1 s.
+    half = cv2.resize(full_gray, (full_gray.shape[1] // 2, full_gray.shape[0] // 2))
+    coarse = [(match(half, sc / 2)[0], i) for i, sc in enumerate(AUTOLOCATE_SCALES)]
+    best_i = max(coarse)[1]
+    best_val, best_res, best_shape = -1.0, None, None
+    for i in range(max(0, best_i - 1), min(len(AUTOLOCATE_SCALES), best_i + 2)):
+        maxval, res, shape = match(full_gray, AUTOLOCATE_SCALES[i])
         if maxval > best_val:
-            best_val, best_res, best_shape = maxval, res, rt.shape
+            best_val, best_res, best_shape = maxval, res, shape
     if best_res is None or best_val < AUTOLOCATE_MIN_CONFIDENCE:
         return best_val, [], best_shape
     sh, sw = best_shape
@@ -2443,8 +2453,12 @@ class OverlayApp:
             active = self.enter_on and not self.hit
             heading = "WATCHING" if active else ("DETECTED" if self.hit else "PAUSED")
             self._status_label.config(text=heading, fg=color if active or self.hit else UI_MUTED)
-            detail = ("Press Start or F9 to watch the selected region."
-                      if self.status_text == "paused" else self.status_text)
+            if self.status_text != "paused":
+                detail = self.status_text
+            elif self._activity_lines:
+                detail = self._activity_lines[-1][10:]      # latest log line, minus its timestamp
+            else:
+                detail = "Press Start or F9 to watch the selected region."
             if self.enter_spam_enabled and active:
                 detail += "  Enter and click automation is active."
             self._detail_label.config(text=detail)
@@ -2533,6 +2547,9 @@ class OverlayApp:
         self._set_enter_on(False)
         self._unlock_mouse()
         self._log("Auto-locate: scanning the screen...")
+        if self._detail_label is not None:      # the scan blocks the UI thread for seconds
+            self._detail_label.config(text="Auto-locate: scanning the screen...")
+            self._detail_label.update_idletasks()
 
         with mss.MSS() as sct:
             desktop = sct.monitors[0]
@@ -3741,7 +3758,8 @@ class CubesApp:
             if target is not None and not target_is_current(target):
                 target = None
             lines = "; ".join(f"{s} {v}" for s, v in self.lines if v) or "no lines read"
-            self.discord.schedule(f"{summary} after {self.rolls} roll(s) [{lines}]", target)
+            plain = f"{hit[0]} {hit[1]}".strip()          # no tier in the ping - the lines say it all
+            self.discord.schedule(f"{plain} after {self.rolls} roll(s) [{lines}]", target)
         self._activation_target = None
 
     # ---- lifecycle -----------------------------------------------------------
