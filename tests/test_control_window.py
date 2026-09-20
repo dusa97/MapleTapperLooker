@@ -229,14 +229,13 @@ class ControlWindowTest(unittest.TestCase):
             self.assertEqual(app._logo_image.width(), 144)
             self.assertEqual(app._logo_image.height(), 144)
             self.assertEqual(app._icon_image.width(), 256)
-            self.assertEqual(app._activity_list.cget("bg"), UI_SURFACE)
+            self.assertIsNone(app._activity_list)        # activity lives in the shell's Log tab
             self.assertEqual(app._start_button.cget("bg"), UI_PRIMARY)
             self.assertEqual(app._record_button.cget("bg"), UI_BUTTON)
             self.assertEqual(app._start_button.cget("text"), "Start watching  (F9)")
             self.assertEqual(app._status_label.cget("anchor"), "center")
             self.assertEqual(app._detail_label.cget("justify"), "center")
-            self.assertNotIn("center", app._activity_list.tag_names("1.0"))
-            for row in (app._start_button.master, app._record_button.master):
+            for row in (app._record_button.master,):
                 self.assertAlmostEqual(row.winfo_x() + row.winfo_width() / 2,
                                        row.master.winfo_width() / 2, delta=1)
             for button in (app._start_button, app._record_button):
@@ -262,7 +261,6 @@ class ControlWindowTest(unittest.TestCase):
             self.assertFalse(int(discord.cget("indicatoron")))
             self.assertTrue(discord.cget("takefocus"))
             self.assertEqual(app._discord_settings_button.cget("text"), "Discord settings")
-            self.assertEqual(app._activity_list.cget("state"), "disabled")
             self.assertTrue(app.overlay.winfo_exists())
             self.assertEqual(app.region, [0, 0, 100, 100])
             self.assertEqual(int(app._canvas.cget("width")), 124)

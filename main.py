@@ -1769,12 +1769,12 @@ class OverlayApp:
                          pady=20 if host is None else 8)
         outer.pack(side="left", fill="both", expand=True)
         bottom = tk.Frame(outer, bg=UI_BG)          # the Cubes-style control bar, pinned
-        bottom.pack(side="bottom", fill="both", expand=True)
+        bottom.pack(side="bottom", fill="x")
         if host is None:
             build_header(outer, self._logo_image)
 
         status = self._card(outer)
-        status.pack(fill="x")
+        status.pack(fill="both", expand=True)
         self._status_label = tk.Label(status, text="PAUSED", fg=UI_PRIMARY, bg=UI_SURFACE,
                                       font=("Segoe UI", 15, "bold"), anchor="center")
         self._status_label.pack(fill="x", padx=16, pady=(14, 2))
@@ -1782,7 +1782,7 @@ class OverlayApp:
                                       fg=UI_MUTED, bg=UI_SURFACE, anchor="center", justify="center",
                                       wraplength=450)
         self._detail_label.pack(fill="x", padx=16, pady=(0, 12))
-        self._start_button, self._box_toggle_button, self._activity_list = build_action_bar(
+        self._start_button, self._box_toggle_button = build_action_bar(
             bottom, [("Auto-locate (F7)", self._request_autolocate), ("Choose region (F8)", self._request_selection)],
             (f"Start watching  ({self.enter_hotkey.upper()})", self._start_or_stop), self._toggle_box_visibility)
         tk.Label(status, text="Auto-locate currently only recognizes the Combat Power reset dialog.",
@@ -2936,8 +2936,8 @@ class MouseLock:
 def build_action_bar(bottom, buttons, primary, on_hide_box):
     """The controls pinned under a tab, Cubes-style, used by Flames too so
     the tabs match: one full-width row of buttons with the primary action
-    last, a 'Hide box' toggle, then the Recent activity log.
-    Returns (primary_button, box_button, log_text)."""
+    last, and a 'Hide box' toggle. The activity log lives in the Log tab.
+    Returns (primary_button, box_button)."""
     row = tk.Frame(bottom, bg=UI_BG)
     row.pack(fill="x", pady=(12, 0))
     for text, command in buttons:
@@ -2949,23 +2949,7 @@ def build_action_bar(bottom, buttons, primary, on_hide_box):
     row2.pack(fill="x", pady=(6, 0))
     box_button = OverlayApp._button(row2, "Hide box", on_hide_box, UI_BUTTON, UI_TEXT)
     box_button.pack(side="left")
-    log_card = OverlayApp._card(bottom)
-    log_card.pack(fill="both", expand=True, pady=(10, 0))
-    tk.Label(log_card, text="Recent activity", fg=UI_TEXT, bg=UI_SURFACE,
-             font=("Segoe UI", 11, "bold"), anchor="w").pack(fill="x", padx=14, pady=(8, 2))
-    log = tk.Text(log_card, bg=UI_SURFACE, fg=UI_MUTED, selectbackground=UI_BORDER,
-                  selectforeground=UI_TEXT, highlightthickness=0, borderwidth=0, wrap="word",
-                  height=5, width=1, font=("Segoe UI", 10), state="disabled")
-    style = ttk.Style(bottom)
-    style.theme_use("clam")
-    style.configure("Vertical.TScrollbar", background=UI_BUTTON, troughcolor=UI_SURFACE, arrowcolor=UI_TEXT,
-                    bordercolor=UI_SURFACE, lightcolor=UI_BUTTON, darkcolor=UI_BUTTON)
-    style.map("Vertical.TScrollbar", background=[("active", UI_PRIMARY_ACTIVE)])
-    scroll = ttk.Scrollbar(log_card, command=log.yview)
-    scroll.pack(side="right", fill="y", pady=(0, 10))
-    log.config(yscrollcommand=scroll.set)
-    log.pack(fill="both", expand=True, padx=(14, 0), pady=(0, 10))
-    return primary_button, box_button, log
+    return primary_button, box_button
 
 
 def build_log_tab(host):
@@ -3215,7 +3199,7 @@ class CubesApp:
         for var in (self._stat_var, self._min_var, *self._mode_vars.values()):
             var.trace_add("write", lambda *_: self._parse_target())
 
-        self._loop_button, self._box_button, self._log_list = build_action_bar(
+        self._loop_button, self._box_button = build_action_bar(
             bottom, [("Auto-locate (F7)", self._auto_locate), ("Choose region (F8)", self._start_selection),
                      ("Read", self._read)], ("Start (F9)", self._toggle_loop), self._toggle_box)
         self._parse_target()
