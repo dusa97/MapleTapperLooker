@@ -2972,9 +2972,10 @@ class CubesApp:
                            selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
                            highlightthickness=0, font=("Segoe UI", 10)).pack(side="left", padx=(0, 14))
         self._all_stats_var = tk.BooleanVar(value=bool(saved.get("all_stats", True)))
-        tk.Checkbutton(mode_row, text="All Stats counts as STR / DEX / INT / LUK", variable=self._all_stats_var,
+        tk.Checkbutton(goal, text="All Stats counts as STR / DEX / INT / LUK", variable=self._all_stats_var,
                        bg=UI_SURFACE, fg=UI_MUTED, selectcolor=UI_BG, activebackground=UI_SURFACE,
-                       activeforeground=UI_TEXT, highlightthickness=0, font=("Segoe UI", 9)).pack(side="right")
+                       activeforeground=UI_TEXT, highlightthickness=0, font=("Segoe UI", 9),
+                       anchor="w").pack(fill="x", padx=14, pady=(0, 6))
         self._all_stats_var.trace_add("write", lambda *_: self._parse_target())
         goal_row = tk.Frame(goal, bg=UI_SURFACE)
         goal_row.pack(fill="x", padx=14, pady=(0, 10))
