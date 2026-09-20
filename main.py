@@ -762,6 +762,30 @@ def _is_all_stats(line):
     return "all" in h and "stat" in h
 
 
+class LegendaryOnly:
+    """Wrap a goal so it only sees legendary lines, and additionally
+    requires all three lines to be legendary. Ticking 'all legendary' on
+    a goal kind wraps that goal; the others are unaffected."""
+    def __init__(self, goal):
+        self.goal = goal
+
+    def describe(self):
+        return self.goal.describe() + " (all 3 lines legendary)"
+
+    @staticmethod
+    def _legendary(lines, tiers):
+        return [line if tier == "legendary" else (line[0], None) for line, tier in zip(lines, tiers)]
+
+    def check(self, lines, tiers):
+        if len(tiers) < 3 or any(t != "legendary" for t in tiers[:3]):
+            return None
+        return self.goal.check(self._legendary(lines, tiers), tiers)
+
+    def progress(self, lines, tiers):
+        n = sum(1 for t in tiers[:3] if t == "legendary")
+        return self.goal.progress(self._legendary(lines, tiers), tiers) + f"  [{n}/3 legendary]"
+
+
 class AllOfGoal:
     """Every enabled goal must be satisfied by the same roll. This is how
     the three goal kinds combine when more than one is ticked."""
@@ -2928,6 +2952,15 @@ class CubesApp:
         goal_row = tk.Frame(goal, bg=UI_SURFACE)
         goal_row.pack(fill="x", padx=14, pady=(0, 10))
         self._goal_row = goal_row
+        saved_leg = saved.get("legendary") if isinstance(saved.get("legendary"), dict) else {}
+        self._leg_vars = {k: tk.BooleanVar(value=bool(saved_leg.get(k, False))) for k in ("total", "combo", "perstat")}
+
+        def leg_box(parent, key, **pack):
+            tk.Checkbutton(parent, text="all legendary", variable=self._leg_vars[key], bg=UI_SURFACE, fg=UI_MUTED,
+                           selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
+                           highlightthickness=0, font=("Segoe UI", 9)).pack(**pack)
+            self._leg_vars[key].trace_add("write", lambda *_: self._parse_target())
+        self._leg_box = leg_box
         self._stat_var = tk.StringVar(value=saved.get("stat") if saved.get("stat") in stat_names else stat_names[0])
         self._min_var = tk.StringVar(value=str(saved.get("min", "")))
         style = ttk.Style(self.root)
@@ -2945,6 +2978,7 @@ class CubesApp:
         min_entry.pack(side="left", ipady=5)
         self._unit_label = tk.Label(goal_row, text="%", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 11))
         self._unit_label.pack(side="left", padx=(4, 10))
+        self._leg_box(goal_row, "total", side="left", padx=(6, 0))
         # Combination: a checkbox per stat, in a grid under the mode switch.
         combo = tk.Frame(goal, bg=UI_SURFACE)
         self._combo_frame = combo
@@ -2959,6 +2993,7 @@ class CubesApp:
                            highlightthickness=0, font=("Segoe UI", 10, "bold")).pack(side="left", padx=(6, 0))
         tk.Label(count_row, text="of the 3 lines are one of:", fg=UI_MUTED, bg=UI_SURFACE,
                  font=("Segoe UI", 10)).pack(side="left", padx=(8, 0))
+        self._leg_box(count_row, "combo", side="left", padx=(16, 0))
         self._count_var.trace_add("write", lambda *_: self._parse_target())
         self._combo_vars = {}
         for i, name in enumerate(stat_names):
@@ -2972,8 +3007,11 @@ class CubesApp:
         perstat = tk.Frame(goal, bg=UI_SURFACE)
         self._perstat_frame = perstat
         saved_needs = saved.get("needs", {}) if isinstance(saved.get("needs"), dict) else {}
-        tk.Label(perstat, text="Lines required, per stat (0 = not needed):", fg=UI_MUTED, bg=UI_SURFACE,
-                 font=("Segoe UI", 10)).grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 6))
+        head = tk.Frame(perstat, bg=UI_SURFACE)
+        head.grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 6))
+        tk.Label(head, text="Lines required, per stat (0 = not needed):", fg=UI_MUTED, bg=UI_SURFACE,
+                 font=("Segoe UI", 10)).pack(side="left")
+        self._leg_box(head, "perstat", side="left", padx=(16, 0))
         self._perstat_vars = {}
         for i, name in enumerate(stat_names):
             row, col = 1 + i // 2, (i % 2) * 2
@@ -3198,6 +3236,9 @@ class CubesApp:
     def _describe(target):
         return target.describe()
 
+    def _wrap(self, goal, key):
+        return LegendaryOnly(goal) if self._leg_vars[key].get() else goal
+
     def _parse_target(self):
         """Compose the (words, minimum, wants_percent, tier) target from the
         pickers - the same tuple parse_potential_target produced from typed
@@ -3222,12 +3263,12 @@ class CubesApp:
         goals, problems = [], []
         if "total" in modes:
             if raw.isdigit() and int(raw) > 0:
-                goals.append(TotalGoal(name, int(raw), unit))
+                goals.append(self._wrap(TotalGoal(name, int(raw), unit), "total"))
             else:
                 problems.append("enter a minimum value for the total")
         if "combo" in modes:
             if chosen:
-                goals.append(ComboGoal(chosen, int(self._count_var.get())))
+                goals.append(self._wrap(ComboGoal(chosen, int(self._count_var.get())), "combo"))
             else:
                 problems.append("tick the stats for the combination")
         if "perstat" in modes:
@@ -3237,7 +3278,7 @@ class CubesApp:
             elif total_needed > 3:
                 problems.append(f"lines per stat needs {total_needed} lines - an item only has 3")
             else:
-                goals.append(PerStatGoal(needs))
+                goals.append(self._wrap(PerStatGoal(needs), "perstat"))
         if not modes:
             self.target = None
             self._target_label.config(text="Tick at least one way of cubing.", fg=UI_MUTED)
@@ -3250,7 +3291,8 @@ class CubesApp:
         try:
             CUBES_TARGET_FILE.write_text(json.dumps({"modes": modes, "stat": name, "min": raw, "combo": chosen,
                                                      "count": int(self._count_var.get()), "needs": needs,
-                                                     "all_stats": ALL_STATS_COUNTS}),
+                                                     "all_stats": ALL_STATS_COUNTS,
+                                                     "legendary": {k: v.get() for k, v in self._leg_vars.items()}}),
                                          encoding="utf-8")
         except Exception:
             pass
