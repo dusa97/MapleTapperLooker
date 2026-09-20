@@ -283,6 +283,8 @@ CUBES_CHANGE_POLL   = 0.03   # seconds between cheap pixel-difference checks whi
 CUBES_CHANGE_FRAC   = 0.004  # fraction of pixels that must differ to count as "the panel changed"
 CUBES_CHANGE_TIMEOUT = 3.0   # give up waiting after this long (no cubes left, dialog closed, ...)
 CUBES_SETTLE_MAX     = 0.5   # after the first changed frame, wait up to this long for the redraw to finish
+CUBES_ENTER_INTERVAL = 0.08  # Cubes spam cadence - twice Flames' rate (0.16 / 0.24); the read pause
+CUBES_CLICK_INTERVAL = 0.12  # between rolls is where the time goes, not the presses themselves
 # The material row under the panel: the cube type in use sits on a cyan-highlighted slot
 # (rgb ~(80,197,220)), 38x38 px, always 192 px below the "Potential" label, sliding
 # sideways to whichever slot is selected. When that cube type runs out the game
@@ -3352,8 +3354,8 @@ class CubesApp:
         again after a non-matching read - so the game gets as many presses
         as it needs to get through its prompts, and none while we read."""
         last_enter = last_click = last_lock = 0.0
-        next_enter = OverlayApp._jittered(ENTER_INTERVAL)
-        next_click = OverlayApp._jittered(CLICK_INTERVAL)
+        next_enter = OverlayApp._jittered(CUBES_ENTER_INTERVAL)
+        next_click = OverlayApp._jittered(CUBES_CLICK_INTERVAL)
         while self.looping and self._running:
             if self.spamming:
                 now = time.perf_counter()
@@ -3363,11 +3365,11 @@ class CubesApp:
                 if now - last_enter >= next_enter:
                     pydirectinput.press("enter")
                     last_enter = now
-                    next_enter = OverlayApp._jittered(ENTER_INTERVAL)
+                    next_enter = OverlayApp._jittered(CUBES_ENTER_INTERVAL)
                 if now - last_click >= next_click:
                     pydirectinput.click()
                     last_click = now
-                    next_click = OverlayApp._jittered(CLICK_INTERVAL)
+                    next_click = OverlayApp._jittered(CUBES_CLICK_INTERVAL)
             time.sleep(0.001)
 
     def _cube_loop(self):
