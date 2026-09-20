@@ -290,6 +290,10 @@ CUBES_MIN_TEXT_INK   = 0.008 # fraction of OCR-mask ink that means "the stat lin
 CUBES_PRESS_GAP = 0.09       # seconds between the presses of one sequence (jittered +/-30%)
 CUBES_SEQUENCE_ENTERS = 3    # Enters after the click; a third is harmless if the game only needs two
 CUBES_SEQUENCE_RETRIES = 2   # re-send the sequence this many times if the panel doesn't change
+# Flames uses the same sequence; its dialog can need another press (confirm popups), so
+# a no-change wait is short and simply leads to the next sequence rather than a stop.
+FLAMES_CHANGE_TIMEOUT = 1.0  # seconds to wait for the box to redraw after a sequence
+FLAMES_READ_WAIT = 1.0       # seconds to wait for one OCR read of the settled frame
 # The material row under the panel: the cube type in use sits on a cyan-highlighted slot
 # (rgb ~(80,197,220)), 38x38 px, always 192 px below the "Potential" label, sliding
 # sideways to whichever slot is selected. When that cube type runs out the game
@@ -1710,6 +1714,7 @@ class OverlayApp:
         # again. OCR and detection audio run only while F9 is active.
         self.enter_spam_enabled = enter_spam
         self.enter_hotkey       = enter_hotkey
+        self._reads             = 0            # OCR reads completed; the input thread waits on it
         self.enter_interval     = enter_interval
         self.click_interval     = click_interval
         self.enter_on           = False
@@ -2231,40 +2236,50 @@ class OverlayApp:
         return interval * random.uniform(1 - spread, 1 + spread)
 
     def _spam_loop(self):
-        """
-        Runs on its own thread so the millisecond-scale Enter/click cadence
-        isn't tied to the (much coarser) OCR poll interval. pydirectinput is
-        built specifically for games that read DirectInput device state rather
-        than the Windows message queue or global keyboard hooks — both
-        pyautogui's VK press and keyboard's scan-code SendInput can be invisible
-        to those games. Enter and click run on independent cadences, each
-        re-randomized after every press so the gap itself varies over time
-        rather than just being offset by a fixed amount.
-        """
-        last_enter_time = 0.0
-        last_click_time = 0.0
-        last_lock_refresh = 0.0
-        next_enter_gap = self._jittered(self.enter_interval)
-        next_click_gap = self._jittered(self.click_interval)
-        while self._running:
-            if self.enter_on and not self.hit and not self._selecting:
-                now = time.perf_counter()
-                # Re-assert the mouse lock a few times a second — Windows
-                # clears ClipCursor on focus changes, which happen
-                # continuously while the game (not this overlay) holds
-                # foreground focus during actual play.
-                if now - last_lock_refresh >= 0.05:
-                    self._reassert_mouse_lock()
-                    last_lock_refresh = now
-                if now - last_enter_time >= next_enter_gap:
+        """Input thread. Flames now presses the way Cubes does: one reset is one
+        fixed sequence - left click, then Enters, ~90 ms apart - and nothing
+        else is pressed until the box has changed (the dialog redrew), held
+        still, and the OCR thread has read that settled frame. No continuous
+        cadence, so a press can never land on top of a fresh popup.
+        pydirectinput is used because the game reads DirectInput state, which
+        pyautogui/keyboard SendInput can be invisible to."""
+        def active():
+            return self._running and self.enter_on and not self.hit and not self._selecting
+
+        with mss.MSS() as sct:
+            while self._running:
+                if not active():
+                    time.sleep(0.005)
+                    continue
+                self._reassert_mouse_lock()
+                before = np.asarray(_grab(tuple(self.region), sct).convert("L"), dtype=np.int16)
+                pydirectinput.click()
+                for _ in range(CUBES_SEQUENCE_ENTERS):
+                    time.sleep(self._jittered(CUBES_PRESS_GAP))
+                    if not active():
+                        break
                     pydirectinput.press("enter")
-                    last_enter_time = now
-                    next_enter_gap = self._jittered(self.enter_interval)
-                if now - last_click_time >= next_click_gap:
-                    pydirectinput.click()
-                    last_click_time = now
-                    next_click_gap = self._jittered(self.click_interval)
-            time.sleep(0.001)
+                    self._reassert_mouse_lock()
+                # Wait for the box to change, then to hold still (two polls agree).
+                deadline = time.perf_counter() + FLAMES_CHANGE_TIMEOUT
+                prev, changed = before, False
+                while active() and time.perf_counter() < deadline:
+                    time.sleep(CUBES_CHANGE_POLL)
+                    self._reassert_mouse_lock()
+                    cur = np.asarray(_grab(tuple(self.region), sct).convert("L"), dtype=np.int16)
+                    if cur.shape != prev.shape:
+                        break
+                    diff = (np.abs(cur - prev) > 40).mean()
+                    if not changed:
+                        changed = diff >= CUBES_CHANGE_FRAC
+                    elif diff < CUBES_CHANGE_FRAC:
+                        break                           # changed and now still
+                    prev = cur
+                # Let the OCR thread finish one read of the settled frame before pressing again.
+                reads, deadline = self._reads, time.perf_counter() + FLAMES_READ_WAIT
+                while active() and self._reads == reads and time.perf_counter() < deadline:
+                    time.sleep(0.005)
+                    self._reassert_mouse_lock()
 
     def _read_with_retry(self, sct):
         try:
@@ -2293,6 +2308,7 @@ class OverlayApp:
                 activation = self._activation
                 t0 = time.perf_counter()
                 value, _raw_img = self._read_with_retry(sct)
+                self._reads += 1
                 if (self._selecting or revision != self._region_revision
                         or not self.enter_on or activation != self._activation):
                     continue
@@ -2627,8 +2643,8 @@ class OverlayApp:
         print(f"[hotkey] {self.beep_hotkey.upper()}: mute/unmute detection audio.", flush=True)
         if self.enter_spam_enabled:
             print(f"[hotkey] Press {self.enter_hotkey.upper()} to start/stop Enter+Left-Click spam "
-                  f"(starts OFF — Enter every {self.enter_interval*1000:.0f}ms, "
-                  f"click every {self.click_interval*1000:.0f}ms while nothing is detected; "
+                  f"(starts OFF — click + {CUBES_SEQUENCE_ENTERS} Enters {CUBES_PRESS_GAP*1000:.0f}ms apart, "
+                  f"then wait for the dialog to redraw and be read, repeat; "
                   f"stops automatically — with one beep — the instant a '+<number>' is detected).\n",
                   flush=True)
             self._spam_thread = threading.Thread(target=self._spam_loop, daemon=True)
