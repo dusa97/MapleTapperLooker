@@ -319,9 +319,14 @@ class CubeProfile:
     be calibrated independently once a capture exists."""
     def __init__(self, name, label_path, block=(79 / 50, 12 / 15, 250 / 50, 70 / 15),
                  icon_x=(9 / 210, 19 / 210), icon_y=(4 / 70, 13 / 70), line_step=25 / 70,
-                 row=(-4 / 50, 192 / 15, 400 / 50, 38 / 15), target_height=210, calibrated=True):
+                 row=(-4 / 50, 192 / 15, 400 / 50, 38 / 15), target_height=210, calibrated=True,
+                 pick_label="only", cubes_left="highlight", count_box=None, commit_on_match=True):
         self.name = name
         self.label_path = label_path
+        self.pick_label = pick_label          # "only": one label expected; "rightmost": AFTER card of a BEFORE/AFTER pair
+        self.cubes_left = cubes_left          # "highlight": cyan slot in the material row; "count": OCR a remaining-count pill
+        self.count_box = count_box            # (dx, dy, w, h) ratios of the label for the count pill, when cubes_left == "count"
+        self.commit_on_match = commit_on_match  # False: the game shows the result before you commit, so a match means STOP, don't press
         self.block_dx, self.block_dy, self.block_w, self.block_h = block
         self.icon_x, self.icon_y, self.line_step = icon_x, icon_y, line_step
         self.row_x0, self.row_dy, self.row_w, self.row_h = row
@@ -348,10 +353,20 @@ class CubeProfile:
 
 CUBE_PROFILES = {
     "glowing": CubeProfile("Glowing", POTENTIAL_LABEL_PATH),
-    # ponytail: Bright starts as a copy of Glowing - no Bright capture exists yet, so nothing
-    # is measured. calibrated=False makes the tab say so. Replace label_path/offsets from a
-    # real Bright-cube Potential screenshot and flip calibrated to True.
-    "bright": CubeProfile("Bright", POTENTIAL_LABEL_PATH, calibrated=False),
+    # Bright cubes use the game's Reset dialog: BEFORE and AFTER cards side by side, the new
+    # roll shown BEFORE you commit, "Reset x1" to roll again (which makes AFTER the new
+    # BEFORE). Measured on assets/reference/bright_example.png: Flames' own "Combat Power
+    # Change" template finds both cards at 1.000; the rightmost is AFTER, and its three lines
+    # sit ~100 px ABOVE that label (block 202x70 at (288,312) for a 146x10 label at
+    # (324,413)), icons at the same per-line positions and tier colours as the Potential
+    # panel. Cubes left is the "Remaining" pill bottom-left, 258 px left / 213 px below the
+    # label. A match means stop and leave the dialog for the user - pressing would reset it.
+    "bright": CubeProfile("Bright", LABEL_TEMPLATE_PATH,
+                          block=(-36 / 146, -101 / 10, 202 / 146, 70 / 10),
+                          icon_x=(9 / 202, 19 / 202), icon_y=(6 / 70, 16 / 70), line_step=24 / 70,
+                          pick_label="rightmost", cubes_left="count",
+                          count_box=(-258 / 146, 213 / 10, 58 / 146, 20 / 10),
+                          commit_on_match=False),
 }
 CUBE_TYPE_DEFAULT = "glowing"
 
@@ -3063,8 +3078,8 @@ class CubesApp:
         lines/icons/cube row sit. Persisted so the readers pick it up too."""
         key = self._cube_var.get()
         self.profile = CUBE_PROFILES.get(key, CUBE_PROFILES[CUBE_TYPE_DEFAULT])
-        self._cube_note.config(text="" if self.profile.calibrated else
-                               "not calibrated yet - using the Glowing layout")
+        self._cube_note.config(text="" if self.profile.commit_on_match else
+                               "reads the AFTER card; a match stops before Reset so you keep it")
         try:
             data = json.loads(MODE_FILE.read_text(encoding="utf-8"))
         except Exception:
@@ -3121,6 +3136,18 @@ class CubesApp:
         position is known): never stop a run on a guess."""
         if not self.label_box:
             return True
+        if self.profile.cubes_left == "count":
+            lx, ly, sw, sh = self.label_box
+            dx, dy, w, h = self.profile.count_box
+            box = (round(lx + dx * sw), round(ly + dy * sh), round(w * sw), round(h * sh))
+            try:
+                img = _grab(box)
+                big = img.resize((img.width * 4, img.height * 4), Image.LANCZOS)
+                txt = pytesseract.image_to_string(big, config="--psm 7 -c tessedit_char_whitelist=0123456789").strip()
+            except Exception:
+                return True
+            # Unreadable = don't stop on a guess; a clean "0" = out of cubes.
+            return not (txt.isdigit() and int(txt) == 0)
         strip = self.profile.row_for(self.label_box)
         try:
             hsv = np.array(_grab(strip).convert("HSV")).astype(int)
@@ -3214,7 +3241,8 @@ class CubesApp:
                 desktop = sct.monitors[0]
                 shot = sct.grab(desktop)
             full_gray = np.array(Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX").convert("L"))
-            best, peaks, shape = locate_label(full_gray, self.profile.label_gray(), max_peaks=1)
+            best, peaks, shape = locate_label(full_gray, self.profile.label_gray(),
+                                              max_peaks=4 if self.profile.pick_label == "rightmost" else 1)
         except Exception as error:
             self._set_status(f"Auto-locate failed: {error}")
             self._sync_overlay()
@@ -3224,7 +3252,7 @@ class CubesApp:
             self._sync_overlay()
             return
         sh, sw = shape
-        x, y = peaks[0]
+        x, y = max(peaks) if self.profile.pick_label == "rightmost" else peaks[0]
         self.label_box = (desktop["left"] + x, desktop["top"] + y, sw, sh)
         self._save_region()
         self.region = self.profile.block_for((desktop["left"] + x, desktop["top"] + y), (sh, sw))
@@ -3414,7 +3442,8 @@ class CubesApp:
     def _on_hit(self, hit):
         rank = (self.tiers[0] or "").capitalize()
         summary = f"{rank} {hit[0]} {hit[1]}".replace("  ", " ").strip()
-        self._stop_loop(f"Got it after {self.rolls} roll(s): {summary}")
+        tail = "" if self.profile.commit_on_match else " - it's showing in AFTER; close the dialog to keep it (Reset would roll it away)."
+        self._stop_loop(f"Got it after {self.rolls} roll(s): {summary}{tail}")
         if self.beep_enabled:
             threading.Thread(target=beep, daemon=True).start()
         if self.discord is not None and self.discord.enabled and self._discord_modes()["cubes"]:
