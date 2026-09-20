@@ -241,6 +241,7 @@ BEEP_HOTKEY     = "f10"   # mutes/unmutes the detection beep — starts UNMUTED
 AUTOLOCATE_HOTKEY = "f7"   # scans the screen for the Combat Power Change panel and snaps the box + cursor to it
 LABEL_TEMPLATE_PATH = Path(__file__).parent / "assets" / "reference" / "combat_power_label.png"
 AUTOLOCATE_MIN_CONFIDENCE = 0.75    # cv2.TM_CCOEFF_NORMED score below this is treated as "not found"
+AUTOLOCATE_COARSE_TRUST = 0.85      # coarse-to-fine result below this -> full-resolution sweep as well
 
 # Cubes: the Potential panel. Anchored on its "Potential" label (assets/reference/
 # potential_label.png, cut from potential_example.png) the same way Flames anchors on
@@ -525,6 +526,16 @@ def locate_label(full_gray, tmpl_gray, max_peaks=4):
         maxval, res, shape = match(full_gray, AUTOLOCATE_SCALES[i])
         if maxval > best_val:
             best_val, best_res, best_shape = maxval, res, shape
+    if best_val < AUTOLOCATE_COARSE_TRUST:
+        # A 10 px label is 5 px at half size - too small to pick the scale from
+        # (seen: the coarse pass chose 0.6x while the full-size match at 1.0x was
+        # perfect). When the coarse pick is doubtful, do the full sweep.
+        for scale in sorted(AUTOLOCATE_SCALES, key=lambda sc: abs(sc - 1.0)):   # 1.0x first: the usual case
+            maxval, res, shape = match(full_gray, scale)
+            if maxval > best_val:
+                best_val, best_res, best_shape = maxval, res, shape
+            if best_val >= 0.95:
+                break
     if best_res is None or best_val < AUTOLOCATE_MIN_CONFIDENCE:
         return best_val, [], best_shape
     sh, sw = best_shape
@@ -3794,6 +3805,12 @@ class CubesApp:
         if not peaks:
             self._set_status(f"Auto-locate: Potential panel not found (best match {best:.2f}).")
             self._sync_overlay()
+            try:        # keep what the screen looked like, for support
+                DEBUG_CAPTURE_DIR.mkdir(exist_ok=True)
+                Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX").save(
+                    DEBUG_CAPTURE_DIR / "cubes_autolocate_fail.png")
+            except Exception:
+                pass
             return
         sh, sw = shape
         if self.profile.pick_label == "rightmost":
