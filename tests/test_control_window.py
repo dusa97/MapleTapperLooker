@@ -232,7 +232,7 @@ class ControlWindowTest(unittest.TestCase):
             self.assertIsNone(app._activity_list)        # activity lives in the shell's Log tab
             self.assertEqual(app._start_button.cget("bg"), UI_PRIMARY)
             self.assertEqual(app._record_button.cget("bg"), UI_BUTTON)
-            self.assertEqual(app._start_button.cget("text"), "Start watching  (F9)")
+            self.assertEqual(app._start_button.cget("text"), "Start  (F9)")
             self.assertEqual(app._status_label.cget("anchor"), "center")
             self.assertEqual(app._detail_label.cget("justify"), "center")
             for row in (app._record_button.master,):

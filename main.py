@@ -1817,8 +1817,8 @@ class OverlayApp:
                                       wraplength=450)
         self._detail_label.pack(fill="x", padx=16, pady=(0, 12))
         self._start_button, self._box_toggle_button = build_action_bar(
-            bottom, [("Auto-locate (F7)", self._request_autolocate), ("Choose region (F8)", self._request_selection)],
-            (f"Start watching  ({self.enter_hotkey.upper()})", self._start_or_stop), self._toggle_box_visibility)
+            bottom, [("Locate (F7)", self._request_autolocate), ("Region (F8)", self._request_selection)],
+            (f"Start  ({self.enter_hotkey.upper()})", self._start_or_stop), self._toggle_box_visibility)
         tk.Label(status, text="Auto-locate currently only recognizes the Combat Power reset dialog.",
                  fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 8), anchor="center",
                  justify="center", wraplength=450).pack(fill="x", padx=16, pady=(0, 12))
@@ -1976,7 +1976,7 @@ class OverlayApp:
     def _countdown_start(self, seconds):
         self.status_text = f"Starting in {seconds}… click your game target now."
         self._log(self.status_text)
-        self._start_button.config(text=f"Cancel start  ({self.enter_hotkey.upper()})")
+        self._start_button.config(text=f"Cancel  ({self.enter_hotkey.upper()})")
         self._start_after = self.root.after(1000, self._finish_countdown, seconds - 1)
 
     def _finish_countdown(self, seconds):
@@ -2482,8 +2482,8 @@ class OverlayApp:
             if self.enter_spam_enabled and active:
                 detail += "  Enter and click automation is active."
             self._detail_label.config(text=detail)
-            button_text = ("Cancel start" if self._start_after is not None else
-                           "Stop watching" if self.enter_on else "Start watching")
+            button_text = ("Cancel" if self._start_after is not None else
+                           "Stop" if self.enter_on else "Start")
             self._start_button.config(text=f"{button_text}  ({self.enter_hotkey.upper()})",
                                       state="normal" if self._ocr_available and not self._selecting else "disabled")
             self.beep_enabled = not self._audio.muted
@@ -3114,19 +3114,19 @@ class CubeToggle(tk.Canvas):
 
 def build_action_bar(bottom, buttons, primary, on_hide_box):
     """The controls pinned under a tab, Cubes-style, used by Flames too so
-    the tabs match: one full-width row of buttons with the primary action
-    last, and a 'Hide box' toggle. The activity log lives in the Log tab.
+    the tabs match: one row - the secondary buttons (compact), the primary
+    action, and the 'Hide box' toggle. The activity log lives in the Log tab.
     Returns (primary_button, box_button)."""
     row = tk.Frame(bottom, bg=UI_BG)
     row.pack(fill="x", pady=(12, 0))
     for text, command in buttons:
-        OverlayApp._button(row, text, command, UI_BUTTON, UI_TEXT).pack(
-            side="left", expand=True, fill="x", padx=(0, 6))
+        b = OverlayApp._button(row, text, command, UI_BUTTON, UI_TEXT)
+        b.config(padx=8)
+        b.pack(side="left", expand=True, fill="x", padx=(0, 6))
     primary_button = OverlayApp._button(row, primary[0], primary[1], UI_PRIMARY, UI_BG)
-    primary_button.pack(side="left", expand=True, fill="x")
-    row2 = tk.Frame(bottom, bg=UI_BG)
-    row2.pack(fill="x", pady=(6, 0))
-    box_button = OverlayApp._button(row2, "Hide box", on_hide_box, UI_BUTTON, UI_TEXT)
+    primary_button.pack(side="left", expand=True, fill="x", padx=(0, 6))
+    box_button = OverlayApp._button(row, "Hide box", on_hide_box, UI_BUTTON, UI_TEXT)
+    box_button.config(padx=8)
     box_button.pack(side="left")
     return primary_button, box_button
 
@@ -3416,7 +3416,7 @@ class CubesApp:
             var.trace_add("write", lambda *_: self._parse_target())
 
         self._loop_button, self._box_button = build_action_bar(
-            bottom, [("Auto-locate (F7)", self._auto_locate), ("Choose region (F8)", self._start_selection),
+            bottom, [("Locate (F7)", self._auto_locate), ("Region (F8)", self._start_selection),
                      ("Read", self._read)], ("Start (F9)", self._toggle_loop), self._toggle_box)
         self._cube_var.trace_add("write", lambda *_: self._set_cube_type())
         self._set_cube_type()
