@@ -762,6 +762,23 @@ def _is_all_stats(line):
     return "all" in h and "stat" in h
 
 
+class AllOfGoal:
+    """Every enabled goal must be satisfied by the same roll. This is how
+    the three goal kinds combine when more than one is ticked."""
+    def __init__(self, goals):
+        self.goals = list(goals)
+
+    def describe(self):
+        return "  AND  ".join(g.describe() for g in self.goals)
+
+    def check(self, lines, tiers):
+        results = [g.check(lines, tiers) for g in self.goals]
+        return " + ".join(results) if all(results) else None
+
+    def progress(self, lines, tiers):
+        return "\n\u2192 ".join(g.progress(lines, tiers) for g in self.goals)
+
+
 def line_matches_target(line, target):
     """Does one OCR'd (stat, value) line satisfy a parsed target? The stat
     must contain every target word ("str" matches "STR" and "str" lines
@@ -2893,12 +2910,14 @@ class CubesApp:
         saved = self._load_target()
         stat_names = [name for name, _, _ in POTENTIAL_STATS]
         # Mode: 'total' (one stat, reach a number) or 'combo' (three lines from a set).
-        self._mode_var = tk.StringVar(value=saved.get("mode") if saved.get("mode") in ("total", "combo", "perstat") else "total")
+        saved_modes = saved.get("modes") if isinstance(saved.get("modes"), list) else [saved.get("mode", "total")]
+        self._mode_vars = {k: tk.BooleanVar(value=k in saved_modes) for k in ("total", "combo", "perstat")}
+        if not any(v.get() for v in self._mode_vars.values()):
+            self._mode_vars["total"].set(True)
         mode_row = tk.Frame(goal, bg=UI_SURFACE)
         mode_row.pack(fill="x", padx=14, pady=(0, 6))
-        self._mode_var.set(self._mode_var.get() if self._mode_var.get() in ("total", "combo", "perstat") else "total")
         for value, text in (("total", "Reach a total"), ("combo", "Combination of stats"), ("perstat", "Lines per stat")):
-            tk.Radiobutton(mode_row, text=text, value=value, variable=self._mode_var, bg=UI_SURFACE, fg=UI_TEXT,
+            tk.Checkbutton(mode_row, text=text, variable=self._mode_vars[value], bg=UI_SURFACE, fg=UI_TEXT,
                            selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
                            highlightthickness=0, font=("Segoe UI", 10)).pack(side="left", padx=(0, 14))
         self._all_stats_var = tk.BooleanVar(value=bool(saved.get("all_stats", True)))
@@ -2971,7 +2990,7 @@ class CubesApp:
             var.trace_add("write", lambda *_: self._parse_target())
         self._target_label = tk.Label(goal, text="", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9), anchor="w")
         self._target_label.pack(fill="x", padx=14, pady=(0, 10))
-        for var in (self._stat_var, self._min_var, self._mode_var):
+        for var in (self._stat_var, self._min_var, *self._mode_vars.values()):
             var.trace_add("write", lambda *_: self._parse_target())
 
         row = tk.Frame(outer, bg=UI_BG)
@@ -3191,39 +3210,45 @@ class CubesApp:
         unit = next((u for n, _w, u in POTENTIAL_STATS if n == name), "%")
         self._unit_label.config(text=unit)
         raw = self._min_var.get().strip().rstrip("%")
-        mode = self._mode_var.get()
+        modes = [k for k, v in self._mode_vars.items() if v.get()]
         chosen = [n for n, v in self._combo_vars.items() if v.get()]
-        # show the controls for the active mode only
         needs = {n: int(v.get()) for n, v in self._perstat_vars.items() if v.get() != "0"}
         frames = {"total": self._goal_row, "combo": self._combo_frame, "perstat": self._perstat_frame}
         for key, frame in frames.items():
-            if key != mode:
-                frame.pack_forget()
-        frames[mode].pack(fill="x", padx=14, pady=(0, 10 if mode == "total" else 8), before=self._target_label)
-        if mode == "perstat":
+            frame.pack_forget()
+        for key in ("total", "combo", "perstat"):
+            if key in modes:
+                frames[key].pack(fill="x", padx=14, pady=(0, 10 if key == "total" else 8), before=self._target_label)
+        goals, problems = [], []
+        if "total" in modes:
+            if raw.isdigit() and int(raw) > 0:
+                goals.append(TotalGoal(name, int(raw), unit))
+            else:
+                problems.append("enter a minimum value for the total")
+        if "combo" in modes:
+            if chosen:
+                goals.append(ComboGoal(chosen, int(self._count_var.get())))
+            else:
+                problems.append("tick the stats for the combination")
+        if "perstat" in modes:
             total_needed = sum(needs.values())
             if not needs:
-                self.target = None
-                self._target_label.config(text="Set how many lines of each stat you need.", fg=UI_MUTED)
+                problems.append("set how many lines of each stat you need")
             elif total_needed > 3:
-                self.target = None
-                self._target_label.config(text=f"That needs {total_needed} lines - an item only has 3.", fg=UI_PRIMARY)
+                problems.append(f"lines per stat needs {total_needed} lines - an item only has 3")
             else:
-                self.target = PerStatGoal(needs)
-                self._target_label.config(text="Stop when the item has " + self.target.describe(), fg=UI_ACCENT)
-        elif mode == "combo":
-            count = int(self._count_var.get())
-            self.target = ComboGoal(chosen, count) if chosen else None
-            self._target_label.config(text=("Stop when " + self.target.describe()) if chosen
-                                      else "Tick the stats the lines may be.", fg=UI_ACCENT if chosen else UI_MUTED)
-        elif raw.isdigit() and int(raw) > 0:
-            self.target = TotalGoal(name, int(raw), unit)
-            self._target_label.config(text="Stop at: " + self.target.describe(), fg=UI_ACCENT)
-        else:
+                goals.append(PerStatGoal(needs))
+        if not modes:
             self.target = None
-            self._target_label.config(text="Enter a minimum value.", fg=UI_MUTED)
+            self._target_label.config(text="Tick at least one way of cubing.", fg=UI_MUTED)
+        elif problems:
+            self.target = None
+            self._target_label.config(text="; ".join(problems).capitalize() + ".", fg=UI_PRIMARY)
+        else:
+            self.target = goals[0] if len(goals) == 1 else AllOfGoal(goals)
+            self._target_label.config(text="Stop when: " + self.target.describe(), fg=UI_ACCENT)
         try:
-            CUBES_TARGET_FILE.write_text(json.dumps({"mode": mode, "stat": name, "min": raw, "combo": chosen,
+            CUBES_TARGET_FILE.write_text(json.dumps({"modes": modes, "stat": name, "min": raw, "combo": chosen,
                                                      "count": int(self._count_var.get()), "needs": needs,
                                                      "all_stats": ALL_STATS_COUNTS}),
                                          encoding="utf-8")
