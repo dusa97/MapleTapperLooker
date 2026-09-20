@@ -376,6 +376,10 @@ CUBE_PROFILES = {
                           commit_on_match=False),
 }
 CUBE_TYPE_DEFAULT = "glowing"
+# The Cubes tab is tinted with the chosen cube's colour: the Glowing cube's cyan
+# glow (#50C4D9 in the game) and the Bright cube's magenta (#A032A8), both
+# darkened so the cards and text stay readable.
+CUBE_TINTS = {"glowing": "#0E3F4F", "bright": "#3F0F47"}
 
 
 def active_cube_profile():
@@ -3202,6 +3206,7 @@ class CubesApp:
                      ("Read", self._read)], ("Start (F9)", self._toggle_loop), self._toggle_box)
         self._parse_target()
         self._bind_wheel()
+        self._tint(CUBE_TINTS.get(self._cube_var.get(), UI_BG))
         # Same overlay as Flames: a click-through-transparent window with a
         # coloured frame you drag to move and corner handles you drag to
         # resize. The frame is drawn outside the capture region so it is never
@@ -3307,12 +3312,28 @@ class CubesApp:
         widget.config(state="disabled")
         widget.yview_moveto(1)
 
+    def _tint(self, colour):
+        """Recolour every plain-background widget in the tab (frames, canvas,
+        button rows) to the cube's tint; cards keep their own surface colour."""
+        old = getattr(self, "_tint_colour", UI_BG)
+        self._tint_colour = colour
+        stack = [self.host]
+        while stack:
+            w = stack.pop()
+            try:
+                if str(w.cget("bg")) in (old, UI_BG) and w.winfo_class() != "Entry":
+                    w.configure(bg=colour)
+            except tk.TclError:
+                pass
+            stack.extend(w.winfo_children())
+
     def _set_cube_type(self):
         """Switch the active profile: which label F7 anchors on and where the
         lines/icons/cube row sit. Persisted so the readers pick it up too."""
         key = self._cube_var.get()
         self.profile = CUBE_PROFILES.get(key, CUBE_PROFILES[CUBE_TYPE_DEFAULT])
         self._cube_note.config(text="")
+        self._tint(CUBE_TINTS.get(key, UI_BG))
         try:
             data = json.loads(MODE_FILE.read_text(encoding="utf-8"))
         except Exception:
