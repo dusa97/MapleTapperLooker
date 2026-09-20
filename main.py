@@ -3259,13 +3259,18 @@ class CubesApp:
         self._leg_box(count_row, "combo", side="left", padx=(16, 0))
         self._count_var.trace_add("write", lambda *_: self._parse_target())
         self._combo_vars = {}
-        for i, name in enumerate(stat_names):
-            var = tk.BooleanVar(value=name in saved_combo)
-            self._combo_vars[name] = var
-            tk.Checkbutton(combo, text=name, variable=var, bg=UI_SURFACE, fg=UI_TEXT, selectcolor=UI_BG,
-                           activebackground=UI_SURFACE, activeforeground=UI_TEXT, highlightthickness=0,
-                           font=("Segoe UI", 10), anchor="w").grid(row=1 + i // 3, column=i % 3, sticky="w", padx=(0, 12), pady=1)
-            var.trace_add("write", lambda *_: self._parse_target())
+        # Columns by kind: main stats | attack & damage | the rest.
+        columns = [stat_names[:5], stat_names[5:9],
+                   ["Critical Damage", "Skill Cooldowns", "Item Drop Rate", "Mesos Obtained"]]
+        assert sorted(sum(columns, [])) == sorted(stat_names), "combo columns must cover every stat once"
+        for col, names in enumerate(columns):
+            for row, name in enumerate(names):
+                var = tk.BooleanVar(value=name in saved_combo)
+                self._combo_vars[name] = var
+                tk.Checkbutton(combo, text=name, variable=var, bg=UI_SURFACE, fg=UI_TEXT, selectcolor=UI_BG,
+                               activebackground=UI_SURFACE, activeforeground=UI_TEXT, highlightthickness=0,
+                               font=("Segoe UI", 10), anchor="w").grid(row=1 + row, column=col, sticky="w", padx=(0, 12), pady=1)
+                var.trace_add("write", lambda *_: self._parse_target())
         # Lines per stat: a 0/1/2/3 picker beside every stat. 0 = not required.
         perstat = tk.Frame(goal, bg=UI_SURFACE)
         self._perstat_frame = perstat
