@@ -3411,7 +3411,11 @@ class CubesApp:
                     if cur.shape == before.shape and (np.abs(cur - before) > 40).mean() >= CUBES_CHANGE_FRAC:
                         img = cur_img
                         break
-                self.spamming = False    # freeze the inputs while we read
+                # Freeze the inputs the moment the panel changes. Pressing through the
+                # read was tried and races: the game cubes again mid-OCR, the next
+                # "before" frame is stale, and the change-wait times out. The read is
+                # ~140 ms; the freeze is what makes it trustworthy.
+                self.spamming = False
                 if not self.looping:
                     break
                 if img is None:
@@ -3430,6 +3434,8 @@ class CubesApp:
                 tiers, lines = [None] * 3, []
             found = target.check(lines, tiers)
             hit = (found, "") if found else None
+            if hit is not None:
+                self.spamming = False    # stop the presses NOW, before the UI round-trip
             self._requests.put(lambda tiers=tiers, lines=lines: (setattr(self, "tiers", tiers),
                                                                  setattr(self, "lines", lines), self._show_lines()))
             if hit is not None:
