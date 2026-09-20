@@ -150,6 +150,7 @@ if getattr(sys, "frozen", False):
     _BASE_DIR = Path(sys.executable).parent
 else:
     _BASE_DIR = Path(__file__).parent
+APP_WIDTH = 720          # window width: wide enough for three Potential cards side by side
 UI_BG = "#09070D"
 UI_SURFACE = "#17111F"
 UI_BORDER = "#654575"
@@ -1829,14 +1830,14 @@ class OverlayApp:
         self._status_label.pack(fill="x", padx=16, pady=(14, 2))
         self._detail_label = tk.Label(status, text="Press Start or F9 to begin detection.",
                                       fg=UI_MUTED, bg=UI_SURFACE, anchor="center", justify="center",
-                                      wraplength=450)
+                                      wraplength=APP_WIDTH - 90)
         self._detail_label.pack(fill="x", padx=16, pady=(0, 12))
         self._start_button, self._box_toggle_button = build_action_bar(
             bottom, [("Locate (F7)", self._request_autolocate), ("Region (F8)", self._request_selection)],
             (f"Start  ({self.enter_hotkey.upper()})", self._start_or_stop), self._toggle_box_visibility)
         tk.Label(status, text="Auto-locate currently only recognizes the Combat Power reset dialog.",
                  fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 8), anchor="center",
-                 justify="center", wraplength=450).pack(fill="x", padx=16, pady=(0, 12))
+                 justify="center", wraplength=APP_WIDTH - 90).pack(fill="x", padx=16, pady=(0, 12))
 
         if self._owns_discord:      # standalone only: hosted, audio lives in Settings
             audio = self._card(outer)
@@ -3920,7 +3921,7 @@ class CubesApp:
         the big font; three cards sit side by side in a smaller font."""
         n = max(1, min(3, len(self.panels)))
         multi = n > 1
-        wrap = 140 if multi else 450          # equal thirds of the card, or the full width
+        wrap = (APP_WIDTH - 100) // 3 if multi else APP_WIDTH - 90   # equal thirds of the card, or the full width
         for k, col in enumerate(self._cols):
             col["frame"].grid_forget()
             # a weight-0 column inside a uniform group squeezes the others to nothing,
@@ -3955,7 +3956,7 @@ class CubesApp:
             totals = total_potential_lines(good)
             text = "\n".join(f"{stat}  {value}" for stat, value in totals) if totals else "-"
             matched = self.target is not None and good and self.target.check(lines, tiers)
-            if self.target is not None and good and len(self.panels) <= 1:   # progress line only when there is room
+            if self.target is not None and good:
                 text += "\n\u2192 " + self.target.progress(lines, tiers)
             col["total"].config(text=text, fg=UI_ACCENT if matched else UI_TEXT)
             col["head"].config(fg=UI_ACCENT if matched else UI_MUTED)
@@ -4257,7 +4258,7 @@ def run_app(args):
                 root.update_idletasks()
             else:
                 h = root.winfo_reqheight()
-            state["size"] = (max(540, root.winfo_reqwidth()), h)
+            state["size"] = (max(APP_WIDTH, root.winfo_reqwidth()), h)
             root.geometry("%dx%d" % state["size"])
             root.minsize(*state["size"])
 
