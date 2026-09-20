@@ -3271,29 +3271,53 @@ class CubesApp:
                                activebackground=UI_SURFACE, activeforeground=UI_TEXT, highlightthickness=0,
                                font=("Segoe UI", 10), anchor="w").grid(row=1 + row, column=col, sticky="w", padx=(0, 12), pady=1)
                 var.trace_add("write", lambda *_: self._parse_target())
-        # Lines per stat: a 0/1/2/3 picker beside every stat. 0 = not required.
+        # Lines per stat: rows of [stat] x [1/2/3], '+' adds a row. At most 3 rows,
+        # and at most 3 lines in total (an item only has 3).
         perstat = tk.Frame(goal, bg=UI_SURFACE)
         self._perstat_frame = perstat
         saved_needs = saved.get("needs", {}) if isinstance(saved.get("needs"), dict) else {}
         head = tk.Frame(perstat, bg=UI_SURFACE)
-        head.grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 6))
-        tk.Label(head, text="Lines required, per stat (0 = not needed):", fg=UI_MUTED, bg=UI_SURFACE,
-                 font=("Segoe UI", 10)).pack(side="left")
+        head.pack(fill="x", pady=(0, 6))
+        tk.Label(head, text="Lines required:", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 10)).pack(side="left")
         self._leg_box(head, "perstat", side="left", padx=(16, 0))
-        self._perstat_vars = {}
-        for i, name in enumerate(stat_names):
-            row, col = 1 + i // 2, (i % 2) * 2
-            var = tk.StringVar(value=str(saved_needs.get(name, 0)) if str(saved_needs.get(name, 0)) in ("0", "1", "2", "3") else "0")
-            self._perstat_vars[name] = var
-            tk.Label(perstat, text=name, fg=UI_TEXT, bg=UI_SURFACE, font=("Segoe UI", 10), anchor="w",
-                     width=15).grid(row=row, column=col, sticky="w", pady=1)
-            picks = tk.Frame(perstat, bg=UI_SURFACE)
-            picks.grid(row=row, column=col + 1, sticky="w", padx=(0, 18))
-            for n in ("0", "1", "2", "3"):
-                tk.Radiobutton(picks, text=n, value=n, variable=var, bg=UI_SURFACE, fg=UI_TEXT, selectcolor=UI_BG,
+        self._perstat_rows = []
+        rows_box = tk.Frame(perstat, bg=UI_SURFACE)
+        rows_box.pack(fill="x")
+
+        def add_row(stat=None, count="1"):
+            if len(self._perstat_rows) >= 3:
+                return
+            row = tk.Frame(rows_box, bg=UI_SURFACE)
+            row.pack(fill="x", pady=2)
+            stat_var = tk.StringVar(value=stat if stat in stat_names else stat_names[0])
+            count_var = tk.StringVar(value=count if count in ("1", "2", "3") else "1")
+            menu = ttk.OptionMenu(row, stat_var, stat_var.get(), *stat_names, style="Cubes.TMenubutton")
+            menu.pack(side="left", fill="x", expand=True)
+            menu["menu"].config(bg=UI_SURFACE, fg=UI_TEXT, activebackground=UI_BUTTON, activeforeground=UI_TEXT,
+                                font=("Segoe UI", 10), bd=0)
+            tk.Label(row, text="x", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 11)).pack(side="left", padx=8)
+            for n in ("1", "2", "3"):
+                tk.Radiobutton(row, text=n, value=n, variable=count_var, bg=UI_SURFACE, fg=UI_TEXT, selectcolor=UI_BG,
                                activebackground=UI_SURFACE, activeforeground=UI_TEXT, highlightthickness=0,
-                               font=("Segoe UI", 9, "bold"), padx=2).pack(side="left")
-            var.trace_add("write", lambda *_: self._parse_target())
+                               font=("Segoe UI", 10, "bold"), padx=3).pack(side="left")
+            entry = (row, stat_var, count_var)
+            self._perstat_rows.append(entry)
+            OverlayApp._button(row, "x", lambda: remove_row(entry), UI_BUTTON, UI_TEXT).pack(side="left", padx=(10, 0))
+            for var in (stat_var, count_var):
+                var.trace_add("write", lambda *_: self._parse_target())
+            self._bind_wheel(row)
+            if hasattr(self, "_target_label"):      # rows restored during the build parse later
+                self._parse_target()
+
+        def remove_row(entry):
+            self._perstat_rows.remove(entry)
+            entry[0].destroy()
+            self._parse_target()
+        self._add_perstat_row = add_row
+        self._add_row_button = OverlayApp._button(perstat, "+ Add a stat", add_row, UI_BUTTON, UI_TEXT)
+        self._add_row_button.pack(anchor="w", pady=(6, 0))
+        for name, count in list(saved_needs.items())[:3]:
+            add_row(name, str(count))
         self._target_label = tk.Label(goal, text="", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9), anchor="w")
         self._target_label.pack(fill="x", padx=14, pady=(0, 10))
         for var in (self._stat_var, self._min_var, *self._mode_vars.values()):
@@ -3538,7 +3562,10 @@ class CubesApp:
         raw = self._min_var.get().strip().rstrip("%")
         modes = [k for k, v in self._mode_vars.items() if v.get()]
         chosen = [n for n, v in self._combo_vars.items() if v.get()]
-        needs = {n: int(v.get()) for n, v in self._perstat_vars.items() if v.get() != "0"}
+        needs = {}
+        for _row, stat_var, count_var in self._perstat_rows:      # same stat twice adds up
+            needs[stat_var.get()] = needs.get(stat_var.get(), 0) + int(count_var.get())
+        self._add_row_button.config(state="normal" if len(self._perstat_rows) < 3 else "disabled")
         frames = {"total": self._goal_row, "combo": self._combo_frame, "perstat": self._perstat_frame}
         for key, frame in frames.items():
             frame.pack_forget()
@@ -3559,7 +3586,7 @@ class CubesApp:
         if "perstat" in modes:
             total_needed = sum(needs.values())
             if not needs:
-                problems.append("set how many lines of each stat you need")
+                problems.append("add a stat and how many lines of it you need")
             elif total_needed > 3:
                 problems.append(f"lines per stat needs {total_needed} lines - an item only has 3")
             else:
