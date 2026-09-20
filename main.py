@@ -3777,6 +3777,7 @@ class CubesApp:
 
     def _auto_locate(self):
         self._set_status("Auto-locate: scanning the screen...")
+        self.results = []                # only a successful locate + read fills this
         self.root.update_idletasks()
         self.overlay.withdraw()
         try:
@@ -3964,6 +3965,13 @@ class CubesApp:
         if self.root.focus_displayof() is not None:
             self._set_status("Focus the game, then press F9.")
             return
+        if self.profile.pick_label == "rightmost" and self.label_box:
+            # Bright: the boxes came from F7, and Reset x1 / x3 lay the cards out
+            # differently - re-locate on every start so a dialog switch can't
+            # leave stale boxes (the loop would then read the wrong place).
+            self._auto_locate()
+            if not self.results:
+                return                       # auto-locate said what went wrong
         self.looping = True
         self.rolls = 0
         self._loop_button.config(text="Stop (F9)")
