@@ -3923,7 +3923,9 @@ class CubesApp:
         wrap = 140 if multi else 450          # equal thirds of the card, or the full width
         for k, col in enumerate(self._cols):
             col["frame"].grid_forget()
-            self._cols_frame.columnconfigure(k, weight=1 if k < n else 0, uniform="after")
+            # a weight-0 column inside a uniform group squeezes the others to nothing,
+            # so hidden columns leave the group
+            self._cols_frame.columnconfigure(k, weight=1 if k < n else 0, uniform="after" if k < n else "")
             if k < n:
                 col["frame"].grid(row=0, column=k, sticky="nsew", padx=(0, 10 if k < n - 1 else 0))
             col["head"].pack_forget()
