@@ -3057,8 +3057,19 @@ class CubesApp:
         self._bind_wheel = bind_wheel
         card = OverlayApp._card(outer)
         card.pack(fill="x")
+        cube_row = tk.Frame(card, bg=UI_SURFACE)
+        cube_row.pack(fill="x", padx=14, pady=(10, 6))
+        tk.Label(cube_row, text="CUBE TYPE", fg=UI_MUTED, bg=UI_SURFACE,
+                 font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 14))
+        self._cube_var = tk.StringVar(value=next((k for k, v in CUBE_PROFILES.items() if v is self.profile), CUBE_TYPE_DEFAULT))
+        for key, prof in CUBE_PROFILES.items():
+            tk.Radiobutton(cube_row, text=prof.name, value=key, variable=self._cube_var, bg=UI_SURFACE, fg=UI_TEXT,
+                           selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
+                           highlightthickness=0, font=("Segoe UI", 10, "bold")).pack(side="left", padx=(0, 12))
+        self._cube_note = tk.Label(cube_row, text="", fg=UI_PRIMARY, bg=UI_SURFACE, font=("Segoe UI", 9))
+        self._cube_note.pack(side="left")
         tk.Label(card, text="POTENTIAL", fg=UI_MUTED, bg=UI_SURFACE,
-                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=14, pady=(10, 2))
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=14, pady=(0, 2))
         # Each line: a small square in the tier colour (as in the game), then the text.
         self._line_labels, self._line_dots = [], []
         for _ in range(3):
@@ -3079,22 +3090,6 @@ class CubesApp:
         self._total_label.pack(fill="x", padx=14)
         self._status = tk.Label(card, text="", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9), anchor="w")
         self._status.pack(fill="x", padx=14, pady=(4, 10))
-
-        cube = OverlayApp._card(outer)
-        cube.pack(fill="x", pady=(12, 0))
-        cube_row = tk.Frame(cube, bg=UI_SURFACE)
-        cube_row.pack(fill="x", padx=14, pady=10)
-        tk.Label(cube_row, text="CUBE TYPE", fg=UI_MUTED, bg=UI_SURFACE,
-                 font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 14))
-        self._cube_var = tk.StringVar(value=next((k for k, v in CUBE_PROFILES.items() if v is self.profile), CUBE_TYPE_DEFAULT))
-        for key, prof in CUBE_PROFILES.items():
-            tk.Radiobutton(cube_row, text=prof.name, value=key, variable=self._cube_var, bg=UI_SURFACE, fg=UI_TEXT,
-                           selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
-                           highlightthickness=0, font=("Segoe UI", 10, "bold")).pack(side="left", padx=(0, 12))
-        self._cube_note = tk.Label(cube_row, text="", fg=UI_PRIMARY, bg=UI_SURFACE, font=("Segoe UI", 9))
-        self._cube_note.pack(side="left")
-        self._cube_var.trace_add("write", lambda *_: self._set_cube_type())
-        self._set_cube_type()
 
         goal = OverlayApp._card(outer)
         goal.pack(fill="x", pady=(12, 0))
@@ -3204,9 +3199,10 @@ class CubesApp:
         self._loop_button, self._box_button = build_action_bar(
             bottom, [("Auto-locate (F7)", self._auto_locate), ("Choose region (F8)", self._start_selection),
                      ("Read", self._read)], ("Start (F9)", self._toggle_loop), self._toggle_box)
+        self._cube_var.trace_add("write", lambda *_: self._set_cube_type())
+        self._set_cube_type()
         self._parse_target()
         self._bind_wheel()
-        self._tint(CUBE_TINTS.get(self._cube_var.get(), UI_BG))
         # Same overlay as Flames: a click-through-transparent window with a
         # coloured frame you drag to move and corner handles you drag to
         # resize. The frame is drawn outside the capture region so it is never
