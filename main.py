@@ -3191,9 +3191,15 @@ class CubesApp:
 
         goal = OverlayApp._card(outer)
         goal.pack(fill="x", pady=(12, 0))
-        tk.Label(goal, text="LOOKING FOR", fg=UI_MUTED, bg=UI_SURFACE,
-                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=14, pady=(10, 2))
         saved = self._load_target()
+        self._all_stats_var = tk.BooleanVar(value=bool(saved.get("all_stats", True)))
+        tk.Checkbutton(goal, text="All Stats counts as STR / DEX / INT / LUK", variable=self._all_stats_var,
+                       bg=UI_SURFACE, fg=UI_MUTED, selectcolor=UI_BG, activebackground=UI_SURFACE,
+                       activeforeground=UI_TEXT, highlightthickness=0, font=("Segoe UI", 9),
+                       anchor="w").pack(fill="x", padx=14, pady=(8, 0))
+        self._all_stats_var.trace_add("write", lambda *_: self._parse_target())
+        tk.Label(goal, text="LOOKING FOR", fg=UI_MUTED, bg=UI_SURFACE,
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=14, pady=(6, 2))
         stat_names = [name for name, _, _ in POTENTIAL_STATS]
         # Mode: 'total' (one stat, reach a number) or 'combo' (three lines from a set).
         saved_modes = saved.get("modes") if isinstance(saved.get("modes"), list) else [saved.get("mode", "total")]
@@ -3206,12 +3212,6 @@ class CubesApp:
             tk.Checkbutton(mode_row, text=text, variable=self._mode_vars[value], bg=UI_SURFACE, fg=UI_TEXT,
                            selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
                            highlightthickness=0, font=("Segoe UI", 10)).pack(side="left", padx=(0, 14))
-        self._all_stats_var = tk.BooleanVar(value=bool(saved.get("all_stats", True)))
-        tk.Checkbutton(goal, text="All Stats counts as STR / DEX / INT / LUK", variable=self._all_stats_var,
-                       bg=UI_SURFACE, fg=UI_MUTED, selectcolor=UI_BG, activebackground=UI_SURFACE,
-                       activeforeground=UI_TEXT, highlightthickness=0, font=("Segoe UI", 9),
-                       anchor="w").pack(fill="x", padx=14, pady=(0, 6))
-        self._all_stats_var.trace_add("write", lambda *_: self._parse_target())
         goal_row = tk.Frame(goal, bg=UI_SURFACE)
         goal_row.pack(fill="x", padx=14, pady=(0, 10))
         self._goal_row = goal_row
