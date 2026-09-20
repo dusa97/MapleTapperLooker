@@ -3178,8 +3178,12 @@ class CubesApp:
         self.discord = discord
         self._discord_modes = discord_modes or (lambda: {"cubes": False})
         self._activation_target = None
+        self._shown_panel = 0
         self.region = self._load_region()
         self.label_box = self._load_label_box()   # where F7 last found "Potential"; None after a manual F8 box
+        # Bright 'Reset x3' shows three AFTER cards: every one is read before the next
+        # roll. panels = one box per card; region = their union (the overlay box).
+        self.panels = self._load_panels() or ([tuple(self.region)] if self.region else [])
         self.profile = active_cube_profile()
         self.lines = []
         self._running = True
@@ -3471,14 +3475,17 @@ class CubesApp:
 
     # ---- drag to move, corners to resize (same scheme as OverlayApp) ----
     def _on_move_press(self, event):
-        self._drag = {"mode": "move", "sx": event.x_root, "sy": event.y_root, "orig": tuple(self.region)}
+        self._drag = {"mode": "move", "sx": event.x_root, "sy": event.y_root, "orig": tuple(self.region),
+                      "panels": list(self.panels)}
 
     def _on_move_drag(self, event):
         d = self._drag
         if d.get("mode") != "move":
             return
         ox, oy, w, h = d["orig"]
-        self.region = (ox + event.x_root - d["sx"], oy + event.y_root - d["sy"], w, h)
+        dx, dy = event.x_root - d["sx"], event.y_root - d["sy"]
+        self.region = (ox + dx, oy + dy, w, h)
+        self.panels = [(px + dx, py + dy, pw, ph) for (px, py, pw, ph) in d["panels"]]
         self.overlay.geometry(f"+{self.region[0] - self.BORDER}+{self.region[1] - self.BORDER}")
 
     def _on_resize_press(self, event, corner):
@@ -3502,6 +3509,7 @@ class CubesApp:
         if "e" in c:
             x2 = max(x2 + dx, x1 + self.MIN_SIZE)
         self.region = (x1, y1, x2 - x1, y2 - y1)
+        self.panels = [self.region]            # a hand-resized box is one panel again
         self._sync_overlay()
 
     def _on_release(self, _event):
@@ -3583,6 +3591,14 @@ class CubesApp:
             return None
 
     @staticmethod
+    def _load_panels():
+        try:
+            ps = json.loads(CUBES_REGION_FILE.read_text(encoding="utf-8")).get("panels")
+            return [tuple(int(v) for v in r) for r in ps if len(r) == 4] if ps else None
+        except Exception:
+            return None
+
+    @staticmethod
     def _load_label_box():
         try:
             r = json.loads(CUBES_REGION_FILE.read_text(encoding="utf-8")).get("label")
@@ -3593,6 +3609,7 @@ class CubesApp:
     def _save_region(self):
         try:
             CUBES_REGION_FILE.write_text(json.dumps({"region": list(self.region) if self.region else None,
+                                                     "panels": [list(p) for p in self.panels],
                                                      "label": list(self.label_box) if self.label_box else None}),
                                          encoding="utf-8")
         except Exception:
@@ -3713,6 +3730,7 @@ class CubesApp:
         self._selector = None
         if region is not None:
             self.region = tuple(int(v) for v in region)
+            self.panels = [self.region]
             self.label_box = None      # hand-placed: the cube-row check can't locate the row, so it stays off
             self._save_region()
             self._set_status(f"Box set: {self.region}")
@@ -3738,14 +3756,43 @@ class CubesApp:
             self._sync_overlay()
             return
         sh, sw = shape
-        x, y = max(peaks) if self.profile.pick_label == "rightmost" else peaks[0]
+        if self.profile.pick_label == "rightmost":
+            # Reset dialog: BEFORE is the leftmost label; every other one is an AFTER
+            # card (1 on Reset x1, 3 on Reset x3). All of them get read each roll.
+            afters = sorted(peaks)[1:] or peaks
+        else:
+            afters = peaks[:1]
+        x, y = afters[-1]
         self.label_box = (desktop["left"] + x, desktop["top"] + y, sw, sh)
-        self._save_region()
-        self.region = self.profile.block_for((desktop["left"] + x, desktop["top"] + y), (sh, sw))
+        self.panels = [tuple(self.profile.block_for((desktop["left"] + px, desktop["top"] + py), (sh, sw)))
+                       for px, py in afters]
+        self.region = self._union(self.panels)
         self._save_region()
         self._sync_overlay()
-        self._set_status(f"Found the Potential panel (match {best:.2f}). Press F9 to read.")
+        self._set_status(f"Found {len(self.panels)} Potential panel(s) (match {best:.2f}). Press F9 to read.")
         self._read()
+
+    @staticmethod
+    def _union(boxes):
+        x1 = min(b[0] for b in boxes)
+        y1 = min(b[1] for b in boxes)
+        x2 = max(b[0] + b[2] for b in boxes)
+        y2 = max(b[1] + b[3] for b in boxes)
+        return (x1, y1, x2 - x1, y2 - y1)
+
+    def _read_panels(self, img):
+        """Read every panel out of one grab of the union box: each card's
+        three lines are OCR'd and totalled on their own. Returns a list of
+        (tiers, lines), one per panel, left to right."""
+        ox, oy = self.region[0], self.region[1]
+        out = []
+        for px, py, pw, ph in (self.panels or [self.region]):
+            crop = img.crop((px - ox, py - oy, px - ox + pw, py - oy + ph))
+            try:
+                out.append((read_potential_tiers(crop, self.profile), read_potential_lines(crop, self.profile)))
+            except Exception:
+                out.append(([None] * 3, []))
+        return out
 
     # ---- read --------------------------------------------------------------
     def _read(self):
@@ -3759,7 +3806,10 @@ class CubesApp:
         self.root.update_idletasks()
         try:
             img = _grab(self.region)
-            self.tiers, self.lines = read_potential_tiers(img, self.profile), read_potential_lines(img, self.profile)
+            results = self._read_panels(img)
+            self._shown_panel = next((i for i, (t, l) in enumerate(results)
+                                      if self.target is not None and self.target.check(l, t)), 0)
+            self.tiers, self.lines = results[self._shown_panel]
         except Exception as error:
             self._set_status(f"Read failed: {error}")
             self.tiers, self.lines = [None] * 3, []
@@ -3784,7 +3834,8 @@ class CubesApp:
         if self.target is not None and good:
             text += "\n\u2192 " + self.target.progress(self.lines, self.tiers)
         self._total_label.config(text=text)
-        self._set_status(f"Read {len(good)} line(s)." if good else "Nothing readable in the box.")
+        which = f" (AFTER #{self._shown_panel + 1} of {len(self.panels)})" if len(self.panels) > 1 else ""
+        self._set_status(f"Read {len(good)} line(s){which}." if good else "Nothing readable in the box.")
 
     # ---- cube loop -------------------------------------------------------------
     def _toggle_beep(self):
@@ -3894,12 +3945,15 @@ class CubesApp:
                 img = self._settle(img)
                 self.rolls += 1
             first = False
-            try:
-                tiers, lines = read_potential_tiers(img, self.profile), read_potential_lines(img, self.profile)
-            except Exception:
-                tiers, lines = [None] * 3, []
-            found = target.check(lines, tiers)
-            hit = (found, "") if found else None
+            results = self._read_panels(img)
+            hit, which = None, 0
+            for i, (tiers, lines) in enumerate(results):     # each card judged on its own 3 lines
+                found = target.check(lines, tiers)
+                if found:
+                    hit, which = (found, ""), i
+                    break
+            tiers, lines = results[which]
+            self._shown_panel = which
             self._requests.put(lambda tiers=tiers, lines=lines: (setattr(self, "tiers", tiers),
                                                                  setattr(self, "lines", lines), self._show_lines()))
             if hit is not None:
@@ -3937,7 +3991,8 @@ class CubesApp:
     def _on_hit(self, hit):
         rank = (self.tiers[0] or "").capitalize()
         summary = f"{rank} {hit[0]} {hit[1]}".replace("  ", " ").strip()
-        tail = "" if self.profile.commit_on_match else " - it's showing in AFTER; close the dialog to keep it (Reset would roll it away)."
+        card = f"AFTER #{self._shown_panel + 1}" if len(self.panels) > 1 else "AFTER"
+        tail = "" if self.profile.commit_on_match else f" - it's showing in {card}; pick it and close the dialog to keep it (Reset would roll it away)."
         self._stop_loop(f"Got it after {self.rolls} roll(s): {summary}{tail}")
         if self._audio is not None:
             self._audio.play()
