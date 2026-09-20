@@ -308,6 +308,62 @@ POTENTIAL_TARGET_HEIGHT = 210    # ~30px per stat line after upscaling (3 lines 
 POTENTIAL_ICON_X_FRAC = (9 / 210, 19 / 210)     # of block width
 POTENTIAL_ICON_Y_FRAC = (4 / 70, 13 / 70)       # of block height, first line
 POTENTIAL_LINE_STEP_FRAC = 25 / 70
+
+
+class CubeProfile:
+    """Everything the Cubes tab needs to know about ONE cube type's Potential
+    panel: the label image to anchor on, where the three stat lines and
+    their tier icons sit relative to it, and where the material row is.
+    Glowing/Mystical/Hard/Solid cubes all share one panel layout (verified
+    on 12 captures); Bright cubes get their own profile so their panel can
+    be calibrated independently once a capture exists."""
+    def __init__(self, name, label_path, block=(79 / 50, 12 / 15, 250 / 50, 70 / 15),
+                 icon_x=(9 / 210, 19 / 210), icon_y=(4 / 70, 13 / 70), line_step=25 / 70,
+                 row=(-4 / 50, 192 / 15, 400 / 50, 38 / 15), target_height=210, calibrated=True):
+        self.name = name
+        self.label_path = label_path
+        self.block_dx, self.block_dy, self.block_w, self.block_h = block
+        self.icon_x, self.icon_y, self.line_step = icon_x, icon_y, line_step
+        self.row_x0, self.row_dy, self.row_w, self.row_h = row
+        self.target_height = target_height
+        self.calibrated = calibrated
+        self._label_gray = None
+
+    def label_gray(self):
+        if self._label_gray is None:
+            self._label_gray = np.array(Image.open(self.label_path).convert("L"))
+        return self._label_gray
+
+    def block_for(self, label_xy, label_wh):
+        x, y = label_xy
+        sh, sw = label_wh
+        return (round(x + self.block_dx * sw), round(y + self.block_dy * sh),
+                round(self.block_w * sw), round(self.block_h * sh))
+
+    def row_for(self, label_box):
+        lx, ly, sw, sh = label_box
+        return (round(lx + self.row_x0 * sw), round(ly + self.row_dy * sh),
+                round(self.row_w * sw), round(self.row_h * sh))
+
+
+CUBE_PROFILES = {
+    "glowing": CubeProfile("Glowing", POTENTIAL_LABEL_PATH),
+    # ponytail: Bright starts as a copy of Glowing - no Bright capture exists yet, so nothing
+    # is measured. calibrated=False makes the tab say so. Replace label_path/offsets from a
+    # real Bright-cube Potential screenshot and flip calibrated to True.
+    "bright": CubeProfile("Bright", POTENTIAL_LABEL_PATH, calibrated=False),
+}
+CUBE_TYPE_DEFAULT = "glowing"
+
+
+def active_cube_profile():
+    """The profile for the cube type chosen in the Cubes tab (persisted in
+    MODE_FILE); Glowing until told otherwise."""
+    try:
+        key = json.loads(MODE_FILE.read_text(encoding="utf-8")).get("cube_type")
+    except Exception:
+        key = None
+    return CUBE_PROFILES.get(key, CUBE_PROFILES[CUBE_TYPE_DEFAULT])
 POTENTIAL_TIER_HUES = (("unique", 20, 42), ("legendary", 43, 75), ("rare", 100, 160), ("epic", 170, 220))
 POTENTIAL_TIERS = ("rare", "epic", "unique", "legendary")   # ascending
 POTENTIAL_TIER_COLOURS = {"rare": "#66FFFF", "epic": "#BB77FF", "unique": "#FFCC00", "legendary": "#CCFF00"}
@@ -440,18 +496,19 @@ def locate_label(full_gray, tmpl_gray, max_peaks=4):
     return best_val, peaks, best_shape
 
 
-def read_potential_tiers(img):
+def read_potential_tiers(img, profile=None):
     """Tier of each of the three stat lines, from the colour of the lettered
     icon beside it: a list of 3 entries, each 'rare' / 'epic' / 'unique' /
     'legendary' or None (no saturated icon there - line absent, panel not
     showing, box misplaced). The item's own rank is the first line's tier."""
+    profile = profile or active_cube_profile()
     w, h = img.size
     hsv_all = np.array(img.convert("HSV")).astype(int)
-    x0, x1 = (round(w * f) for f in POTENTIAL_ICON_X_FRAC)
+    x0, x1 = (round(w * f) for f in profile.icon_x)
     tiers = []
     for i in range(3):
-        y0 = round(h * (POTENTIAL_ICON_Y_FRAC[0] + i * POTENTIAL_LINE_STEP_FRAC))
-        y1 = round(h * (POTENTIAL_ICON_Y_FRAC[1] + i * POTENTIAL_LINE_STEP_FRAC))
+        y0 = round(h * (profile.icon_y[0] + i * profile.line_step))
+        y1 = round(h * (profile.icon_y[1] + i * profile.line_step))
         hsv = hsv_all[y0:max(y0 + 1, y1), x0:max(x0 + 1, x1)]
         coloured = (hsv[..., 1] > 100) & (hsv[..., 2] > 120)
         tier = None
@@ -462,7 +519,7 @@ def read_potential_tiers(img):
     return tiers
 
 
-def read_potential_lines(img):
+def read_potential_lines(img, profile=None):
     """OCR the Potential card's stat lines out of a raw crop. Returns a list
     of (stat, value) like [("Max HP", "+120"), ("Max MP", "+60"), ("DEF",
     "+60")]; lines Tesseract garbles come back as (raw_text, None) rather
@@ -471,7 +528,8 @@ def read_potential_lines(img):
     # so target 3x that for the whole crop. Tesseract is fussy about this font's
     # "M" at in-between scales (2.5x/3.5x/4x misread it as "W"/"hl"), while 2x
     # and 3x read cleanly, so aim for the middle of the good range.
-    scale = max(OCR_SCALE_MIN, min(POTENTIAL_TARGET_HEIGHT / img.height, OCR_SCALE_MAX))
+    profile = profile or active_cube_profile()
+    scale = max(OCR_SCALE_MIN, min(profile.target_height / img.height, OCR_SCALE_MAX))
     big = img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))), Image.LANCZOS)
     hsv = np.array(big.convert("HSV"))
     ink = (hsv[..., 2].astype(int) > OCR_MASK_VALUE_MIN) & (hsv[..., 1].astype(int) < OCR_MASK_SATURATION_MAX)
@@ -2736,6 +2794,7 @@ class CubesApp:
         self._activation_target = None
         self.region = self._load_region()
         self.label_box = self._load_label_box()   # where F7 last found "Potential"; None after a manual F8 box
+        self.profile = active_cube_profile()
         self.lines = []
         self._running = True
         self._selector = None
@@ -2788,6 +2847,22 @@ class CubesApp:
         self._total_label = tk.Label(total, text="-", fg=UI_TEXT, bg=UI_SURFACE,
                                      font=("Segoe UI", 12, "bold"), anchor="w", justify="left")
         self._total_label.pack(fill="x", padx=14, pady=(0, 10))
+
+        cube = OverlayApp._card(outer)
+        cube.pack(fill="x", pady=(12, 0))
+        cube_row = tk.Frame(cube, bg=UI_SURFACE)
+        cube_row.pack(fill="x", padx=14, pady=10)
+        tk.Label(cube_row, text="CUBE TYPE", fg=UI_MUTED, bg=UI_SURFACE,
+                 font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 14))
+        self._cube_var = tk.StringVar(value=next((k for k, v in CUBE_PROFILES.items() if v is self.profile), CUBE_TYPE_DEFAULT))
+        for key, prof in CUBE_PROFILES.items():
+            tk.Radiobutton(cube_row, text=prof.name, value=key, variable=self._cube_var, bg=UI_SURFACE, fg=UI_TEXT,
+                           selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
+                           highlightthickness=0, font=("Segoe UI", 10, "bold")).pack(side="left", padx=(0, 12))
+        self._cube_note = tk.Label(cube_row, text="", fg=UI_PRIMARY, bg=UI_SURFACE, font=("Segoe UI", 9))
+        self._cube_note.pack(side="left")
+        self._cube_var.trace_add("write", lambda *_: self._set_cube_type())
+        self._set_cube_type()
 
         goal = OverlayApp._card(outer)
         goal.pack(fill="x", pady=(12, 0))
@@ -2983,6 +3058,23 @@ class CubesApp:
     def _set_status(self, text):
         self._status.config(text=text)
 
+    def _set_cube_type(self):
+        """Switch the active profile: which label F7 anchors on and where the
+        lines/icons/cube row sit. Persisted so the readers pick it up too."""
+        key = self._cube_var.get()
+        self.profile = CUBE_PROFILES.get(key, CUBE_PROFILES[CUBE_TYPE_DEFAULT])
+        self._cube_note.config(text="" if self.profile.calibrated else
+                               "not calibrated yet - using the Glowing layout")
+        try:
+            data = json.loads(MODE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+        data["cube_type"] = key
+        try:
+            MODE_FILE.write_text(json.dumps(data), encoding="utf-8")
+        except Exception:
+            pass
+
     def _toggle_box(self):
         """Show/hide the on-screen box - visual only, like Flames' Hide box:
         reads screenshot self.region directly and never need the overlay."""
@@ -3029,9 +3121,7 @@ class CubesApp:
         position is known): never stop a run on a guess."""
         if not self.label_box:
             return True
-        lx, ly, sw, sh = self.label_box
-        strip = (round(lx + CUBES_ROW_X0_RATIO * sw), round(ly + CUBES_ROW_DY_RATIO * sh),
-                 round(CUBES_ROW_W_RATIO * sw), round(CUBES_ROW_H_RATIO * sh))
+        strip = self.profile.row_for(self.label_box)
         try:
             hsv = np.array(_grab(strip).convert("HSV")).astype(int)
         except Exception:
@@ -3124,8 +3214,7 @@ class CubesApp:
                 desktop = sct.monitors[0]
                 shot = sct.grab(desktop)
             full_gray = np.array(Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX").convert("L"))
-            tmpl = np.array(Image.open(POTENTIAL_LABEL_PATH).convert("L"))
-            best, peaks, shape = locate_label(full_gray, tmpl, max_peaks=1)
+            best, peaks, shape = locate_label(full_gray, self.profile.label_gray(), max_peaks=1)
         except Exception as error:
             self._set_status(f"Auto-locate failed: {error}")
             self._sync_overlay()
@@ -3138,9 +3227,7 @@ class CubesApp:
         x, y = peaks[0]
         self.label_box = (desktop["left"] + x, desktop["top"] + y, sw, sh)
         self._save_region()
-        self.region = (round(desktop["left"] + x + POTENTIAL_BLOCK_DX_RATIO * sw),
-                       round(desktop["top"] + y + POTENTIAL_BLOCK_DY_RATIO * sh),
-                       round(POTENTIAL_BLOCK_W_RATIO * sw), round(POTENTIAL_BLOCK_H_RATIO * sh))
+        self.region = self.profile.block_for((desktop["left"] + x, desktop["top"] + y), (sh, sw))
         self._save_region()
         self._sync_overlay()
         self._set_status(f"Found the Potential panel (match {best:.2f}). Press F9 to read.")
@@ -3158,7 +3245,7 @@ class CubesApp:
         self.root.update_idletasks()
         try:
             img = _grab(self.region)
-            self.tiers, self.lines = read_potential_tiers(img), read_potential_lines(img)
+            self.tiers, self.lines = read_potential_tiers(img, self.profile), read_potential_lines(img, self.profile)
         except Exception as error:
             self._set_status(f"Read failed: {error}")
             self.tiers, self.lines = [None] * 3, []
@@ -3297,7 +3384,7 @@ class CubesApp:
                 self.rolls += 1
             first = False
             try:
-                tiers, lines = read_potential_tiers(img), read_potential_lines(img)
+                tiers, lines = read_potential_tiers(img, self.profile), read_potential_lines(img, self.profile)
             except Exception:
                 tiers, lines = [None] * 3, []
             found = target.check(lines, tiers)
