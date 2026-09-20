@@ -54,6 +54,7 @@ import math
 import random
 import queue
 import platform
+import wave
 import threading
 import tkinter as tk
 from tkinter import font as tkfont
@@ -1584,6 +1585,19 @@ def build_settings(host, discord, discord_flags, audio, log, on_change=None):
     OverlayApp._button(row, "Record message", lambda: audio.alert.toggle(), UI_BUTTON, UI_TEXT).pack(side="left")
     OverlayApp._button(row, "Reset to beep", lambda: audio.alert.reset(), UI_BUTTON, UI_TEXT).pack(side="left", padx=(8, 0))
     OverlayApp._button(row, "Test", audio.play, UI_BUTTON, UI_TEXT).pack(side="left", padx=(8, 0))
+    vol_row = tk.Frame(card, bg=UI_SURFACE)
+    vol_row.pack(fill="x", padx=16, pady=(0, 12))
+    tk.Label(vol_row, text="Volume", fg=UI_TEXT, bg=UI_SURFACE, font=("Segoe UI", 10, "bold")).pack(side="left", padx=(0, 10))
+    vol_label = tk.Label(vol_row, text=f"{audio.volume}%", fg=UI_MUTED, bg=UI_SURFACE, width=5, anchor="e")
+    vol_label.pack(side="right")
+    vol_var = tk.IntVar(vol_row, value=audio.volume)
+
+    def on_volume(value):
+        audio.set_volume(value)
+        vol_label.config(text=f"{audio.volume}%")
+    tk.Scale(vol_row, from_=0, to=100, orient="horizontal", variable=vol_var, command=on_volume, showvalue=False,
+             bg=UI_PRIMARY, fg=UI_TEXT, troughcolor=UI_BORDER, activebackground=UI_PRIMARY_ACTIVE, highlightthickness=0,
+             borderwidth=0, sliderrelief="flat", sliderlength=18, length=260).pack(side="left", fill="x", expand=True)
 
 
 def open_discord_settings(parent, discord, log, on_change=None):
@@ -2238,8 +2252,7 @@ class OverlayApp:
                 self._discord_var.set(self.discord.enabled)
 
     def _play_alert(self):
-        if not self._audio.muted:
-            self.alert.play(beep)
+        self._audio.play()
 
     @staticmethod
     def _jittered(interval, spread=SPAM_JITTER):
@@ -2820,13 +2833,58 @@ class SharedAudio:
         self.alert = RecordedAlert(_BASE_DIR / "detection_message.wav")
         self.log = log or (lambda m: None)
         try:
-            self.muted = bool(json.loads(MODE_FILE.read_text(encoding="utf-8")).get("muted", False))
+            data = json.loads(MODE_FILE.read_text(encoding="utf-8"))
         except Exception:
-            self.muted = False
+            data = {}
+        self.muted = bool(data.get("muted", False))
+        self.volume = min(100, max(0, int(data.get("volume", 100))))
 
     def play(self):
         if not self.muted:
-            threading.Thread(target=lambda: self.alert.play(beep), daemon=True).start()
+            threading.Thread(target=self._play, daemon=True).start()
+
+    def _play(self):
+        """Play the recorded message, or a synthesized beep, at self.volume.
+        winsound has no volume control, so the samples are scaled and played
+        from memory (synchronously, on this worker thread)."""
+        if platform.system() != "Windows" or self.alert.recording:
+            beep()
+            return
+        try:
+            import winsound, io
+            path = self.alert.path
+            if path.exists():
+                with wave.open(str(path), "rb") as w:
+                    params, frames = w.getparams(), w.readframes(w.getnframes())
+                if params.sampwidth == 1:
+                    pcm = (np.frombuffer(frames, np.uint8).astype(np.float32) - 128) * (self.volume / 100) + 128
+                    frames = np.clip(pcm, 0, 255).astype(np.uint8).tobytes()
+                elif params.sampwidth == 2:
+                    frames = (np.frombuffer(frames, np.int16).astype(np.float32) * (self.volume / 100)).astype(np.int16).tobytes()
+            else:
+                rate, params = 22050, (1, 2, 22050, 0, "NONE", "not compressed")
+                t = np.arange(int(rate * 0.3)) / rate
+                frames = (np.sin(2 * np.pi * 1000 * t) * 12000 * (self.volume / 100)).astype(np.int16).tobytes()
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as w:
+                w.setparams(params)
+                w.writeframes(frames)
+            winsound.PlaySound(buf.getvalue(), winsound.SND_MEMORY | winsound.SND_NODEFAULT)
+        except Exception as error:
+            print(f"[audio] Playback failed: {error}. Using beep.", flush=True)
+            beep()
+
+    def set_volume(self, volume):
+        self.volume = min(100, max(0, int(float(volume))))
+        try:
+            data = json.loads(MODE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+        data["volume"] = self.volume
+        try:
+            MODE_FILE.write_text(json.dumps(data), encoding="utf-8")
+        except Exception:
+            pass
 
     def set_muted(self, muted):
         self.muted = bool(muted)

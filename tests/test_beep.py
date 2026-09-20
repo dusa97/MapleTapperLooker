@@ -10,11 +10,11 @@ class DetectionBeepTest(unittest.TestCase):
     def setUp(self):
         self.enterContext(patch("discord_alerts.DiscordSettingsStore.load", return_value=None))
 
-    def test_alert_uses_recording_with_beep_fallback(self):
+    def test_alert_goes_through_shared_audio(self):
         app = OverlayApp((0, 0, 100, 100))
-        with patch.object(app.alert, "play") as play:
+        with patch.object(app._audio, "play") as play:
             app._play_alert()
-        play.assert_called_once_with(beep)
+        play.assert_called_once_with()
 
     def test_audio_hotkeys_without_spam_and_cleanup(self):
         app = OverlayApp((0, 0, 100, 100), enter_spam=False)
