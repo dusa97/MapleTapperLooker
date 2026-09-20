@@ -3078,8 +3078,7 @@ class CubesApp:
         lines/icons/cube row sit. Persisted so the readers pick it up too."""
         key = self._cube_var.get()
         self.profile = CUBE_PROFILES.get(key, CUBE_PROFILES[CUBE_TYPE_DEFAULT])
-        self._cube_note.config(text="" if self.profile.commit_on_match else
-                               "reads the AFTER card; a match stops before Reset so you keep it")
+        self._cube_note.config(text="")
         try:
             data = json.loads(MODE_FILE.read_text(encoding="utf-8"))
         except Exception:
