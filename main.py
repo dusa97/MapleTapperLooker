@@ -614,6 +614,9 @@ def tier_satisfies(tier, wanted):
 POTENTIAL_BASE_STATS = ("str", "dex", "int", "luk")
 
 
+ALL_STATS_COUNTS = True   # Cubes tab checkbox: does an 'All Stats' line count toward STR/DEX/INT/LUK?
+
+
 def potential_total_for(lines, tiers, target):
     """Sum of the lines that count toward *target* on this item. A line
     counts if its stat contains the target words - or it is 'All Stats'
@@ -625,7 +628,7 @@ def potential_total_for(lines, tiers, target):
     words, _minimum, wants_pct, wanted_tier = target
     if not words:
         return 0
-    counts_all_stats = len(words) == 1 and words[0] in POTENTIAL_BASE_STATS
+    counts_all_stats = ALL_STATS_COUNTS and len(words) == 1 and words[0] in POTENTIAL_BASE_STATS
     total = 0
     for line, tier in zip(lines, tiers):
         stat, value = line
@@ -664,7 +667,8 @@ def _line_is_stat(line, words, unit="%"):
     haystack = re.sub(r"\s+", " ", stat.lower())
     if all(w in haystack for w in words):
         return True
-    return len(words) == 1 and words[0] in POTENTIAL_BASE_STATS and "all" in haystack and "stat" in haystack
+    return (ALL_STATS_COUNTS and len(words) == 1 and words[0] in POTENTIAL_BASE_STATS
+            and "all" in haystack and "stat" in haystack)
 
 
 class TotalGoal:
@@ -2896,6 +2900,11 @@ class CubesApp:
             tk.Radiobutton(mode_row, text=text, value=value, variable=self._mode_var, bg=UI_SURFACE, fg=UI_TEXT,
                            selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
                            highlightthickness=0, font=("Segoe UI", 10)).pack(side="left", padx=(0, 14))
+        self._all_stats_var = tk.BooleanVar(value=bool(saved.get("all_stats", True)))
+        tk.Checkbutton(mode_row, text="All Stats counts as STR / DEX / INT / LUK", variable=self._all_stats_var,
+                       bg=UI_SURFACE, fg=UI_MUTED, selectcolor=UI_BG, activebackground=UI_SURFACE,
+                       activeforeground=UI_TEXT, highlightthickness=0, font=("Segoe UI", 9)).pack(side="right")
+        self._all_stats_var.trace_add("write", lambda *_: self._parse_target())
         goal_row = tk.Frame(goal, bg=UI_SURFACE)
         goal_row.pack(fill="x", padx=14, pady=(0, 10))
         self._goal_row = goal_row
@@ -3175,6 +3184,8 @@ class CubesApp:
         text, so the loop and matcher are unchanged. A blank minimum with a
         is no target at all. Tier is always None: the tier squares are
         informational, the goal is the numbered total."""
+        global ALL_STATS_COUNTS
+        ALL_STATS_COUNTS = bool(self._all_stats_var.get())
         name = self._stat_var.get()
         unit = next((u for n, _w, u in POTENTIAL_STATS if n == name), "%")
         self._unit_label.config(text=unit)
@@ -3212,7 +3223,8 @@ class CubesApp:
             self._target_label.config(text="Enter a minimum value.", fg=UI_MUTED)
         try:
             CUBES_TARGET_FILE.write_text(json.dumps({"mode": mode, "stat": name, "min": raw, "combo": chosen,
-                                                     "count": int(self._count_var.get()), "needs": needs}),
+                                                     "count": int(self._count_var.get()), "needs": needs,
+                                                     "all_stats": ALL_STATS_COUNTS}),
                                          encoding="utf-8")
         except Exception:
             pass
