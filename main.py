@@ -1725,6 +1725,7 @@ class OverlayApp:
         self.enter_spam_enabled = enter_spam
         self.enter_hotkey       = enter_hotkey
         self._reads             = 0            # OCR reads completed; the input thread waits on it
+        self.resets             = 0            # press sequences sent since the last F9 start
         self.enter_interval     = enter_interval
         self.click_interval     = click_interval
         self.enter_on           = False
@@ -2169,6 +2170,7 @@ class OverlayApp:
         self.enter_on = value
         self._activation += 1
         if value:
+            self.resets = 0                       # press sequences sent this activation
             previous = getattr(self, "_activation_target", None)
             if previous is not None and hasattr(previous, "close"):
                 previous.close()
@@ -2263,6 +2265,7 @@ class OverlayApp:
                     continue
                 self._reassert_mouse_lock()
                 before = np.asarray(_grab(tuple(self.region), sct).convert("L"), dtype=np.int16)
+                self.resets += 1
                 pydirectinput.click()
                 for _ in range(CUBES_SEQUENCE_ENTERS):
                     time.sleep(self._jittered(CUBES_PRESS_GAP))
@@ -2357,14 +2360,14 @@ class OverlayApp:
                     if aborted:
                         continue
                     if confirm:
-                        value = confirm
+                        value = f"{confirm} after {self.resets} reset(s)"
                         self.status_text = value
-                        self.last_value = value
+                        self.last_value = confirm
                         self._log(f"Detected {value}.")
                         target = self._activation_target
                         self._set_enter_on(False)
                         try:
-                            save_success_capture(confirm_img, value)
+                            save_success_capture(confirm_img, confirm)
                         except Exception:
                             pass
                         if self._discord_on():
