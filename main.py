@@ -286,7 +286,9 @@ CUBES_SETTLE_MAX     = 0.5   # after the first changed frame, wait up to this lo
 # One cube is exactly one fixed input sequence - left click, Enter, Enter - with a short gap
 # between presses so the game registers each. No continuous spam: a fixed sequence can't
 # land a press mid-read, so there is nothing to freeze and no race with the change detector.
-CUBES_PRESS_GAP = 0.05       # seconds between the presses of one sequence (jittered +/-30%)
+CUBES_PRESS_GAP = 0.09       # seconds between the presses of one sequence (jittered +/-30%)
+CUBES_SEQUENCE_ENTERS = 3    # Enters after the click; a third is harmless if the game only needs two
+CUBES_SEQUENCE_RETRIES = 2   # re-send the sequence this many times if the panel doesn't change
 # The material row under the panel: the cube type in use sits on a cyan-highlighted slot
 # (rgb ~(80,197,220)), 38x38 px, always 192 px below the "Potential" label, sliding
 # sideways to whichever slot is selected. When that cube type runs out the game
@@ -3474,10 +3476,10 @@ class CubesApp:
         self._set_status(message)
 
     def _press_sequence(self):
-        """One cube: left click, Enter, Enter, with a small jittered gap."""
+        """One cube: left click, then Enters, with a small jittered gap."""
         pydirectinput.click()
         self._mouse.reassert()
-        for _ in range(2):
+        for _ in range(CUBES_SEQUENCE_ENTERS):
             time.sleep(OverlayApp._jittered(CUBES_PRESS_GAP))
             if not self.looping:
                 return
@@ -3500,22 +3502,31 @@ class CubesApp:
                         f"Stopped after {self.rolls} roll(s): no cubes left (no cube selected in the material row)."))
                     return
                 before = np.asarray(img.convert("L"), dtype=np.int16)
-                self._press_sequence()
-                deadline = time.perf_counter() + CUBES_CHANGE_TIMEOUT
                 img = None
-                while self.looping and self._running and time.perf_counter() < deadline:
-                    time.sleep(CUBES_CHANGE_POLL)
-                    cur_img = _grab(self.region)
-                    cur = np.asarray(cur_img.convert("L"), dtype=np.int16)
-                    if cur.shape == before.shape and (np.abs(cur - before) > 40).mean() >= CUBES_CHANGE_FRAC:
-                        img = cur_img
+                # A single missed press must not end a run: if the panel doesn't change,
+                # send the sequence again before giving up. (Seen in play: stopped with
+                # cubes left and the dialog open - one dropped input.)
+                for attempt in range(1 + CUBES_SEQUENCE_RETRIES):
+                    if attempt:
+                        self._requests.put(lambda a=attempt: self._set_status(
+                            f"Panel didn't change - pressing again ({a}/{CUBES_SEQUENCE_RETRIES})."))
+                    self._press_sequence()
+                    deadline = time.perf_counter() + CUBES_CHANGE_TIMEOUT
+                    while self.looping and self._running and time.perf_counter() < deadline:
+                        time.sleep(CUBES_CHANGE_POLL)
+                        cur_img = _grab(self.region)
+                        cur = np.asarray(cur_img.convert("L"), dtype=np.int16)
+                        if cur.shape == before.shape and (np.abs(cur - before) > 40).mean() >= CUBES_CHANGE_FRAC:
+                            img = cur_img
+                            break
+                    if img is not None or not self.looping:
                         break
                 if not self.looping:
                     break
                 if img is None:
                     self._requests.put(lambda: self._stop_loop(
-                        f"Stopped after {self.rolls} roll(s): the panel did not change "
-                        f"(out of cubes, or the dialog closed?)."))
+                        f"Stopped after {self.rolls} roll(s): the panel did not change after "
+                        f"{1 + CUBES_SEQUENCE_RETRIES} tries (out of cubes, or the dialog closed?)."))
                     return
                 # The redraw may still be animating on the first differing frame -
                 # wait for the pixels to hold still before trusting the OCR.
