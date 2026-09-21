@@ -56,6 +56,7 @@ import queue
 import platform
 import wave
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import messagebox, ttk
@@ -1228,6 +1229,9 @@ def preprocess_for_ocr(img: Image.Image) -> Image.Image:
     is_digit_ink = (value > OCR_MASK_VALUE_MIN) & (saturation < OCR_MASK_SATURATION_MAX)
     black_on_white = np.where(is_digit_ink, 0, 255).astype("uint8")
     return _trim_to_text_band(Image.fromarray(black_on_white, mode="L"))
+
+
+_OCR_POOL = ThreadPoolExecutor(max_workers=4)   # Tesseract runs are subprocesses: they overlap fully
 
 
 def _grab(region, sct=None) -> Image.Image:
@@ -4056,7 +4060,10 @@ class CubesApp:
             self._set_status(f"Box set: {self.region}")
         self._sync_overlay()
 
-    def _auto_locate(self):
+    def _auto_locate(self, near=None):
+        """Find the panel(s) on screen. *near* = a saved box: search only a
+        band of the screen around it first (a full-screen search is ~3 s, the
+        band ~0.3 s) and fall back to the whole screen if nothing is there."""
         self._set_status("Auto-locate: scanning the screen...")
         self.results = []                # only a successful locate + read fills this
         self.root.update_idletasks()
@@ -4066,8 +4073,18 @@ class CubesApp:
                 desktop = sct.monitors[0]
                 shot = sct.grab(desktop)
             full_gray = np.array(Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX").convert("L"))
-            best, peaks, shape = locate_label(full_gray, self.profile.label_gray(),
-                                              max_peaks=4 if self.profile.pick_label == "rightmost" else 1)
+            want = 4 if self.profile.pick_label == "rightmost" else 1
+            peaks = []
+            if near:
+                # Full width (Reset x1 / x3 lay the cards out differently) but only
+                # the rows around the saved box: the dialog itself does not move.
+                pad = near[3]
+                y0 = max(0, near[1] - desktop["top"] - pad)
+                y1 = min(full_gray.shape[0], near[1] - desktop["top"] + near[3] + pad)
+                best, peaks, shape = locate_label(full_gray[y0:y1], self.profile.label_gray(), max_peaks=want)
+                peaks = [(x, y + y0) for x, y in peaks]
+            if not peaks:
+                best, peaks, shape = locate_label(full_gray, self.profile.label_gray(), max_peaks=want)
         except Exception as error:
             self._set_status(f"Auto-locate failed: {error}")
             self._sync_overlay()
@@ -4106,9 +4123,12 @@ class CubesApp:
         self.count_box = None
         if self.profile.cubes_left == "count":
             try:
-                rbest, rpeaks, (rh, rw) = locate_label(full_gray, self._remaining_gray(), max_peaks=1)
+                # The Remaining pill sits below the cards: search from the cards down.
+                ry0 = max(0, self.region[1] - desktop["top"])
+                rbest, rpeaks, (rh, rw) = locate_label(full_gray[ry0:], self._remaining_gray(), max_peaks=1)
                 if rpeaks:
                     rx, ry = rpeaks[0]
+                    ry += ry0
                     dx, dy, w, h = REMAINING_COUNT_BOX
                     self.count_box = (desktop["left"] + rx + round(dx * rw), desktop["top"] + ry + round(dy * rh),
                                       round(w * rw), round(h * rh))
@@ -4125,7 +4145,7 @@ class CubesApp:
                 draw.rectangle((px - desktop["left"], py - desktop["top"], px - desktop["left"] + pw,
                                 py - desktop["top"] + ph), outline="red", width=2)
             DEBUG_CAPTURE_DIR.mkdir(exist_ok=True)
-            dbg.save(DEBUG_CAPTURE_DIR / "cubes_autolocate.png")
+            dbg.save(DEBUG_CAPTURE_DIR / "cubes_autolocate.png", compress_level=1)   # 80 ms, not 250
         except Exception:
             pass
         self._set_status(f"Found {len(self.panels)} Potential panel(s) (match {best:.2f}). Press F9 to read.")
@@ -4152,14 +4172,17 @@ class CubesApp:
         three lines are OCR'd and totalled on their own. Returns a list of
         (tiers, lines), one per panel, left to right."""
         ox, oy = self.region[0], self.region[1]
-        out = []
-        for px, py, pw, ph in (self.panels or [self.region]):
+
+        def read(box):
+            px, py, pw, ph = box
             crop = img.crop((px - ox, py - oy, px - ox + pw, py - oy + ph))
             try:
-                out.append((read_potential_tiers(crop, self.profile), read_potential_lines(crop, self.profile)))
+                return read_potential_tiers(crop, self.profile), read_potential_lines(crop, self.profile)
             except Exception:
-                out.append(([None] * 3, []))
-        return out
+                return [None] * 3, []
+        # Each read is its own Tesseract process (~150 ms): three cards in parallel
+        # take one read's time, not three.
+        return list(_OCR_POOL.map(read, self.panels or [self.region]))
 
     # ---- read --------------------------------------------------------------
     def _read(self):
@@ -4258,7 +4281,7 @@ class CubesApp:
             # Bright: the boxes came from F7, and Reset x1 / x3 lay the cards out
             # differently - re-locate on every start so a dialog switch can't
             # leave stale boxes (the loop would then read the wrong place).
-            self._auto_locate()
+            self._auto_locate(near=self.region)
             if not self.results:
                 return                       # auto-locate said what went wrong
         self.looping = True
@@ -4306,9 +4329,10 @@ class CubesApp:
         time.sleep(0.1)                  # let the overlay's hide land on screen before the first grab
         img = _grab(self.region)
         first = True
+        cubes_left = None                # Remaining-count read, started alongside the card read
         while self.looping and self._running:
             if not first:
-                if not self._cubes_left():
+                if not (cubes_left.result() if cubes_left is not None else self._cubes_left()):
                     n = max(1, len(self.panels))
                     why = (f"fewer than the {n} cubes a Reset x{n} needs" if n > 1
                            else "no cubes left (no cube selected in the material row)")
@@ -4353,6 +4377,7 @@ class CubesApp:
                 t3 = time.perf_counter()
                 self.rolls += 1
             first = False
+            cubes_left = _OCR_POOL.submit(self._cubes_left)   # in parallel with the card OCR below
             results = self._read_panels(img)
             if self.rolls:
                 # Where the time of one roll went - the log shows it, so a slow
