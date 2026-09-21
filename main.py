@@ -3168,7 +3168,7 @@ HELP_SECTIONS = (
     ("Glowing cubes  (Potential window)", (
         "1. Open the item's Potential window and select the Glowing cube in the material row (the cyan-highlighted slot).",
         "2. Cube type: Glowing. Press Locate (F7): the box lands on the three Potential lines.",
-        "3. Set what you are looking for. Reach a total (e.g. STR >= 30%), Combination (N of the 3 lines from the stats you tick) and Lines per stat (e.g. LUK x2 + All Stats x1) can be ticked together - any one of them being met stops the run. 'all legendary' on a goal also needs all three lines legendary. 'All Stats counts as STR / DEX / INT / LUK' adds All Stats lines to those totals.",
+        "3. Set what you are looking for (see 'Cubes: the goals' below). Tick one goal or several - any one of them being met stops the run.",
         "4. Click into the game and press F9. The current lines are read first (a match is never rolled away); then click + Enter, wait for the new lines, read, repeat.",
         "5. It stops with the sound on a match, when no cube is highlighted any more (out of cubes), or if the panel stops changing.",
     )),
@@ -3178,6 +3178,15 @@ HELP_SECTIONS = (
         "3. Set your goal the same way as for Glowing. Click into the game and press F9: it presses Reset, waits for the cards to redraw, and reads every AFTER card on its own (each shows its lines, totals and progress).",
         "4. On a match it STOPS WITHOUT pressing anything - the match is showing in the AFTER card it names. Pick that card in the game and close the dialog to keep it (pressing Reset would roll it away).",
         "5. It also stops when the Remaining count reads 0.",
+    )),
+    ("Cubes: the goals", (
+        "Reach a total: one stat and a minimum, e.g. STR >= 30%. All three lines of that stat are added up (All Stats lines too, if the checkbox below is on) and the run stops when the sum reaches the minimum.",
+        "Combination of stats: tick the stats you would accept, then pick how many of the 3 lines must come from that set (1, 2 or 3). Example: tick STR and All Stats, need 2 - STR 12% + All Stats 6% + Speed 4% is a match.",
+        "Lines per stat: rows of [stat] x [1 / 2 / 3]. Each row says how many lines of that stat the item must have; '+ Add a stat' adds a row (up to 3 rows, 3 lines in total). Example: LUK x2 + All Stats x1 matches only an item with two LUK lines and one All Stats line.",
+        "Legendary: each goal has its own any / 2+ / all 3 setting - how many of the three lines must be legendary tier (read from the line's icon colour) on top of the goal itself.",
+        "All Stats counts as STR / DEX / INT / LUK: with this on, an All Stats line counts as a line of each base stat for Reach a total and Lines per stat.",
+        "Presets: goal, cube type and the All Stats setting are saved per item name; pick one from the PRESET menu to load it, Save as... to store the current settings, Delete to remove it.",
+        "Ticking several goals combines them with OR: the first one that is met stops the run.",
     )),
     ("Settings and Log", (
         "Settings: Discord alerts per tab (webhook + user ID), and the detection sound - mute, record your own message, volume, test.",
@@ -3582,11 +3591,13 @@ class CubesApp:
         def remove_row(entry):
             self._perstat_rows.remove(entry)
             entry[0].destroy()
+            if not self._perstat_rows:      # never an empty list - the goal always shows one row
+                add_row()
             self._parse_target()
         self._add_perstat_row = add_row
         self._add_row_button = OverlayApp._button(perstat, "+ Add a stat", add_row, UI_BUTTON, UI_TEXT)
         self._add_row_button.pack(anchor="w", pady=(6, 0))
-        for name, count in list(saved_needs.items())[:3]:
+        for name, count in list(saved_needs.items())[:3] or [(None, "1")]:
             add_row(name, str(count))
         self._target_label = tk.Label(goal, text="", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9), anchor="w")
         self._target_label.pack(fill="x", padx=14, pady=(0, 10))
@@ -3887,7 +3898,7 @@ class CubesApp:
             row.destroy()
         self._perstat_rows.clear()
         needs = data.get("needs", {}) if isinstance(data.get("needs"), dict) else {}
-        for name, count in list(needs.items())[:3]:
+        for name, count in list(needs.items())[:3] or [(None, "1")]:
             self._add_perstat_row(name, str(count))
         self._parse_target()
 
