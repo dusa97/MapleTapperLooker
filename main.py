@@ -3186,8 +3186,57 @@ HELP_SECTIONS = (
 )
 
 
+UPDATE_LOG = (
+    ("Unreleased  (2026-09-21)", (
+        "Cubes: the legendary requirement on each goal is any / 2+ / all 3 lines instead of a checkbox.",
+        "Cubes: presets - goal, cube type and All Stats setting saved per item.",
+        "Help tab: how to use Flames, Glowing cubes and Bright cubes.",
+        "Window is wider (720) so three Potential cards fit, each with its own goal progress.",
+        "Reopens on the tab used last time; single-column Cubes view no longer collapses.",
+        "No console flash from the Tesseract check on startup.",
+    )),
+    ("2026-09-20", (
+        "Cubes (Bright): Reset x3 reads and checks every AFTER card side by side; cards are re-located on every Start; stops when Remaining reads 0.",
+        "Cubes: cube type is a slide switch with the cube pictures; the tab takes the cube's colour; Total shown inside the Potential card.",
+        "Cubes: goals - Reach a total, Combination (N of 3 lines from a set) and Lines per stat (add-able rows) can be ticked together and combine with OR; 'all legendary' per goal; 'All Stats counts as STR/DEX/INT/LUK' checkbox.",
+        "Cubes: one cube = click + Enter + Enter, then wait for the panel to blink out and come back before reading; retries the press twice before 'panel did not change'; stops the instant a match is found.",
+        "Flames: presses like Cubes (click + Enters as one sequence, then wait for the redraw); counts resets by observed changes and reports how many a hit took; F7 auto-locate 3x faster with a full-resolution fallback.",
+        "Settings and Log are tabs; Discord alerts per tab; volume slider for the detection sound; Hide box on the button row.",
+    )),
+    ("2026-09-19", (
+        "One window with Flames / Cubes tabs; shared header with logo, name and version; fixed window size across tabs.",
+        "Cubes tab: F7 finds the Potential panel, F9 cubes until the target appears; reads the tier of each line from its icon colour and shows it as a colour square.",
+        "Cubes: stat, minimum and tier picked from menus; lines with a unit ('Skill Cooldowns -2 sec'); Item Drop Rate and Mesos Obtained added; match on the item's total for a stat.",
+        "Cubes: stops when the selected cube runs out.",
+        "Single-file launch cut from 2.6 s to 1.5 s; build version shown in the UI.",
+    )),
+    ("v1.23  (2026-09-19)", (
+        "Removed the 'im bored' video feature and its bundled assets.",
+    )),
+    ("v1.22  (2026-09-18)", (
+        "Private Discord hit alerts: webhook + user ID in Settings, screenshot attached, setup explained in the app.",
+    )),
+    ("v1.18 - v1.21  (2026-09-15)", (
+        "Tesseract replaced by a template-matching digit classifier as the primary OCR path.",
+        "Every launch re-checks the previous run's debug captures; likely-missed and confirmed detections are captured for recalibration.",
+        "Colour-based digit contrast and a retry on the confirm read.",
+    )),
+    ("Earlier  (2026-09-12)", (
+        "F7 auto-locate: finds the Combat Power Change panel, snaps the box and glides the cursor to Reset.",
+        "F8 click-drag region selection; Hide box / Show box toggle; DPI-aware cursor placement.",
+        "Compact dark control window, terminal-free Windows launcher, smaller exe (headless OpenCV + UPX).",
+        "F9 pauses OCR and detection audio when off; detection only on +number results.",
+    )),
+)
+
+
 def build_help_tab(host):
     """The Help tab: how to use each mode, as short numbered steps."""
+    build_sections_tab(host, HELP_SECTIONS)
+
+
+def build_sections_tab(host, sections):
+    """A scrollable tab of cards: one titled card per (title, lines) section."""
     canvas = tk.Canvas(host, bg=UI_BG, highlightthickness=0, bd=0)
     vbar = ttk.Scrollbar(host, orient="vertical", command=canvas.yview)
     canvas.configure(yscrollcommand=vbar.set)
@@ -3198,7 +3247,7 @@ def build_help_tab(host):
     body.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
     canvas.bind("<Configure>", lambda e: canvas.itemconfigure(win, width=e.width))
     wrap = APP_WIDTH - 110
-    for title, steps in HELP_SECTIONS:
+    for title, steps in sections:
         card = OverlayApp._card(body)
         card.pack(fill="x", pady=(0, 12))
         tk.Label(card, text=title, fg=UI_TEXT, bg=UI_SURFACE, font=("Segoe UI", 12, "bold"),
@@ -4418,12 +4467,13 @@ def run_app(args):
     notebook.pack(fill="both", expand=True)
     tabs = {}
     for mode, title in (("flames", "Flames"), ("cubes", "Cubes"), ("log", "Log"), ("settings", "Settings"),
-                        ("help", "Help")):
+                        ("help", "Help"), ("updates", "Updates")):
         tabs[mode] = tk.Frame(notebook, bg=UI_BG)
         notebook.add(tabs[mode], text=f"  {title}  ")
     modes = list(tabs)
     log_append = build_log_tab(tabs["log"])
     build_help_tab(tabs["help"])
+    build_sections_tab(tabs["updates"], UPDATE_LOG)
     mirrors = {m: (lambda line, m=m: log_append(f"{line[:10]}[{m.capitalize()}] {line[10:]}")) for m in ("flames", "cubes")}
     build_settings(tabs["settings"], discord, discord_flags, audio, lambda msg: shell_log["fn"](msg))
 
