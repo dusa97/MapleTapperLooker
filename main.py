@@ -259,6 +259,7 @@ POTENTIAL_BLOCK_DY_RATIO = 12 / 15
 POTENTIAL_BLOCK_W_RATIO  = 250 / 50   # 210 fit "Skill Cooldowns -2 sec" with room; longer names exist
 POTENTIAL_BLOCK_H_RATIO  = 70 / 15
 CUBES_REGION_FILE = _BASE_DIR / "last_cubes_region.json"
+CUBES_PRESETS_FILE = _BASE_DIR / "cubes_presets.json"    # {name: goal dict}, one per item you cube
 CUBES_TARGET_FILE = _BASE_DIR / "last_cubes_target.json"
 # What the Cubes tab lets you pick, and the words the OCR'd stat line must contain for
 # each (the game's own spelling, from real captures under assets/reference/). Unit is
@@ -2541,7 +2542,14 @@ class OverlayApp:
         nothing about this needs the main thread."""
         def probe():
             try:
-                pytesseract.get_tesseract_version()
+                # Not pytesseract.get_tesseract_version(): it spawns without the
+                # hide flag, which pops a console window from a windowed exe.
+                import subprocess
+                si = subprocess.STARTUPINFO()
+                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                subprocess.run([pytesseract.pytesseract.tesseract_cmd, "--version"], check=True,
+                               capture_output=True, startupinfo=si,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             except Exception as error:
                 self._ocr_available = False
                 self.status_text = "Tesseract is unavailable - see activity"
@@ -3372,6 +3380,20 @@ class CubesApp:
                        activeforeground=UI_TEXT, highlightthickness=0, font=("Segoe UI", 9),
                        anchor="w").pack(fill="x", padx=14, pady=(8, 0))
         self._all_stats_var.trace_add("write", lambda *_: self._parse_target())
+        # Presets: the whole "Looking for" section saved under a name (one per item).
+        preset_row = tk.Frame(goal, bg=UI_SURFACE)
+        preset_row.pack(fill="x", padx=14, pady=(6, 2))
+        tk.Label(preset_row, text="PRESET", fg=UI_MUTED, bg=UI_SURFACE,
+                 font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 10))
+        self._preset_var = tk.StringVar(value="")
+        self._preset_menu = ttk.OptionMenu(preset_row, self._preset_var, "", style="Cubes.TMenubutton")
+        self._preset_menu.pack(side="left", fill="x", expand=True)
+        self._preset_menu["menu"].config(bg=UI_SURFACE, fg=UI_TEXT, activebackground=UI_BUTTON,
+                                         activeforeground=UI_TEXT, font=("Segoe UI", 10), bd=0)
+        for text, cmd in (("Save as...", self._save_preset), ("Delete", self._delete_preset)):
+            b = OverlayApp._button(preset_row, text, cmd, UI_BUTTON, UI_TEXT)
+            b.config(padx=8, pady=4)
+            b.pack(side="left", padx=(8, 0))
         tk.Label(goal, text="LOOKING FOR", fg=UI_MUTED, bg=UI_SURFACE,
                  font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=14, pady=(6, 2))
         stat_names = [name for name, _, _ in POTENTIAL_STATS]
@@ -3520,6 +3542,7 @@ class CubesApp:
         self._cube_var.trace_add("write", lambda *_: self._set_cube_type())
         self._set_cube_type()
         self._parse_target()
+        self._refresh_presets()
         self._bind_wheel()
         # Same overlay as Flames: a click-through-transparent window with a
         # coloured frame you drag to move and corner handles you drag to
@@ -3766,6 +3789,109 @@ class CubesApp:
 
     def _wrap(self, goal, key):
         return LegendaryOnly(goal) if self._leg_vars[key].get() else goal
+
+    # ---- presets -------------------------------------------------------------
+    def _target_dict(self):
+        """The whole 'Looking for' section as one dict (what the target file
+        and the presets store)."""
+        needs = {}
+        for _row, stat_var, count_var in self._perstat_rows:
+            needs[stat_var.get()] = needs.get(stat_var.get(), 0) + int(count_var.get())
+        return {"cube_type": self._cube_var.get(),
+                "modes": [k for k, v in self._mode_vars.items() if v.get()],
+                "stat": self._stat_var.get(), "min": self._min_var.get().strip().rstrip("%"),
+                "combo": [n for n, v in self._combo_vars.items() if v.get()],
+                "count": int(self._count_var.get()), "needs": needs,
+                "all_stats": bool(self._all_stats_var.get()),
+                "legendary": {k: v.get() for k, v in self._leg_vars.items()}}
+
+    def _apply_target(self, data):
+        """Set every 'Looking for' control (and the cube type) from a dict (a preset)."""
+        if data.get("cube_type") in CUBE_PROFILES:
+            self._cube_var.set(data["cube_type"])
+        modes = data.get("modes") if isinstance(data.get("modes"), list) else ["total"]
+        for k, v in self._mode_vars.items():
+            v.set(k in modes)
+        if data.get("stat") in self._combo_vars:
+            self._stat_var.set(data["stat"])
+        self._min_var.set(str(data.get("min", "")))
+        chosen = set(data.get("combo", []))
+        for n, v in self._combo_vars.items():
+            v.set(n in chosen)
+        if str(data.get("count", 3)) in ("1", "2", "3"):
+            self._count_var.set(str(data["count"]))
+        self._all_stats_var.set(bool(data.get("all_stats", True)))
+        leg = data.get("legendary") if isinstance(data.get("legendary"), dict) else {}
+        for k, v in self._leg_vars.items():
+            v.set(bool(leg.get(k, False)))
+        for row, _s, _c in list(self._perstat_rows):
+            row.destroy()
+        self._perstat_rows.clear()
+        needs = data.get("needs", {}) if isinstance(data.get("needs"), dict) else {}
+        for name, count in list(needs.items())[:3]:
+            self._add_perstat_row(name, str(count))
+        self._parse_target()
+
+    @staticmethod
+    def _load_presets():
+        try:
+            data = json.loads(CUBES_PRESETS_FILE.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _store_presets(presets):
+        try:
+            CUBES_PRESETS_FILE.write_text(json.dumps(presets, indent=1), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _refresh_presets(self):
+        presets = self._load_presets()
+        menu = self._preset_menu["menu"]
+        menu.delete(0, "end")
+        for name in sorted(presets):
+            menu.add_command(label=name, command=lambda n=name: self._load_preset(n))
+        if self._preset_var.get() not in presets:
+            self._preset_var.set("(none)" if presets else "(no presets yet)")
+
+    def _load_preset(self, name):
+        data = self._load_presets().get(name)
+        if data is None:
+            self._refresh_presets()
+            return
+        self._apply_target(data)
+        self._preset_var.set(name)
+        self._set_status(f"Preset '{name}' loaded.")
+
+    def _save_preset(self):
+        from tkinter import simpledialog
+        current = self._preset_var.get()
+        name = simpledialog.askstring("Save preset", "Preset name (e.g. the item):",
+                                      initialvalue=current if not current.startswith("(") else "",
+                                      parent=self.root)
+        if not name or not name.strip():
+            return
+        name = name.strip()
+        presets = self._load_presets()
+        presets[name] = self._target_dict()
+        self._store_presets(presets)
+        self._preset_var.set(name)
+        self._refresh_presets()
+        self._set_status(f"Preset '{name}' saved.")
+
+    def _delete_preset(self):
+        name = self._preset_var.get()
+        presets = self._load_presets()
+        if name not in presets:
+            self._set_status("Pick a preset to delete first.")
+            return
+        del presets[name]
+        self._store_presets(presets)
+        self._preset_var.set("")
+        self._refresh_presets()
+        self._set_status(f"Preset '{name}' deleted.")
 
     def _parse_target(self):
         """Compose the (words, minimum, wants_percent, tier) target from the
