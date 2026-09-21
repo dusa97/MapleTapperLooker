@@ -289,7 +289,7 @@ POTENTIAL_STATS = (
 # A timer would read stale lines on a slow client and could stop on the previous roll.
 CUBES_CHANGE_POLL   = 0.03   # seconds between cheap pixel-difference checks while waiting for the redraw
 CUBES_CHANGE_FRAC   = 0.004  # fraction of pixels that must differ to count as "the panel changed"
-CUBES_CHANGE_TIMEOUT = 3.0   # give up waiting after this long (no cubes left, dialog closed, ...)
+CUBES_CHANGE_TIMEOUT = 1.0   # no change this long after a press = the press was dropped, press again
 CUBES_SETTLE_MAX     = 1.5   # after the first changed frame, wait up to this long for the panel to be back (the blink)
 CUBES_STILL_MAX      = 0.25  # once the text is back, wait at most this long for it to hold still - the Glowing
                              # window never goes fully still (the cube's glow animates), so a long wait is a long stall
@@ -297,8 +297,9 @@ CUBES_MIN_TEXT_INK   = 0.008 # fraction of OCR-mask ink that means "the stat lin
 # One cube is exactly one fixed input sequence - left click, Enter, Enter - with a short gap
 # between presses so the game registers each. No continuous spam: a fixed sequence can't
 # land a press mid-read, so there is nothing to freeze and no race with the change detector.
-CUBES_PRESS_GAP = 0.09       # seconds between the presses of one sequence (jittered +/-30%)
-CUBES_SEQUENCE_ENTERS = 3    # Enters after the click; a third is harmless if the game only needs two
+CUBES_PRESS_GAP = 0.05       # seconds between the presses of one sequence (jittered +/-30%)
+CUBES_SEQUENCE_ENTERS = 2    # Enters after the click - the game needs two; a dropped press is
+                             # covered by the re-send below, not by extra presses (each is 50 ms per roll)
 CUBES_SEQUENCE_RETRIES = 2   # re-send the sequence this many times if the panel doesn't change
 # Flames uses the same sequence; its dialog can need another press (confirm popups), so
 # a no-change wait is short and simply leads to the next sequence rather than a stop.
