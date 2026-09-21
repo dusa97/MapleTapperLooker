@@ -803,26 +803,28 @@ def _is_all_stats(line):
 
 class LegendaryOnly:
     """Wrap a goal so it only sees legendary lines, and additionally
-    requires all three lines to be legendary. Ticking 'all legendary' on
-    a goal kind wraps that goal; the others are unaffected."""
-    def __init__(self, goal):
+    requires at least *need* (2 or 3) of the three lines to be legendary.
+    Set per goal kind; the other goals are unaffected."""
+    def __init__(self, goal, need=3):
         self.goal = goal
+        self.need = need
 
     def describe(self):
-        return self.goal.describe() + " (all 3 lines legendary)"
+        return self.goal.describe() + (" (all 3 lines legendary)" if self.need >= 3
+                                       else f" ({self.need}+ legendary lines)")
 
     @staticmethod
     def _legendary(lines, tiers):
         return [line if tier == "legendary" else (line[0], None) for line, tier in zip(lines, tiers)]
 
     def check(self, lines, tiers):
-        if len(tiers) < 3 or any(t != "legendary" for t in tiers[:3]):
+        if sum(1 for t in tiers[:3] if t == "legendary") < self.need:
             return None
         return self.goal.check(self._legendary(lines, tiers), tiers)
 
     def progress(self, lines, tiers):
         n = sum(1 for t in tiers[:3] if t == "legendary")
-        return self.goal.progress(self._legendary(lines, tiers), tiers) + f"  [{n}/3 legendary]"
+        return self.goal.progress(self._legendary(lines, tiers), tiers) + f"  [{n}/3 legendary, need {self.need}]"
 
 
 class AnyOfGoal:
@@ -3412,12 +3414,18 @@ class CubesApp:
         goal_row.pack(fill="x", padx=14, pady=(0, 10))
         self._goal_row = goal_row
         saved_leg = saved.get("legendary") if isinstance(saved.get("legendary"), dict) else {}
-        self._leg_vars = {k: tk.BooleanVar(value=bool(saved_leg.get(k, False))) for k in ("total", "combo", "perstat")}
+        def leg_value(v):
+            return "3" if v is True else (str(v) if str(v) in ("0", "2", "3") else "0")
+        self._leg_vars = {k: tk.StringVar(value=leg_value(saved_leg.get(k, 0))) for k in ("total", "combo", "perstat")}
 
         def leg_box(parent, key, **pack):
-            tk.Checkbutton(parent, text="all legendary", variable=self._leg_vars[key], bg=UI_SURFACE, fg=UI_MUTED,
-                           selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
-                           highlightthickness=0, font=("Segoe UI", 9)).pack(**pack)
+            box = tk.Frame(parent, bg=UI_SURFACE)
+            box.pack(**pack)
+            tk.Label(box, text="legendary:", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9)).pack(side="left")
+            for value, text in (("0", "any"), ("2", "2+"), ("3", "all 3")):
+                tk.Radiobutton(box, text=text, value=value, variable=self._leg_vars[key], bg=UI_SURFACE, fg=UI_MUTED,
+                               selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
+                               highlightthickness=0, font=("Segoe UI", 9), padx=2).pack(side="left")
             self._leg_vars[key].trace_add("write", lambda *_: self._parse_target())
         self._leg_box = leg_box
         self._stat_var = tk.StringVar(value=saved.get("stat") if saved.get("stat") in stat_names else stat_names[0])
@@ -3788,7 +3796,8 @@ class CubesApp:
         return target.describe()
 
     def _wrap(self, goal, key):
-        return LegendaryOnly(goal) if self._leg_vars[key].get() else goal
+        need = self._leg_vars[key].get()
+        return LegendaryOnly(goal, int(need)) if need in ("2", "3") else goal
 
     # ---- presets -------------------------------------------------------------
     def _target_dict(self):
@@ -3823,7 +3832,8 @@ class CubesApp:
         self._all_stats_var.set(bool(data.get("all_stats", True)))
         leg = data.get("legendary") if isinstance(data.get("legendary"), dict) else {}
         for k, v in self._leg_vars.items():
-            v.set(bool(leg.get(k, False)))
+            raw = leg.get(k, 0)
+            v.set("3" if raw is True else (str(raw) if str(raw) in ("0", "2", "3") else "0"))
         for row, _s, _c in list(self._perstat_rows):
             row.destroy()
         self._perstat_rows.clear()
