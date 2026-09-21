@@ -3204,7 +3204,10 @@ HELP_SECTIONS = (
 
 
 UPDATE_LOG = (
-    ("Unreleased  (2026-09-21)", (
+    ("2026-09-21", (
+        "Cubes are much faster: press once, roll on the seen change, re-press after 1 s without one; no 1.5 s stall per roll on Glowing; Bright reads its 3 cards and the Remaining count in parallel and starts in ~0.1 s instead of ~3 s.",
+        "Cubes: Reset button for Looking for; Lines per stat always shows one row; Reset x3 stops when Remaining is under 3.",
+        "Updates tab (this one) and a Help card explaining every goal, Legendary and All Stats.",
         "Cubes: the legendary requirement on each goal is any / 2+ / all 3 lines instead of a checkbox.",
         "Cubes: presets - goal, cube type and All Stats setting saved per item.",
         "Help tab: how to use Flames, Glowing cubes and Bright cubes.",
