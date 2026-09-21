@@ -290,7 +290,9 @@ POTENTIAL_STATS = (
 CUBES_CHANGE_POLL   = 0.03   # seconds between cheap pixel-difference checks while waiting for the redraw
 CUBES_CHANGE_FRAC   = 0.004  # fraction of pixels that must differ to count as "the panel changed"
 CUBES_CHANGE_TIMEOUT = 3.0   # give up waiting after this long (no cubes left, dialog closed, ...)
-CUBES_SETTLE_MAX     = 1.5   # after the first changed frame, wait up to this long for the panel to be back and still
+CUBES_SETTLE_MAX     = 1.5   # after the first changed frame, wait up to this long for the panel to be back (the blink)
+CUBES_STILL_MAX      = 0.25  # once the text is back, wait at most this long for it to hold still - the Glowing
+                             # window never goes fully still (the cube's glow animates), so a long wait is a long stall
 CUBES_MIN_TEXT_INK   = 0.008 # fraction of OCR-mask ink that means "the stat lines are on screen" (real panels 0.02-0.05)
 # One cube is exactly one fixed input sequence - left click, Enter, Enter - with a short gap
 # between presses so the game registers each. No continuous spam: a fixed sequence can't
@@ -4388,17 +4390,24 @@ class CubesApp:
 
     def _settle(self, img):
         """Return a grab taken once the panel is BACK (has text) and two
-        consecutive polls agree (it has finished redrawing), or the latest
+        consecutive polls agree (it has finished redrawing) - or, if it keeps
+        animating, CUBES_STILL_MAX after the text came back; or the latest
         grab after CUBES_SETTLE_MAX."""
         prev = np.asarray(img.convert("L"), dtype=np.int16)
         deadline = time.perf_counter() + CUBES_SETTLE_MAX
+        text_since = None
         while self.looping and self._running and time.perf_counter() < deadline:
             time.sleep(CUBES_CHANGE_POLL)
             img = _grab(self.region)
             cur = np.asarray(img.convert("L"), dtype=np.int16)
             still = cur.shape == prev.shape and (np.abs(cur - prev) > 40).mean() < CUBES_CHANGE_FRAC
-            if still and self._has_text(img):
-                return img
+            if self._has_text(img):
+                if text_since is None:
+                    text_since = time.perf_counter()
+                if still or time.perf_counter() - text_since >= CUBES_STILL_MAX:
+                    return img
+            else:
+                text_since = None
             prev = cur
         return img
 
