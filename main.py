@@ -3177,7 +3177,7 @@ HELP_SECTIONS = (
         "2. Cube type: Bright. Press Locate (F7): every AFTER card gets a box, and the Remaining count is found too. Start re-locates automatically, so switching x1 / x3 is fine.",
         "3. Set your goal the same way as for Glowing. Click into the game and press F9: it presses Reset, waits for the cards to redraw, and reads every AFTER card on its own (each shows its lines, totals and progress).",
         "4. On a match it STOPS WITHOUT pressing anything - the match is showing in the AFTER card it names. Pick that card in the game and close the dialog to keep it (pressing Reset would roll it away).",
-        "5. It also stops when the Remaining count reads 0.",
+        "5. It also stops when Remaining drops below what one press uses (1 for Reset x1, 3 for Reset x3).",
     )),
     ("Cubes: the goals", (
         "Reach a total: one stat and a minimum, e.g. STR >= 30%. All three lines of that stat are added up (All Stats lines too, if the checkbox below is on) and the run stops when the sum reaches the minimum.",
@@ -3185,6 +3185,7 @@ HELP_SECTIONS = (
         "Lines per stat: rows of [stat] x [1 / 2 / 3]. Each row says how many lines of that stat the item must have; '+ Add a stat' adds a row (up to 3 rows, 3 lines in total). Example: LUK x2 + All Stats x1 matches only an item with two LUK lines and one All Stats line.",
         "Legendary: each goal has its own any / 2+ / all 3 setting - how many of the three lines must be legendary tier (read from the line's icon colour) on top of the goal itself.",
         "All Stats counts as STR / DEX / INT / LUK: with this on, an All Stats line counts as a line of each base stat for Reach a total and Lines per stat.",
+        "Reset: puts every Looking for control back to its default (the cube type stays).",
         "Presets: goal, cube type and the All Stats setting are saved per item name; pick one from the PRESET menu to load it, Save as... to store the current settings, Delete to remove it.",
         "Ticking several goals combines them with OR: the first one that is met stops the run.",
     )),
@@ -3450,7 +3451,8 @@ class CubesApp:
         self._preset_menu.pack(side="left", fill="x", expand=True)
         self._preset_menu["menu"].config(bg=UI_SURFACE, fg=UI_TEXT, activebackground=UI_BUTTON,
                                          activeforeground=UI_TEXT, font=("Segoe UI", 10), bd=0)
-        for text, cmd in (("Save as...", self._save_preset), ("Delete", self._delete_preset)):
+        for text, cmd in (("Save as...", self._save_preset), ("Delete", self._delete_preset),
+                          ("Reset", self._reset_target)):
             b = OverlayApp._button(preset_row, text, cmd, UI_BUTTON, UI_TEXT)
             b.config(padx=8, pady=4)
             b.pack(side="left", padx=(8, 0))
@@ -3831,8 +3833,9 @@ class CubesApp:
                 txt = pytesseract.image_to_string(big, config="--psm 7 -c tessedit_char_whitelist=0123456789").strip()
             except Exception:
                 return True
-            # Unreadable = don't stop on a guess; a clean "0" = out of cubes.
-            return not (txt.isdigit() and int(txt) == 0)
+            # Unreadable = don't stop on a guess; a clean count below what one
+            # press uses (1 for Reset x1, 3 for Reset x3) = can't roll again.
+            return not (txt.isdigit() and int(txt) < max(1, len(self.panels)))
         if not self.label_box:
             return True
         strip = self.profile.row_for(self.label_box)
@@ -3887,8 +3890,8 @@ class CubesApp:
         chosen = set(data.get("combo", []))
         for n, v in self._combo_vars.items():
             v.set(n in chosen)
-        if str(data.get("count", 3)) in ("1", "2", "3"):
-            self._count_var.set(str(data["count"]))
+        count = str(data.get("count", 3))
+        self._count_var.set(count if count in ("1", "2", "3") else "3")
         self._all_stats_var.set(bool(data.get("all_stats", True)))
         leg = data.get("legendary") if isinstance(data.get("legendary"), dict) else {}
         for k, v in self._leg_vars.items():
@@ -3925,6 +3928,12 @@ class CubesApp:
             menu.add_command(label=name, command=lambda n=name: self._load_preset(n))
         if self._preset_var.get() not in presets:
             self._preset_var.set("(none)" if presets else "(no presets yet)")
+
+    def _reset_target(self):
+        """Every 'Looking for' control back to its default; the cube type stays."""
+        self._apply_target({"cube_type": self._cube_var.get()})
+        self._preset_var.set("(none)")
+        self._set_status("Looking for reset.")
 
     def _load_preset(self, name):
         data = self._load_presets().get(name)
@@ -4297,8 +4306,10 @@ class CubesApp:
         while self.looping and self._running:
             if not first:
                 if not self._cubes_left():
-                    self._requests.put(lambda: self._stop_loop(
-                        f"Stopped after {self.rolls} roll(s): no cubes left (no cube selected in the material row)."))
+                    n = max(1, len(self.panels))
+                    why = (f"fewer than the {n} cubes a Reset x{n} needs" if n > 1
+                           else "no cubes left (no cube selected in the material row)")
+                    self._requests.put(lambda why=why: self._stop_loop(f"Stopped after {self.rolls} roll(s): {why}."))
                     return
                 if not self._has_text(img):
                     # Caught the panel mid-blink; get a real frame to compare against.
@@ -4308,11 +4319,13 @@ class CubesApp:
                 # A single missed press must not end a run: if the panel doesn't change,
                 # send the sequence again before giving up. (Seen in play: stopped with
                 # cubes left and the dialog open - one dropped input.)
+                t0 = time.perf_counter()
                 for attempt in range(1 + CUBES_SEQUENCE_RETRIES):
                     if attempt:
                         self._requests.put(lambda a=attempt: self._set_status(
                             f"Panel didn't change - pressing again ({a}/{CUBES_SEQUENCE_RETRIES})."))
                     self._press_sequence()
+                    t1 = time.perf_counter()
                     deadline = time.perf_counter() + CUBES_CHANGE_TIMEOUT
                     while self.looping and self._running and time.perf_counter() < deadline:
                         time.sleep(CUBES_CHANGE_POLL)
@@ -4332,10 +4345,20 @@ class CubesApp:
                     return
                 # The redraw may still be animating on the first differing frame -
                 # wait for the pixels to hold still before trusting the OCR.
+                t2 = time.perf_counter()
                 img = self._settle(img)
+                t3 = time.perf_counter()
                 self.rolls += 1
             first = False
             results = self._read_panels(img)
+            if self.rolls:
+                # Where the time of one roll went - the log shows it, so a slow
+                # run says which stage (press / redraw / settle / read) is slow.
+                t4 = time.perf_counter()
+                timing = (f"{t4 - t0:.1f}s: press {t1 - t0:.2f}, redraw {t2 - t1:.2f}, "
+                          f"settle {t3 - t2:.2f}, read {t4 - t3:.2f}")
+            else:
+                timing = ""
             hit, which = None, 0
             for i, (tiers, lines) in enumerate(results):     # each card judged on its own 3 lines
                 found = target.check(lines, tiers)
@@ -4350,8 +4373,8 @@ class CubesApp:
             if hit is not None:
                 self._requests.put(lambda hit=hit: self._on_hit(hit))
                 return
-            self._requests.put(lambda: self._set_status(
-                f"Roll {self.rolls}: no match yet." if self.rolls else "Current item doesn't match - cubing..."))
+            self._requests.put(lambda timing=timing: self._set_status(
+                f"Roll {self.rolls}: no match yet ({timing})." if self.rolls else "Current item doesn't match - cubing..."))
 
     @staticmethod
     def _has_text(img):
