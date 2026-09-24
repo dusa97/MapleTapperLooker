@@ -3504,6 +3504,9 @@ class CubesApp:
                 tk.Radiobutton(row, text=text, value=value, variable=var, bg=UI_SURFACE, fg=UI_TEXT,
                                selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
                                highlightthickness=0, font=("Segoe UI", 10, "bold")).pack(side="left", padx=(0, 10))
+            # Says which two goals this gap joins - a bare OR / AND pair is easy to misread.
+            row.caption = tk.Label(row, text="", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9))
+            row.caption.pack(side="left")
             var.trace_add("write", lambda *_: self._parse_target())
             self._join_vars.append(var)
             self._join_rows.append(row)
@@ -4040,12 +4043,16 @@ class CubesApp:
         for row in self._join_rows:
             row.pack_forget()
         # Each ticked section, with that gap's OR / AND between consecutive ones.
-        shown = 0
+        titles = {"total": "Reach a total", "combo": "Combination of stats", "perstat": "Lines per stat"}
+        shown, previous = 0, None
         for key in ("total", "combo", "perstat"):
             if key not in modes:
                 continue
             if shown:
-                self._join_rows[shown - 1].pack(fill="x", padx=24, pady=(0, 4), before=self._target_label)
+                row = self._join_rows[shown - 1]
+                row.caption.config(text=f"between {titles[previous]} and {titles[key]}")
+                row.pack(fill="x", padx=24, pady=(2, 4), before=self._target_label)
+            previous = key
             frames[key].pack(fill="x", padx=14, pady=(0, 10 if key == "total" else 8), before=self._target_label)
             shown += 1
         goals, problems = [], []
