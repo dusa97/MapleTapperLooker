@@ -832,20 +832,27 @@ class LegendaryOnly:
 
 
 class CombinedGoal:
-    """How the ticked goal kinds combine: ANY of them satisfied (OR, the
-    default) or ALL of them on the same roll (AND)."""
-    def __init__(self, goals, require_all=False):
+    """How the ticked goal kinds combine: one OR / AND per gap, so three goals
+    can be "A OR B AND C". Read left to right, no precedence - that is
+    (A OR B) AND C. *joins* holds one of "any" / "all" per gap."""
+    def __init__(self, goals, joins=None):
         self.goals = list(goals)
-        self.require_all = require_all
+        self.joins = list(joins or [])[:max(0, len(self.goals) - 1)]
+        self.joins += ["any"] * (len(self.goals) - 1 - len(self.joins))
 
     def describe(self):
-        return ("  AND  " if self.require_all else "  OR  ").join(g.describe() for g in self.goals)
+        out = self.goals[0].describe()
+        for op, g in zip(self.joins, self.goals[1:]):
+            out += ("  AND  " if op == "all" else "  OR  ") + g.describe()
+        return out
 
     def check(self, lines, tiers):
         found = [g.check(lines, tiers) for g in self.goals]
-        if self.require_all:
-            return found[0] if all(found) else None
-        return next((f for f in found if f), None)
+        acc, hit = bool(found[0]), found[0]
+        for op, f in zip(self.joins, found[1:]):
+            acc = (acc and bool(f)) if op == "all" else (acc or bool(f))
+            hit = hit or f
+        return hit if acc else None
 
     def progress(self, lines, tiers):
         return "\n\u2192 ".join(g.progress(lines, tiers) for g in self.goals)
@@ -3194,7 +3201,7 @@ HELP_SECTIONS = (
         "All Stats counts as STR / DEX / INT / LUK: with this on, an All Stats line counts as a line of each base stat for Reach a total and Lines per stat.",
         "Reset: puts every Looking for control back to its default (the cube type stays).",
         "Presets: goal, cube type and the All Stats setting are saved per item name; pick one from the PRESET menu to load it, Save as... to store the current settings, Delete to remove it.",
-        "Ticking several goals shows a 'Stop when' choice: any one is met (OR, the default) or all of them are met on the same roll (AND).",
+        "Ticking several goals puts an OR / AND between them - one per gap, so three goals can be 'A OR B AND C'. It reads left to right, so that is (A OR B) AND C.",
     )),
     ("Settings and Log", (
         "Settings: Discord alerts per tab (webhook + user ID), and the detection sound - mute, record your own message, volume, test.",
@@ -3205,7 +3212,7 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-24", (
-        "Cubes: with two or more goals ticked, choose whether they combine with OR (any one stops the run) or AND (all of them on the same roll).",
+        "Cubes: an OR / AND between each pair of ticked goals, so three goals can be 'A OR B AND C' (read left to right).",
     )),
     ("2026-09-21", (
         "Cubes are much faster: press once, roll on the seen change, re-press after 1 s without one; no 1.5 s stall per roll on Glowing; Bright reads its 3 cards and the Remaining count in parallel and starts in ~0.1 s instead of ~3 s.",
@@ -3483,17 +3490,23 @@ class CubesApp:
             tk.Checkbutton(mode_row, text=text, variable=self._mode_vars[value], bg=UI_SURFACE, fg=UI_TEXT,
                            selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
                            highlightthickness=0, font=("Segoe UI", 10)).pack(side="left", padx=(0, 14))
-        # More than one kind ticked: do they combine with OR (any one stops the
-        # run) or AND (all of them on the same roll)?
-        self._join_var = tk.StringVar(value="all" if saved.get("join") == "all" else "any")
-        self._join_row = tk.Frame(goal, bg=UI_SURFACE)
-        tk.Label(self._join_row, text="Stop when", fg=UI_MUTED, bg=UI_SURFACE,
-                 font=("Segoe UI", 10)).pack(side="left", padx=(0, 8))
-        for value, text in (("any", "any one is met (OR)"), ("all", "all of them are met (AND)")):
-            tk.Radiobutton(self._join_row, text=text, value=value, variable=self._join_var, bg=UI_SURFACE,
-                           fg=UI_TEXT, selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
-                           highlightthickness=0, font=("Segoe UI", 10)).pack(side="left", padx=(0, 12))
-        self._join_var.trace_add("write", lambda *_: self._parse_target())
+        # One OR / AND per gap between the ticked kinds, so three goals can be
+        # "A OR B AND C" (read left to right: (A OR B) AND C).
+        saved_joins = saved.get("joins")
+        if not isinstance(saved_joins, list):
+            saved_joins = [saved.get("join", "any")] * 2
+        self._join_vars, self._join_rows = [], []
+        for k in range(2):      # three goal kinds -> at most two gaps
+            start = saved_joins[k] if k < len(saved_joins) else "any"
+            var = tk.StringVar(value="all" if str(start) == "all" else "any")
+            row = tk.Frame(goal, bg=UI_SURFACE)
+            for value, text in (("any", "OR"), ("all", "AND")):
+                tk.Radiobutton(row, text=text, value=value, variable=var, bg=UI_SURFACE, fg=UI_TEXT,
+                               selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
+                               highlightthickness=0, font=("Segoe UI", 10, "bold")).pack(side="left", padx=(0, 10))
+            var.trace_add("write", lambda *_: self._parse_target())
+            self._join_vars.append(var)
+            self._join_rows.append(row)
         goal_row = tk.Frame(goal, bg=UI_SURFACE)
         goal_row.pack(fill="x", padx=14, pady=(0, 10))
         self._goal_row = goal_row
@@ -3895,7 +3908,7 @@ class CubesApp:
             needs[stat_var.get()] = needs.get(stat_var.get(), 0) + int(count_var.get())
         return {"cube_type": self._cube_var.get(),
                 "modes": [k for k, v in self._mode_vars.items() if v.get()],
-                "join": self._join_var.get(),
+                "joins": [v.get() for v in self._join_vars],
                 "stat": self._stat_var.get(), "min": self._min_var.get().strip().rstrip("%"),
                 "combo": [n for n, v in self._combo_vars.items() if v.get()],
                 "count": int(self._count_var.get()), "needs": needs,
@@ -3909,7 +3922,11 @@ class CubesApp:
         modes = data.get("modes") if isinstance(data.get("modes"), list) else ["total"]
         for k, v in self._mode_vars.items():
             v.set(k in modes)
-        self._join_var.set("all" if data.get("join") == "all" else "any")
+        joins = data.get("joins")
+        if not isinstance(joins, list):
+            joins = [data.get("join", "any")] * 2
+        for k, v in enumerate(self._join_vars):
+            v.set("all" if str(joins[k] if k < len(joins) else "any") == "all" else "any")
         if data.get("stat") in self._combo_vars:
             self._stat_var.set(data["stat"])
         self._min_var.set(str(data.get("min", "")))
@@ -4020,12 +4037,17 @@ class CubesApp:
         frames = {"total": self._goal_row, "combo": self._combo_frame, "perstat": self._perstat_frame}
         for key, frame in frames.items():
             frame.pack_forget()
-        self._join_row.pack_forget()
-        if len(modes) > 1:      # only meaningful with two or more kinds ticked
-            self._join_row.pack(fill="x", padx=14, pady=(0, 6), before=self._target_label)
+        for row in self._join_rows:
+            row.pack_forget()
+        # Each ticked section, with that gap's OR / AND between consecutive ones.
+        shown = 0
         for key in ("total", "combo", "perstat"):
-            if key in modes:
-                frames[key].pack(fill="x", padx=14, pady=(0, 10 if key == "total" else 8), before=self._target_label)
+            if key not in modes:
+                continue
+            if shown:
+                self._join_rows[shown - 1].pack(fill="x", padx=24, pady=(0, 4), before=self._target_label)
+            frames[key].pack(fill="x", padx=14, pady=(0, 10 if key == "total" else 8), before=self._target_label)
+            shown += 1
         goals, problems = [], []
         if "total" in modes:
             if raw.isdigit() and int(raw) > 0:
@@ -4053,10 +4075,10 @@ class CubesApp:
             self._target_label.config(text="; ".join(problems).capitalize() + ".", fg=UI_PRIMARY)
         else:
             self.target = (goals[0] if len(goals) == 1
-                           else CombinedGoal(goals, self._join_var.get() == "all"))
+                           else CombinedGoal(goals, [v.get() for v in self._join_vars]))
             self._target_label.config(text="Stop when: " + self.target.describe(), fg=UI_ACCENT)
         try:
-            CUBES_TARGET_FILE.write_text(json.dumps({"modes": modes, "join": self._join_var.get(),
+            CUBES_TARGET_FILE.write_text(json.dumps({"modes": modes, "joins": [v.get() for v in self._join_vars],
                                                      "stat": name, "min": raw, "combo": chosen,
                                                      "count": int(self._count_var.get()), "needs": needs,
                                                      "all_stats": ALL_STATS_COUNTS,
