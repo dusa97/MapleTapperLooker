@@ -831,21 +831,21 @@ class LegendaryOnly:
         return self.goal.progress(self._legendary(lines, tiers), tiers) + f"  [{n}/3 legendary, need {self.need}]"
 
 
-class AnyOfGoal:
-    """The roll stops as soon as ANY enabled goal is satisfied. This is how
-    the three goal kinds combine when more than one is ticked."""
-    def __init__(self, goals):
+class CombinedGoal:
+    """How the ticked goal kinds combine: ANY of them satisfied (OR, the
+    default) or ALL of them on the same roll (AND)."""
+    def __init__(self, goals, require_all=False):
         self.goals = list(goals)
+        self.require_all = require_all
 
     def describe(self):
-        return "  OR  ".join(g.describe() for g in self.goals)
+        return ("  AND  " if self.require_all else "  OR  ").join(g.describe() for g in self.goals)
 
     def check(self, lines, tiers):
-        for g in self.goals:
-            found = g.check(lines, tiers)
-            if found:
-                return found
-        return None
+        found = [g.check(lines, tiers) for g in self.goals]
+        if self.require_all:
+            return found[0] if all(found) else None
+        return next((f for f in found if f), None)
 
     def progress(self, lines, tiers):
         return "\n\u2192 ".join(g.progress(lines, tiers) for g in self.goals)
@@ -3194,7 +3194,7 @@ HELP_SECTIONS = (
         "All Stats counts as STR / DEX / INT / LUK: with this on, an All Stats line counts as a line of each base stat for Reach a total and Lines per stat.",
         "Reset: puts every Looking for control back to its default (the cube type stays).",
         "Presets: goal, cube type and the All Stats setting are saved per item name; pick one from the PRESET menu to load it, Save as... to store the current settings, Delete to remove it.",
-        "Ticking several goals combines them with OR: the first one that is met stops the run.",
+        "Ticking several goals shows a 'Stop when' choice: any one is met (OR, the default) or all of them are met on the same roll (AND).",
     )),
     ("Settings and Log", (
         "Settings: Discord alerts per tab (webhook + user ID), and the detection sound - mute, record your own message, volume, test.",
@@ -3204,6 +3204,9 @@ HELP_SECTIONS = (
 
 
 UPDATE_LOG = (
+    ("2026-09-24", (
+        "Cubes: with two or more goals ticked, choose whether they combine with OR (any one stops the run) or AND (all of them on the same roll).",
+    )),
     ("2026-09-21", (
         "Cubes are much faster: press once, roll on the seen change, re-press after 1 s without one; no 1.5 s stall per roll on Glowing; Bright reads its 3 cards and the Remaining count in parallel and starts in ~0.1 s instead of ~3 s.",
         "Cubes: Reset button for Looking for; Lines per stat always shows one row; Reset x3 stops when Remaining is under 3.",
@@ -3480,6 +3483,17 @@ class CubesApp:
             tk.Checkbutton(mode_row, text=text, variable=self._mode_vars[value], bg=UI_SURFACE, fg=UI_TEXT,
                            selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
                            highlightthickness=0, font=("Segoe UI", 10)).pack(side="left", padx=(0, 14))
+        # More than one kind ticked: do they combine with OR (any one stops the
+        # run) or AND (all of them on the same roll)?
+        self._join_var = tk.StringVar(value="all" if saved.get("join") == "all" else "any")
+        self._join_row = tk.Frame(goal, bg=UI_SURFACE)
+        tk.Label(self._join_row, text="Stop when", fg=UI_MUTED, bg=UI_SURFACE,
+                 font=("Segoe UI", 10)).pack(side="left", padx=(0, 8))
+        for value, text in (("any", "any one is met (OR)"), ("all", "all of them are met (AND)")):
+            tk.Radiobutton(self._join_row, text=text, value=value, variable=self._join_var, bg=UI_SURFACE,
+                           fg=UI_TEXT, selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
+                           highlightthickness=0, font=("Segoe UI", 10)).pack(side="left", padx=(0, 12))
+        self._join_var.trace_add("write", lambda *_: self._parse_target())
         goal_row = tk.Frame(goal, bg=UI_SURFACE)
         goal_row.pack(fill="x", padx=14, pady=(0, 10))
         self._goal_row = goal_row
@@ -3881,6 +3895,7 @@ class CubesApp:
             needs[stat_var.get()] = needs.get(stat_var.get(), 0) + int(count_var.get())
         return {"cube_type": self._cube_var.get(),
                 "modes": [k for k, v in self._mode_vars.items() if v.get()],
+                "join": self._join_var.get(),
                 "stat": self._stat_var.get(), "min": self._min_var.get().strip().rstrip("%"),
                 "combo": [n for n, v in self._combo_vars.items() if v.get()],
                 "count": int(self._count_var.get()), "needs": needs,
@@ -3894,6 +3909,7 @@ class CubesApp:
         modes = data.get("modes") if isinstance(data.get("modes"), list) else ["total"]
         for k, v in self._mode_vars.items():
             v.set(k in modes)
+        self._join_var.set("all" if data.get("join") == "all" else "any")
         if data.get("stat") in self._combo_vars:
             self._stat_var.set(data["stat"])
         self._min_var.set(str(data.get("min", "")))
@@ -4004,6 +4020,9 @@ class CubesApp:
         frames = {"total": self._goal_row, "combo": self._combo_frame, "perstat": self._perstat_frame}
         for key, frame in frames.items():
             frame.pack_forget()
+        self._join_row.pack_forget()
+        if len(modes) > 1:      # only meaningful with two or more kinds ticked
+            self._join_row.pack(fill="x", padx=14, pady=(0, 6), before=self._target_label)
         for key in ("total", "combo", "perstat"):
             if key in modes:
                 frames[key].pack(fill="x", padx=14, pady=(0, 10 if key == "total" else 8), before=self._target_label)
@@ -4033,10 +4052,12 @@ class CubesApp:
             self.target = None
             self._target_label.config(text="; ".join(problems).capitalize() + ".", fg=UI_PRIMARY)
         else:
-            self.target = goals[0] if len(goals) == 1 else AnyOfGoal(goals)
+            self.target = (goals[0] if len(goals) == 1
+                           else CombinedGoal(goals, self._join_var.get() == "all"))
             self._target_label.config(text="Stop when: " + self.target.describe(), fg=UI_ACCENT)
         try:
-            CUBES_TARGET_FILE.write_text(json.dumps({"modes": modes, "stat": name, "min": raw, "combo": chosen,
+            CUBES_TARGET_FILE.write_text(json.dumps({"modes": modes, "join": self._join_var.get(),
+                                                     "stat": name, "min": raw, "combo": chosen,
                                                      "count": int(self._count_var.get()), "needs": needs,
                                                      "all_stats": ALL_STATS_COUNTS,
                                                      "legendary": {k: v.get() for k, v in self._leg_vars.items()}}),
