@@ -3202,6 +3202,7 @@ HELP_SECTIONS = (
         "Reset: puts every Looking for control back to its default (the cube type stays).",
         "Presets: goal, cube type and the All Stats setting are saved per item name; pick one from the PRESET menu to load it, Save as... to store the current settings, Delete to remove it.",
         "Ticking several goals puts an OR / AND between them - one per gap, so three goals can be 'A OR B AND C'. It reads left to right, so that is (A OR B) AND C.",
+        "Swap (on a gap) exchanges the two goals around it. Only neighbours have an OR / AND between them, so swapping is how you put any two side by side - e.g. Reach a total next to Lines per stat when all three are ticked.",
     )),
     ("Settings and Log", (
         "Settings: Discord alerts per tab (webhook + user ID), and the detection sound - mute, record your own message, volume, test.",
@@ -3212,7 +3213,7 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-24", (
-        "Cubes: an OR / AND between each pair of ticked goals, so three goals can be 'A OR B AND C' (read left to right).",
+        "Cubes: an OR / AND between each pair of ticked goals, so three goals can be 'A OR B AND C' (read left to right), and Swap reorders them so any two can be joined.",
     )),
     ("2026-09-21", (
         "Cubes are much faster: press once, roll on the seen change, re-press after 1 s without one; no 1.5 s stall per roll on Glowing; Bright reads its 3 cards and the Remaining count in parallel and starts in ~0.1 s instead of ~3 s.",
@@ -3495,6 +3496,11 @@ class CubesApp:
         saved_joins = saved.get("joins")
         if not isinstance(saved_joins, list):
             saved_joins = [saved.get("join", "any")] * 2
+        # The order the goals are combined in. Only neighbours have an OR / AND
+        # between them, so a Swap on a gap is what lets any two be joined.
+        order = saved.get("order") if isinstance(saved.get("order"), list) else []
+        self._goal_order = [k for k in order if k in ("total", "combo", "perstat")]
+        self._goal_order += [k for k in ("total", "combo", "perstat") if k not in self._goal_order]
         self._join_vars, self._join_rows = [], []
         for k in range(2):      # three goal kinds -> at most two gaps
             start = saved_joins[k] if k < len(saved_joins) else "any"
@@ -3507,6 +3513,9 @@ class CubesApp:
             # Says which two goals this gap joins - a bare OR / AND pair is easy to misread.
             row.caption = tk.Label(row, text="", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9))
             row.caption.pack(side="left")
+            swap = OverlayApp._button(row, "Swap", lambda k=k: self._swap_goals(k), UI_BUTTON, UI_TEXT)
+            swap.config(padx=6, pady=1, font=("Segoe UI", 8, "bold"))
+            swap.pack(side="left", padx=(10, 0))
             var.trace_add("write", lambda *_: self._parse_target())
             self._join_vars.append(var)
             self._join_rows.append(row)
@@ -3912,6 +3921,7 @@ class CubesApp:
         return {"cube_type": self._cube_var.get(),
                 "modes": [k for k, v in self._mode_vars.items() if v.get()],
                 "joins": [v.get() for v in self._join_vars],
+                "order": list(self._goal_order),
                 "stat": self._stat_var.get(), "min": self._min_var.get().strip().rstrip("%"),
                 "combo": [n for n, v in self._combo_vars.items() if v.get()],
                 "count": int(self._count_var.get()), "needs": needs,
@@ -3925,6 +3935,9 @@ class CubesApp:
         modes = data.get("modes") if isinstance(data.get("modes"), list) else ["total"]
         for k, v in self._mode_vars.items():
             v.set(k in modes)
+        order = data.get("order") if isinstance(data.get("order"), list) else []
+        self._goal_order = [k for k in order if k in ("total", "combo", "perstat")]
+        self._goal_order += [k for k in ("total", "combo", "perstat") if k not in self._goal_order]
         joins = data.get("joins")
         if not isinstance(joins, list):
             joins = [data.get("join", "any")] * 2
@@ -3974,6 +3987,17 @@ class CubesApp:
             menu.add_command(label=name, command=lambda n=name: self._load_preset(n))
         if self._preset_var.get() not in presets:
             self._preset_var.set("(none)" if presets else "(no presets yet)")
+
+    def _swap_goals(self, gap):
+        """Exchange the two ticked goals around gap *gap*, so a pair that was
+        not next to each other can get its own OR / AND."""
+        shown = [k for k in self._goal_order if self._mode_vars[k].get()]
+        if gap + 1 >= len(shown):
+            return
+        a, b = shown[gap], shown[gap + 1]
+        ia, ib = self._goal_order.index(a), self._goal_order.index(b)
+        self._goal_order[ia], self._goal_order[ib] = self._goal_order[ib], self._goal_order[ia]
+        self._parse_target()
 
     def _reset_target(self):
         """Every 'Looking for' control back to its default; the cube type stays."""
@@ -4045,7 +4069,7 @@ class CubesApp:
         # Each ticked section, with that gap's OR / AND between consecutive ones.
         titles = {"total": "Reach a total", "combo": "Combination of stats", "perstat": "Lines per stat"}
         shown, previous = 0, None
-        for key in ("total", "combo", "perstat"):
+        for key in self._goal_order:
             if key not in modes:
                 continue
             if shown:
@@ -4056,24 +4080,25 @@ class CubesApp:
             frames[key].pack(fill="x", padx=14, pady=(0, 10 if key == "total" else 8), before=self._target_label)
             shown += 1
         goals, problems = [], []
-        if "total" in modes:
-            if raw.isdigit() and int(raw) > 0:
-                goals.append(self._wrap(TotalGoal(name, int(raw), unit), "total"))
+        for key in [k for k in self._goal_order if k in modes]:
+            if key == "total":
+                if raw.isdigit() and int(raw) > 0:
+                    goals.append(self._wrap(TotalGoal(name, int(raw), unit), "total"))
+                else:
+                    problems.append("enter a minimum value for the total")
+            elif key == "combo":
+                if chosen:
+                    goals.append(self._wrap(ComboGoal(chosen, int(self._count_var.get())), "combo"))
+                else:
+                    problems.append("tick the stats for the combination")
             else:
-                problems.append("enter a minimum value for the total")
-        if "combo" in modes:
-            if chosen:
-                goals.append(self._wrap(ComboGoal(chosen, int(self._count_var.get())), "combo"))
-            else:
-                problems.append("tick the stats for the combination")
-        if "perstat" in modes:
-            total_needed = sum(needs.values())
-            if not needs:
-                problems.append("add a stat and how many lines of it you need")
-            elif total_needed > 3:
-                problems.append(f"lines per stat needs {total_needed} lines - an item only has 3")
-            else:
-                goals.append(self._wrap(PerStatGoal(needs), "perstat"))
+                total_needed = sum(needs.values())
+                if not needs:
+                    problems.append("add a stat and how many lines of it you need")
+                elif total_needed > 3:
+                    problems.append(f"lines per stat needs {total_needed} lines - an item only has 3")
+                else:
+                    goals.append(self._wrap(PerStatGoal(needs), "perstat"))
         if not modes:
             self.target = None
             self._target_label.config(text="Tick at least one way of cubing.", fg=UI_MUTED)
@@ -4086,6 +4111,7 @@ class CubesApp:
             self._target_label.config(text="Stop when: " + self.target.describe(), fg=UI_ACCENT)
         try:
             CUBES_TARGET_FILE.write_text(json.dumps({"modes": modes, "joins": [v.get() for v in self._join_vars],
+                                                     "order": list(self._goal_order),
                                                      "stat": name, "min": raw, "combo": chosen,
                                                      "count": int(self._count_var.get()), "needs": needs,
                                                      "all_stats": ALL_STATS_COUNTS,
