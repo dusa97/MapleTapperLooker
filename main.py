@@ -49,6 +49,7 @@ if __name__ == "__main__":
 import re
 import sys
 import time
+import difflib
 import json
 import math
 import random
@@ -581,6 +582,18 @@ def read_potential_tiers(img, profile=None):
     return tiers
 
 
+def _snap_stat_name(name):
+    """Pull an OCR'd stat name back onto the nearest real one ('Baoss Damage'
+    -> 'Boss Damage'). Tesseract garbles a letter often enough that an
+    otherwise perfect line would never match a goal. Only a close match is
+    snapped, so an unknown line keeps the text that was actually read."""
+    known = [n for n, _w, _u in POTENTIAL_STATS]
+    if name in known:
+        return name
+    hit = difflib.get_close_matches(name.lower(), [n.lower() for n in known], n=1, cutoff=0.8)
+    return next((n for n in known if n.lower() == hit[0]), name) if hit else name
+
+
 def read_potential_lines(img, profile=None):
     """OCR the Potential card's stat lines out of a raw crop. Returns a list
     of (stat, value) like [("Max HP", "+120"), ("Max MP", "+60"), ("DEF",
@@ -605,7 +618,7 @@ def read_potential_lines(img, profile=None):
         m = POTENTIAL_LINE_RE.match(raw.replace(" ", ""))
         if m:
             # Tesseract drops the spaces ("MaxHP+120", "-2sec"); put them back
-            stat = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", m.group(1))
+            stat = _snap_stat_name(re.sub(r"(?<=[a-z])(?=[A-Z])", " ", m.group(1)))
             value = re.sub(r"(?<=\d)(?=[A-Za-z])", " ", m.group(2))
             out.append((stat, value))
         else:
@@ -3212,6 +3225,9 @@ HELP_SECTIONS = (
 
 
 UPDATE_LOG = (
+    ("2026-09-25", (
+        "Cubes: a stat name the OCR garbles by a letter or two ('Baoss Damage') is snapped back to the real stat, so the line counts toward your goal instead of being ignored.",
+    )),
     ("2026-09-24", (
         "Cubes: an OR / AND between each pair of ticked goals, so three goals can be 'A OR B AND C' (read left to right), and Swap reorders them so any two can be joined.",
     )),
