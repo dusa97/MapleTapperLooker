@@ -742,7 +742,10 @@ class TotalGoal:
 
     def check(self, lines, tiers):
         total = potential_total_for(lines, tiers, self.tuple)
-        return f"{self.name} {total}{self.unit if self.unit == '%' else ' ' + self.unit} total" if total >= self.minimum else None
+        if total < self.minimum:
+            return None
+        u = self.unit if self.unit == "%" else " " + self.unit
+        return f"{self.name} total {total}{u} (goal {self.minimum}{u})"
 
     def progress(self, lines, tiers):
         total = potential_total_for(lines, tiers, self.tuple)
@@ -767,7 +770,7 @@ class ComboGoal:
 
     def check(self, lines, tiers):
         n = sum(self._matching(lines)[:3])
-        return f"{n} of 3 lines match" if n >= self.count else None
+        return f"{n} of 3 lines are {' / '.join(self.names)}" if n >= self.count else None
 
     def progress(self, lines, tiers):
         n = sum(self._matching(lines)[:3])
@@ -789,8 +792,11 @@ class PerStatGoal:
 
     def _have(self, lines):
         """How many lines each stat gets, assigning each line once - exact
-        matches first, then All Stats lines to whichever base stat is short."""
+        matches first, then All Stats lines to whichever base stat is short.
+        Also returns how many of each came from an All Stats line, so a hit
+        can say so instead of looking like real STR lines."""
         have = {n: 0 for n in self.needs}
+        from_all = {n: 0 for n in self.needs}
         free = list(lines[:3])
         for n, (w, u) in self.words.items():                 # exact stat name
             for line in list(free):
@@ -801,15 +807,22 @@ class PerStatGoal:
             for line in list(free):
                 if have[n] < self.needs[n] and _line_is_stat(line, w, u):
                     have[n] += 1
+                    from_all[n] += 1
                     free.remove(line)
-        return have
+        return have, from_all
 
     def check(self, lines, tiers):
-        have = self._have(lines)
-        return "all requirements met" if all(have[n] >= c for n, c in self.needs.items()) else None
+        have, from_all = self._have(lines)
+        if not all(have[n] >= c for n, c in self.needs.items()):
+            return None
+        parts = []
+        for n, c in self.needs.items():
+            via = from_all[n]
+            parts.append(f"{c} x {n}" + (f" ({via} from All Stats)" if via else ""))
+        return " + ".join(parts)
 
     def progress(self, lines, tiers):
-        have = self._have(lines)
+        have, _from_all = self._have(lines)
         return "  ".join(f"{n}: {have[n]}/{c}" for n, c in self.needs.items())
 
 
@@ -861,11 +874,12 @@ class CombinedGoal:
 
     def check(self, lines, tiers):
         found = [g.check(lines, tiers) for g in self.goals]
-        acc, hit = bool(found[0]), found[0]
+        acc = bool(found[0])
         for op, f in zip(self.joins, found[1:]):
             acc = (acc and bool(f)) if op == "all" else (acc or bool(f))
-            hit = hit or f
-        return hit if acc else None
+        # Name every goal that was met - with OR it was often more than the first,
+        # and "why did it stop" is exactly what the ping has to answer.
+        return "  +  ".join(f for f in found if f) if acc else None
 
     def progress(self, lines, tiers):
         return "\n\u2192 ".join(g.progress(lines, tiers) for g in self.goals)
@@ -3226,6 +3240,7 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-25", (
+        "Hits name every goal that was met and how: 'Skill Cooldowns total 2 sec (goal 2 sec) + 2 x STR (2 from All Stats)' instead of just the first one.",
         "Cubes: a stat name the OCR garbles by a letter or two ('Baoss Damage') is snapped back to the real stat, so the line counts toward your goal instead of being ignored.",
     )),
     ("2026-09-24", (
