@@ -867,9 +867,15 @@ class CombinedGoal:
         self.joins += ["any"] * (len(self.goals) - 1 - len(self.joins))
 
     def describe(self):
-        out = self.goals[0].describe()
+        # Brackets whenever the operator changes, so the line can't be read with
+        # the usual "AND binds tighter" precedence - here it is strictly
+        # top to bottom: A OR B AND C is (A OR B) AND C.
+        out, previous = self.goals[0].describe(), None
         for op, g in zip(self.joins, self.goals[1:]):
+            if previous is not None and op != previous:
+                out = "(" + out + ")"
             out += ("  AND  " if op == "all" else "  OR  ") + g.describe()
+            previous = op
         return out
 
     def check(self, lines, tiers):
@@ -3229,7 +3235,7 @@ HELP_SECTIONS = (
         "All Stats counts as STR / DEX / INT / LUK: with this on, an All Stats line counts as a line of each base stat for Reach a total and Lines per stat.",
         "Reset: puts every Looking for control back to its default (the cube type stays).",
         "Presets: goal, cube type and the All Stats setting are saved per item name; pick one from the PRESET menu to load it, Save as... to store the current settings, Delete to remove it.",
-        "Every goal after the first starts with its own OR / AND joining it to the goal above. They read top to bottom with no precedence: 'A OR B AND C' is (A OR B) AND C.",
+        "Every goal after the first starts with its own OR / AND joining it to the goal above. They read strictly top to bottom, NOT with the usual 'AND first' precedence: 'A OR B AND C' means (A OR B) AND C. The 'Stop when' line shows the brackets, so it always says exactly what is required.",
     )),
     ("Settings and Log", (
         "Settings: Discord alerts per tab (webhook + user ID), and the detection sound - mute, record your own message, volume, test.",
@@ -3240,6 +3246,7 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-26", (
+        "Cubes: the 'Stop when' line brackets mixed OR / AND so it cannot be misread - '(A OR B) AND C'.",
         "Cubes: 'Looking for' is a list of goals - add as many as you like, any mix, and the same kind more than once (e.g. Attack Power >= 30% OR Magic Attack >= 30%). Each goal has its own OR / AND and its own legendary rule.",
     )),
     ("2026-09-25", (
