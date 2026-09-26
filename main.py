@@ -4609,7 +4609,7 @@ class CubesApp:
         """How long to wait for the panel to change before assuming the press
         was dropped. Learned from this run's redraws (x3 for safety) instead of
         a flat second, so a dropped press is re-sent sooner on a fast client."""
-        if len(self._redraws) < 3:
+        if not self._redraws:            # nothing measured yet - only the first roll
             return CUBES_CHANGE_TIMEOUT
         median = sorted(self._redraws)[len(self._redraws) // 2]
         return max(CUBES_CHANGE_MIN_WAIT, min(CUBES_CHANGE_TIMEOUT, median * CUBES_CHANGE_SAFETY))
