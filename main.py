@@ -3221,6 +3221,7 @@ HELP_SECTIONS = (
         "5. It also stops when Remaining drops below what one press uses (1 for Reset x1, 3 for Reset x3).",
     )),
     ("Cubes: the goals", (
+        "The list: each goal is a row - '+ Add a goal' adds another, Remove deletes one, and the picker on the row chooses its kind. Any mix, and the same kind as many times as you like, e.g. Reach a total twice for 'Attack Power >= 30% OR Magic Attack >= 30%'.",
         "Reach a total: one stat and a minimum, e.g. STR >= 30%. All three lines of that stat are added up (All Stats lines too, if the checkbox below is on) and the run stops when the sum reaches the minimum.",
         "Combination of stats: tick the stats you would accept, then pick how many of the 3 lines must come from that set (1, 2 or 3). Example: tick STR and All Stats, need 2 - STR 12% + All Stats 6% + Speed 4% is a match.",
         "Lines per stat: rows of [stat] x [1 / 2 / 3]. Each row says how many lines of that stat the item must have; '+ Add a stat' adds a row (up to 3 rows, 3 lines in total). Example: LUK x2 + All Stats x1 matches only an item with two LUK lines and one All Stats line.",
@@ -3228,8 +3229,7 @@ HELP_SECTIONS = (
         "All Stats counts as STR / DEX / INT / LUK: with this on, an All Stats line counts as a line of each base stat for Reach a total and Lines per stat.",
         "Reset: puts every Looking for control back to its default (the cube type stays).",
         "Presets: goal, cube type and the All Stats setting are saved per item name; pick one from the PRESET menu to load it, Save as... to store the current settings, Delete to remove it.",
-        "Ticking several goals puts an OR / AND between them - one per gap, so three goals can be 'A OR B AND C'. It reads left to right, so that is (A OR B) AND C.",
-        "Swap (on a gap) exchanges the two goals around it. Only neighbours have an OR / AND between them, so swapping is how you put any two side by side - e.g. Reach a total next to Lines per stat when all three are ticked.",
+        "Every goal after the first starts with its own OR / AND joining it to the goal above. They read top to bottom with no precedence: 'A OR B AND C' is (A OR B) AND C.",
     )),
     ("Settings and Log", (
         "Settings: Discord alerts per tab (webhook + user ID), and the detection sound - mute, record your own message, volume, test.",
@@ -3239,6 +3239,9 @@ HELP_SECTIONS = (
 
 
 UPDATE_LOG = (
+    ("2026-09-26", (
+        "Cubes: 'Looking for' is a list of goals - add as many as you like, any mix, and the same kind more than once (e.g. Attack Power >= 30% OR Magic Attack >= 30%). Each goal has its own OR / AND and its own legendary rule.",
+    )),
     ("2026-09-25", (
         "Hits name every goal that was met and how: 'Skill Cooldowns total 2 sec (goal 2 sec) + 2 x STR (2 from All Stats)' instead of just the first one.",
         "Cubes: a stat name the OCR garbles by a letter or two ('Baoss Damage') is snapped back to the real stat, so the line counts toward your goal instead of being ignored.",
@@ -3511,180 +3514,25 @@ class CubesApp:
         tk.Label(goal, text="LOOKING FOR", fg=UI_MUTED, bg=UI_SURFACE,
                  font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=14, pady=(6, 2))
         stat_names = [name for name, _, _ in POTENTIAL_STATS]
-        # Mode: 'total' (one stat, reach a number) or 'combo' (three lines from a set).
-        saved_modes = saved.get("modes") if isinstance(saved.get("modes"), list) else [saved.get("mode", "total")]
-        self._mode_vars = {k: tk.BooleanVar(value=k in saved_modes) for k in ("total", "combo", "perstat")}
-        if not any(v.get() for v in self._mode_vars.values()):
-            self._mode_vars["total"].set(True)
-        mode_row = tk.Frame(goal, bg=UI_SURFACE)
-        mode_row.pack(fill="x", padx=14, pady=(0, 6))
-        for value, text in (("total", "Reach a total"), ("combo", "Combination of stats"), ("perstat", "Lines per stat")):
-            tk.Checkbutton(mode_row, text=text, variable=self._mode_vars[value], bg=UI_SURFACE, fg=UI_TEXT,
-                           selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
-                           highlightthickness=0, font=("Segoe UI", 10)).pack(side="left", padx=(0, 14))
-        # One OR / AND per gap between the ticked kinds, so three goals can be
-        # "A OR B AND C" (read left to right: (A OR B) AND C).
-        saved_joins = saved.get("joins")
-        if not isinstance(saved_joins, list):
-            saved_joins = [saved.get("join", "any")] * 2
-        # The order the goals are combined in. Only neighbours have an OR / AND
-        # between them, so a Swap on a gap is what lets any two be joined.
-        order = saved.get("order") if isinstance(saved.get("order"), list) else []
-        self._goal_order = [k for k in order if k in ("total", "combo", "perstat")]
-        self._goal_order += [k for k in ("total", "combo", "perstat") if k not in self._goal_order]
-        self._join_vars, self._join_rows = [], []
-        for k in range(2):      # three goal kinds -> at most two gaps
-            start = saved_joins[k] if k < len(saved_joins) else "any"
-            var = tk.StringVar(value="all" if str(start) == "all" else "any")
-            row = tk.Frame(goal, bg=UI_SURFACE)
-            for value, text in (("any", "OR"), ("all", "AND")):
-                tk.Radiobutton(row, text=text, value=value, variable=var, bg=UI_SURFACE, fg=UI_TEXT,
-                               selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
-                               highlightthickness=0, font=("Segoe UI", 10, "bold")).pack(side="left", padx=(0, 10))
-            # Says which two goals this gap joins - a bare OR / AND pair is easy to misread.
-            row.caption = tk.Label(row, text="", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9))
-            row.caption.pack(side="left")
-            swap = OverlayApp._button(row, "Swap", lambda k=k: self._swap_goals(k), UI_BUTTON, UI_TEXT)
-            swap.config(padx=6, pady=1, font=("Segoe UI", 8, "bold"))
-            swap.pack(side="left", padx=(10, 0))
-            var.trace_add("write", lambda *_: self._parse_target())
-            self._join_vars.append(var)
-            self._join_rows.append(row)
-        goal_row = tk.Frame(goal, bg=UI_SURFACE)
-        goal_row.pack(fill="x", padx=14, pady=(0, 10))
-        self._goal_row = goal_row
-        saved_leg = saved.get("legendary") if isinstance(saved.get("legendary"), dict) else {}
-        def leg_value(v):
-            return "3" if v is True else (str(v) if str(v) in ("0", "2", "3") else "0")
-        self._leg_vars = {k: tk.StringVar(value=leg_value(saved_leg.get(k, 0))) for k in ("total", "combo", "perstat")}
-
-        def leg_box(parent, key, **pack):
-            box = tk.Frame(parent, bg=UI_SURFACE)
-            box.pack(**pack)
-            tk.Label(box, text="legendary:", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9)).pack(side="left")
-            for value, text in (("0", "any"), ("2", "2+"), ("3", "all 3")):
-                tk.Radiobutton(box, text=text, value=value, variable=self._leg_vars[key], bg=UI_SURFACE, fg=UI_MUTED,
-                               selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
-                               highlightthickness=0, font=("Segoe UI", 9), padx=2).pack(side="left")
-            self._leg_vars[key].trace_add("write", lambda *_: self._parse_target())
-        self._leg_box = leg_box
-        self._stat_var = tk.StringVar(value=saved.get("stat") if saved.get("stat") in stat_names else stat_names[0])
-        self._min_var = tk.StringVar(value=str(saved.get("min", "")))
         style = ttk.Style(self.root)
         style.configure("Cubes.TMenubutton", background=UI_BG, foreground=UI_TEXT, arrowcolor=UI_ACCENT,
                         font=("Segoe UI", 11), padding=(10, 6), borderwidth=0)
         style.map("Cubes.TMenubutton", background=[("active", UI_BUTTON)])
-        stat_menu = ttk.OptionMenu(goal_row, self._stat_var, self._stat_var.get(), *stat_names, style="Cubes.TMenubutton")
-        stat_menu.pack(side="left", fill="x", expand=True)
-        stat_menu["menu"].config(bg=UI_SURFACE, fg=UI_TEXT, activebackground=UI_BUTTON, activeforeground=UI_TEXT,
-                                 font=("Segoe UI", 10), bd=0)
-        tk.Label(goal_row, text=">=", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 11)).pack(side="left", padx=8)
-        min_entry = tk.Entry(goal_row, textvariable=self._min_var, width=5, bg=UI_BG, fg=UI_TEXT,
-                             insertbackground=UI_TEXT, relief="flat", font=("Segoe UI", 12), justify="center",
-                             highlightbackground=UI_BORDER, highlightcolor=UI_ACCENT, highlightthickness=1)
-        min_entry.pack(side="left", ipady=5)
-        self._unit_label = tk.Label(goal_row, text="%", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 11))
-        self._unit_label.pack(side="left", padx=(4, 10))
-        self._leg_box(goal_row, "total", side="left", padx=(6, 0))
-        # Combination: a checkbox per stat, in a grid under the mode switch.
-        combo = tk.Frame(goal, bg=UI_SURFACE)
-        self._combo_frame = combo
-        saved_combo = set(saved.get("combo", []))
-        count_row = tk.Frame(combo, bg=UI_SURFACE)
-        count_row.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
-        tk.Label(count_row, text="At least", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 10)).pack(side="left")
-        self._count_var = tk.StringVar(value=str(saved.get("count", 3)) if str(saved.get("count", 3)) in ("1", "2", "3") else "3")
-        for n in ("1", "2", "3"):
-            tk.Radiobutton(count_row, text=n, value=n, variable=self._count_var, bg=UI_SURFACE, fg=UI_TEXT,
-                           selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
-                           highlightthickness=0, font=("Segoe UI", 10, "bold")).pack(side="left", padx=(6, 0))
-        tk.Label(count_row, text="of the 3 lines are one of:", fg=UI_MUTED, bg=UI_SURFACE,
-                 font=("Segoe UI", 10)).pack(side="left", padx=(8, 0))
-        self._leg_box(count_row, "combo", side="left", padx=(16, 0))
-        self._count_var.trace_add("write", lambda *_: self._parse_target())
-        self._combo_vars = {}
-        # Columns by kind: main stats | attack & damage | the rest.
-        columns = [stat_names[:5], stat_names[5:9],
-                   ["Critical Damage", "Skill Cooldowns", "Item Drop Rate", "Mesos Obtained"]]
-        assert sorted(sum(columns, [])) == sorted(stat_names), "combo columns must cover every stat once"
-        for col, names in enumerate(columns):
-            for row, name in enumerate(names):
-                var = tk.BooleanVar(value=name in saved_combo)
-                self._combo_vars[name] = var
-                tk.Checkbutton(combo, text=name, variable=var, bg=UI_SURFACE, fg=UI_TEXT, selectcolor=UI_BG,
-                               activebackground=UI_SURFACE, activeforeground=UI_TEXT, highlightthickness=0,
-                               font=("Segoe UI", 10), anchor="w").grid(row=1 + row, column=col, sticky="w", padx=(0, 12), pady=1)
-                var.trace_add("write", lambda *_: self._parse_target())
-        # Lines per stat: rows of [stat] x [1/2/3], '+' adds a row. At most 3 rows,
-        # and at most 3 lines in total (an item only has 3).
-        perstat = tk.Frame(goal, bg=UI_SURFACE)
-        self._perstat_frame = perstat
-        saved_needs = saved.get("needs", {}) if isinstance(saved.get("needs"), dict) else {}
-        head = tk.Frame(perstat, bg=UI_SURFACE)
-        head.pack(fill="x", pady=(0, 6))
-        tk.Label(head, text="Lines required:", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 10)).pack(side="left")
-        self._leg_box(head, "perstat", side="left", padx=(16, 0))
-        self._perstat_rows = []
-        rows_box = tk.Frame(perstat, bg=UI_SURFACE)
-        rows_box.pack(fill="x")
-
-        def free_stats(except_var=None):
-            taken = {v.get() for _r, v, _c in self._perstat_rows if v is not except_var}
-            return [n for n in stat_names if n not in taken]
-
-        def refresh_menus():
-            # A stat picked in one row is removed from every other row's list.
-            for _row, stat_var, _count in self._perstat_rows:
-                menu = getattr(stat_var, "_menu", None)
-                if menu is None:
-                    continue
-                menu.delete(0, "end")
-                for name in free_stats(stat_var):
-                    menu.add_command(label=name, command=lambda n=name, v=stat_var: v.set(n))
-        self._refresh_perstat_menus = refresh_menus
-
-        def add_row(stat=None, count="1"):
-            if len(self._perstat_rows) >= 3:
-                return
-            row = tk.Frame(rows_box, bg=UI_SURFACE)
-            row.pack(fill="x", pady=2)
-            free = free_stats()
-            stat_var = tk.StringVar(value=stat if stat in free else (free[0] if free else stat_names[0]))
-            count_var = tk.StringVar(value=count if count in ("1", "2", "3") else "1")
-            menu = ttk.OptionMenu(row, stat_var, stat_var.get(), *stat_names, style="Cubes.TMenubutton")
-            menu.pack(side="left", fill="x", expand=True)
-            menu["menu"].config(bg=UI_SURFACE, fg=UI_TEXT, activebackground=UI_BUTTON, activeforeground=UI_TEXT,
-                                font=("Segoe UI", 10), bd=0)
-            stat_var._menu = menu["menu"]
-            tk.Label(row, text="x", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 11)).pack(side="left", padx=8)
-            for n in ("1", "2", "3"):
-                tk.Radiobutton(row, text=n, value=n, variable=count_var, bg=UI_SURFACE, fg=UI_TEXT, selectcolor=UI_BG,
-                               activebackground=UI_SURFACE, activeforeground=UI_TEXT, highlightthickness=0,
-                               font=("Segoe UI", 10, "bold"), padx=3).pack(side="left")
-            entry = (row, stat_var, count_var)
-            self._perstat_rows.append(entry)
-            OverlayApp._button(row, "x", lambda: remove_row(entry), UI_BUTTON, UI_TEXT).pack(side="left", padx=(10, 0))
-            for var in (stat_var, count_var):
-                var.trace_add("write", lambda *_: self._parse_target())
-            self._bind_wheel(row)
-            if hasattr(self, "_target_label"):      # rows restored during the build parse later
-                self._parse_target()
-
-        def remove_row(entry):
-            self._perstat_rows.remove(entry)
-            entry[0].destroy()
-            if not self._perstat_rows:      # never an empty list - the goal always shows one row
-                add_row()
-            self._parse_target()
-        self._add_perstat_row = add_row
-        self._add_row_button = OverlayApp._button(perstat, "+ Add a stat", add_row, UI_BUTTON, UI_TEXT)
-        self._add_row_button.pack(anchor="w", pady=(6, 0))
-        for name, count in list(saved_needs.items())[:3] or [(None, "1")]:
-            add_row(name, str(count))
+        self._stat_names = stat_names
+        # A list of goals, in order. Any number, any mix of the three kinds - so
+        # "Attack Power >= 30% OR Magic Attack >= 30%" is two goals of the same
+        # kind. Each goal carries its own OR / AND to the goal above it.
+        self._goal_rows = []
+        self._goals_box = tk.Frame(goal, bg=UI_SURFACE)
+        self._goals_box.pack(fill="x", padx=14, pady=(0, 4))
+        self._add_goal_button = OverlayApp._button(goal, "+ Add a goal", lambda: self._add_goal(), UI_BUTTON, UI_TEXT)
+        self._add_goal_button.pack(anchor="w", padx=14, pady=(2, 6))
         self._target_label = tk.Label(goal, text="", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9), anchor="w")
         self._target_label.pack(fill="x", padx=14, pady=(0, 10))
-        for var in (self._stat_var, self._min_var, *self._mode_vars.values()):
-            var.trace_add("write", lambda *_: self._parse_target())
+        for item in self._goals_from_saved(saved):
+            self._add_goal(item)
+        if not self._goal_rows:
+            self._add_goal()
 
         self._loop_button, self._box_button = build_action_bar(
             bottom, [("Locate (F7)", self._auto_locate), ("Region (F8)", self._start_selection),
@@ -3938,61 +3786,24 @@ class CubesApp:
     def _describe(target):
         return target.describe()
 
-    def _wrap(self, goal, key):
-        need = self._leg_vars[key].get()
-        return LegendaryOnly(goal, int(need)) if need in ("2", "3") else goal
-
     # ---- presets -------------------------------------------------------------
     def _target_dict(self):
-        """The whole 'Looking for' section as one dict (what the target file
-        and the presets store)."""
-        needs = {}
-        for _row, stat_var, count_var in self._perstat_rows:
-            needs[stat_var.get()] = needs.get(stat_var.get(), 0) + int(count_var.get())
-        return {"cube_type": self._cube_var.get(),
-                "modes": [k for k, v in self._mode_vars.items() if v.get()],
-                "joins": [v.get() for v in self._join_vars],
-                "order": list(self._goal_order),
-                "stat": self._stat_var.get(), "min": self._min_var.get().strip().rstrip("%"),
-                "combo": [n for n, v in self._combo_vars.items() if v.get()],
-                "count": int(self._count_var.get()), "needs": needs,
-                "all_stats": bool(self._all_stats_var.get()),
-                "legendary": {k: v.get() for k, v in self._leg_vars.items()}}
+        """Everything in 'Looking for' as plain data (a preset)."""
+        return {"cube_type": self._cube_var.get(), "goals": self._goal_list(),
+                "all_stats": bool(self._all_stats_var.get())}
 
     def _apply_target(self, data):
-        """Set every 'Looking for' control (and the cube type) from a dict (a preset)."""
+        """Set every 'Looking for' control (and the cube type) from a dict."""
         if data.get("cube_type") in CUBE_PROFILES:
             self._cube_var.set(data["cube_type"])
-        modes = data.get("modes") if isinstance(data.get("modes"), list) else ["total"]
-        for k, v in self._mode_vars.items():
-            v.set(k in modes)
-        order = data.get("order") if isinstance(data.get("order"), list) else []
-        self._goal_order = [k for k in order if k in ("total", "combo", "perstat")]
-        self._goal_order += [k for k in ("total", "combo", "perstat") if k not in self._goal_order]
-        joins = data.get("joins")
-        if not isinstance(joins, list):
-            joins = [data.get("join", "any")] * 2
-        for k, v in enumerate(self._join_vars):
-            v.set("all" if str(joins[k] if k < len(joins) else "any") == "all" else "any")
-        if data.get("stat") in self._combo_vars:
-            self._stat_var.set(data["stat"])
-        self._min_var.set(str(data.get("min", "")))
-        chosen = set(data.get("combo", []))
-        for n, v in self._combo_vars.items():
-            v.set(n in chosen)
-        count = str(data.get("count", 3))
-        self._count_var.set(count if count in ("1", "2", "3") else "3")
         self._all_stats_var.set(bool(data.get("all_stats", True)))
-        leg = data.get("legendary") if isinstance(data.get("legendary"), dict) else {}
-        for k, v in self._leg_vars.items():
-            raw = leg.get(k, 0)
-            v.set("3" if raw is True else (str(raw) if str(raw) in ("0", "2", "3") else "0"))
-        for row, _s, _c in list(self._perstat_rows):
-            row.destroy()
-        self._perstat_rows.clear()
-        needs = data.get("needs", {}) if isinstance(data.get("needs"), dict) else {}
-        for name, count in list(needs.items())[:3] or [(None, "1")]:
-            self._add_perstat_row(name, str(count))
+        for entry in list(self._goal_rows):
+            entry["frame"].destroy()
+        self._goal_rows.clear()
+        for item in self._goals_from_saved(data):
+            self._add_goal(item)
+        if not self._goal_rows:
+            self._add_goal()
         self._parse_target()
 
     @staticmethod
@@ -4019,19 +3830,238 @@ class CubesApp:
         if self._preset_var.get() not in presets:
             self._preset_var.set("(none)" if presets else "(no presets yet)")
 
-    def _swap_goals(self, gap):
-        """Exchange the two ticked goals around gap *gap*, so a pair that was
-        not next to each other can get its own OR / AND."""
-        shown = [k for k in self._goal_order if self._mode_vars[k].get()]
-        if gap + 1 >= len(shown):
-            return
-        a, b = shown[gap], shown[gap + 1]
-        ia, ib = self._goal_order.index(a), self._goal_order.index(b)
-        self._goal_order[ia], self._goal_order[ib] = self._goal_order[ib], self._goal_order[ia]
+    GOAL_KINDS = (("total", "Reach a total"), ("combo", "Combination of stats"), ("perstat", "Lines per stat"))
+
+    @staticmethod
+    def _goals_from_saved(saved):
+        """The saved goal list - or the same settings in the old one-of-each
+        shape (modes / stat / min / combo / needs), so old files and presets
+        keep working."""
+        goals = saved.get("goals")
+        if isinstance(goals, list) and goals:
+            return [g for g in goals if isinstance(g, dict)]
+        modes = saved.get("modes") if isinstance(saved.get("modes"), list) else [saved.get("mode", "total")]
+        order = saved.get("order") if isinstance(saved.get("order"), list) else []
+        order = [k for k in order if k in ("total", "combo", "perstat")]
+        order += [k for k in ("total", "combo", "perstat") if k not in order]
+        joins = saved.get("joins") if isinstance(saved.get("joins"), list) else [saved.get("join", "any")] * 2
+        legendary = saved.get("legendary") if isinstance(saved.get("legendary"), dict) else {}
+        out = []
+        for key in order:
+            if key not in modes:
+                continue
+            leg = legendary.get(key, 0)
+            gap = len(out) - 1
+            item = {"kind": key,
+                    "join": "" if not out else str(joins[gap] if 0 <= gap < len(joins) else "any"),
+                    "legendary": "3" if leg is True else str(leg)}
+            if key == "total":
+                item.update(stat=saved.get("stat"), min=saved.get("min", ""))
+            elif key == "combo":
+                item.update(combo=saved.get("combo", []), count=saved.get("count", 3))
+            else:
+                item.update(needs=saved.get("needs", {}))
+            out.append(item)
+        return out
+
+    def _add_goal(self, data=None):
+        """One goal in the list: its OR / AND to the goal above, the kind, the
+        legendary rule, a Remove, and the body for that kind."""
+        data = data if isinstance(data, dict) else {}
+        kind = data.get("kind") if data.get("kind") in dict(self.GOAL_KINDS) else "total"
+        entry = {"kind_var": tk.StringVar(value=dict(self.GOAL_KINDS)[kind]),
+                 "leg_var": tk.StringVar(value=self._leg_value(data.get("legendary", 0))),
+                 "join_var": None, "data": data}
+        frame = tk.Frame(self._goals_box, bg=UI_SURFACE, highlightbackground=UI_BORDER, highlightthickness=1)
+        frame.pack(fill="x", pady=(0, 6))
+        entry["frame"] = frame
+        head = tk.Frame(frame, bg=UI_SURFACE)
+        head.pack(fill="x", padx=8, pady=(6, 2))
+        if self._goal_rows:                      # not the first goal: OR / AND to the one above
+            join = tk.StringVar(value="all" if str(data.get("join", "any")) == "all" else "any")
+            entry["join_var"] = join
+            for value, text in (("any", "OR"), ("all", "AND")):
+                tk.Radiobutton(head, text=text, value=value, variable=join, bg=UI_SURFACE, fg=UI_TEXT,
+                               selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
+                               highlightthickness=0, font=("Segoe UI", 9, "bold")).pack(side="left")
+            tk.Frame(head, bg=UI_BORDER, width=1, height=18).pack(side="left", padx=8, fill="y")
+            join.trace_add("write", lambda *_: self._parse_target())
+        titles = [t for _k, t in self.GOAL_KINDS]
+        kind_menu = ttk.OptionMenu(head, entry["kind_var"], entry["kind_var"].get(), *titles,
+                                   style="Cubes.TMenubutton")
+        kind_menu.pack(side="left")
+        kind_menu["menu"].config(bg=UI_SURFACE, fg=UI_TEXT, activebackground=UI_BUTTON, activeforeground=UI_TEXT,
+                                 font=("Segoe UI", 10), bd=0)
+        self._leg_box(head, entry["leg_var"], side="left", padx=(12, 0))
+        remove = OverlayApp._button(head, "Remove", lambda e=entry: self._remove_goal(e), UI_BUTTON, UI_TEXT)
+        remove.config(padx=6, pady=1, font=("Segoe UI", 8))
+        remove.pack(side="right")
+        entry["body"] = tk.Frame(frame, bg=UI_SURFACE)
+        entry["body"].pack(fill="x", padx=8, pady=(0, 8))
+        self._goal_rows.append(entry)
+        self._build_goal_body(entry)
+        entry["kind_var"].trace_add("write", lambda *_, e=entry: self._change_goal_kind(e))
+        self._bind_wheel(frame)
+        if hasattr(self, "_target_label"):
+            self._parse_target()
+        return entry
+
+    def _change_goal_kind(self, entry):
+        """The kind picker changed: keep the goal where it is, swap its body."""
+        entry["data"] = {}
+        for child in entry["body"].winfo_children():
+            child.destroy()
+        self._build_goal_body(entry)
+        self._bind_wheel(entry["frame"])
         self._parse_target()
 
+    def _remove_goal(self, entry):
+        self._goal_rows.remove(entry)
+        entry["frame"].destroy()
+        if not self._goal_rows:              # the list is never empty
+            self._add_goal()
+        self._parse_target()
+
+    def _build_goal_body(self, entry):
+        """The controls for this goal's kind, inside its own frame."""
+        title_to_key = {t: k for k, t in self.GOAL_KINDS}
+        kind = title_to_key.get(entry["kind_var"].get(), "total")
+        entry["kind"] = kind
+        body, data, stat_names = entry["body"], entry.get("data") or {}, self._stat_names
+        if kind == "total":
+            row = tk.Frame(body, bg=UI_SURFACE)
+            row.pack(fill="x")
+            stat_var = tk.StringVar(value=data.get("stat") if data.get("stat") in stat_names else stat_names[0])
+            min_var = tk.StringVar(value=str(data.get("min", "")))
+            menu = ttk.OptionMenu(row, stat_var, stat_var.get(), *stat_names, style="Cubes.TMenubutton")
+            menu.pack(side="left", fill="x", expand=True)
+            menu["menu"].config(bg=UI_SURFACE, fg=UI_TEXT, activebackground=UI_BUTTON, activeforeground=UI_TEXT,
+                                font=("Segoe UI", 10), bd=0)
+            tk.Label(row, text=">=", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 11)).pack(side="left", padx=8)
+            tk.Entry(row, textvariable=min_var, width=5, bg=UI_BG, fg=UI_TEXT, insertbackground=UI_TEXT,
+                     relief="flat", font=("Segoe UI", 12), justify="center", highlightbackground=UI_BORDER,
+                     highlightcolor=UI_ACCENT, highlightthickness=1).pack(side="left", ipady=5)
+            entry["unit_label"] = tk.Label(row, text="%", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 11))
+            entry["unit_label"].pack(side="left", padx=(4, 0))
+            entry["stat_var"], entry["min_var"] = stat_var, min_var
+            for var in (stat_var, min_var):
+                var.trace_add("write", lambda *_: self._parse_target())
+        elif kind == "combo":
+            count_row = tk.Frame(body, bg=UI_SURFACE)
+            count_row.pack(fill="x", pady=(0, 4))
+            tk.Label(count_row, text="At least", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 10)).pack(side="left")
+            count = str(data.get("count", 3))
+            count_var = tk.StringVar(value=count if count in ("1", "2", "3") else "3")
+            for n in ("1", "2", "3"):
+                tk.Radiobutton(count_row, text=n, value=n, variable=count_var, bg=UI_SURFACE, fg=UI_TEXT,
+                               selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
+                               highlightthickness=0, font=("Segoe UI", 10, "bold")).pack(side="left", padx=(6, 0))
+            tk.Label(count_row, text="of the 3 lines are one of:", fg=UI_MUTED, bg=UI_SURFACE,
+                     font=("Segoe UI", 10)).pack(side="left", padx=(8, 0))
+            count_var.trace_add("write", lambda *_: self._parse_target())
+            grid = tk.Frame(body, bg=UI_SURFACE)
+            grid.pack(fill="x")
+            chosen = set(data.get("combo", []))
+            combo_vars = {}
+            columns = [stat_names[:5], stat_names[5:9],
+                       ["Critical Damage", "Skill Cooldowns", "Item Drop Rate", "Mesos Obtained"]]
+            for col, names in enumerate(columns):
+                for r, nm in enumerate(names):
+                    var = tk.BooleanVar(value=nm in chosen)
+                    combo_vars[nm] = var
+                    tk.Checkbutton(grid, text=nm, variable=var, bg=UI_SURFACE, fg=UI_TEXT, selectcolor=UI_BG,
+                                   activebackground=UI_SURFACE, activeforeground=UI_TEXT, highlightthickness=0,
+                                   font=("Segoe UI", 10), anchor="w").grid(row=r, column=col, sticky="w",
+                                                                           padx=(0, 12), pady=1)
+                    var.trace_add("write", lambda *_: self._parse_target())
+            entry["count_var"], entry["combo_vars"] = count_var, combo_vars
+        else:
+            tk.Label(body, text="Lines required:", fg=UI_MUTED, bg=UI_SURFACE,
+                     font=("Segoe UI", 10)).pack(anchor="w", pady=(0, 4))
+            rows_box = tk.Frame(body, bg=UI_SURFACE)
+            rows_box.pack(fill="x")
+            entry["perstat_rows"] = []
+
+            def add_row(stat=None, count="1"):
+                if len(entry["perstat_rows"]) >= 3:
+                    return
+                row = tk.Frame(rows_box, bg=UI_SURFACE)
+                row.pack(fill="x", pady=2)
+                taken = {v.get() for _r, v, _c in entry["perstat_rows"]}
+                free = [n for n in stat_names if n not in taken]
+                stat_var = tk.StringVar(value=stat if stat in stat_names else (free[0] if free else stat_names[0]))
+                count_var = tk.StringVar(value=str(count) if str(count) in ("1", "2", "3") else "1")
+                menu = ttk.OptionMenu(row, stat_var, stat_var.get(), *stat_names, style="Cubes.TMenubutton")
+                menu.pack(side="left", fill="x", expand=True)
+                menu["menu"].config(bg=UI_SURFACE, fg=UI_TEXT, activebackground=UI_BUTTON,
+                                    activeforeground=UI_TEXT, font=("Segoe UI", 10), bd=0)
+                tk.Label(row, text="x", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 11)).pack(side="left", padx=8)
+                for n in ("1", "2", "3"):
+                    tk.Radiobutton(row, text=n, value=n, variable=count_var, bg=UI_SURFACE, fg=UI_TEXT,
+                                   selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
+                                   highlightthickness=0, font=("Segoe UI", 10, "bold"), padx=3).pack(side="left")
+                pair = (row, stat_var, count_var)
+                entry["perstat_rows"].append(pair)
+                if len(entry["perstat_rows"]) > 1:
+                    OverlayApp._button(row, "x", lambda pr=pair: remove_row(pr), UI_BUTTON, UI_TEXT).pack(
+                        side="left", padx=(10, 0))
+                for var in (stat_var, count_var):
+                    var.trace_add("write", lambda *_: self._parse_target())
+                self._bind_wheel(row)
+                if hasattr(self, "_target_label"):
+                    self._parse_target()
+
+            def remove_row(pair):
+                entry["perstat_rows"].remove(pair)
+                pair[0].destroy()
+                if not entry["perstat_rows"]:
+                    add_row()
+                self._parse_target()
+            entry["add_perstat_row"] = add_row
+            add_button = OverlayApp._button(body, "+ Add a stat", add_row, UI_BUTTON, UI_TEXT)
+            add_button.pack(anchor="w", pady=(6, 0))
+            entry["add_perstat_button"] = add_button
+            needs = data.get("needs") if isinstance(data.get("needs"), dict) else {}
+            for nm, c in list(needs.items())[:3] or [(None, "1")]:
+                add_row(nm, str(c))
+
+    @staticmethod
+    def _leg_value(v):
+        return "3" if v is True else (str(v) if str(v) in ("0", "2", "3") else "0")
+
+    def _leg_box(self, parent, var, **pack):
+        """The any / 2+ / all 3 legendary picker for one goal."""
+        box = tk.Frame(parent, bg=UI_SURFACE)
+        box.pack(**pack)
+        tk.Label(box, text="legendary:", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9)).pack(side="left")
+        for value, text in (("0", "any"), ("2", "2+"), ("3", "all 3")):
+            tk.Radiobutton(box, text=text, value=value, variable=var, bg=UI_SURFACE, fg=UI_MUTED,
+                           selectcolor=UI_BG, activebackground=UI_SURFACE, activeforeground=UI_TEXT,
+                           highlightthickness=0, font=("Segoe UI", 9), padx=2).pack(side="left")
+        var.trace_add("write", lambda *_: self._parse_target())
+
+    def _goal_list(self):
+        """Every goal as plain data, in order - what gets saved and preset."""
+        out = []
+        for entry in self._goal_rows:
+            item = {"kind": entry["kind"], "legendary": entry["leg_var"].get(),
+                    "join": entry["join_var"].get() if entry["join_var"] is not None else ""}
+            if entry["kind"] == "total":
+                item.update(stat=entry["stat_var"].get(), min=entry["min_var"].get().strip().rstrip("%"))
+            elif entry["kind"] == "combo":
+                item.update(count=int(entry["count_var"].get()),
+                            combo=[n for n, v in entry["combo_vars"].items() if v.get()])
+            else:
+                needs = {}
+                for _r, stat_var, count_var in entry["perstat_rows"]:
+                    needs[stat_var.get()] = needs.get(stat_var.get(), 0) + int(count_var.get())
+                item.update(needs=needs)
+            out.append(item)
+        return out
+
+
     def _reset_target(self):
-        """Every 'Looking for' control back to its default; the cube type stays."""
+        """Back to a single empty goal; the cube type stays."""
         self._apply_target({"cube_type": self._cube_var.get()})
         self._preset_var.set("(none)")
         self._set_status("Looking for reset.")
@@ -4074,80 +4104,58 @@ class CubesApp:
         self._set_status(f"Preset '{name}' deleted.")
 
     def _parse_target(self):
-        """Compose the (words, minimum, wants_percent, tier) target from the
-        pickers - the same tuple parse_potential_target produced from typed
-        text, so the loop and matcher are unchanged. A blank minimum with a
-        is no target at all. Tier is always None: the tier squares are
-        informational, the goal is the numbered total."""
+        """Build the goal list into one target. Each goal contributes its own
+        object; they combine top to bottom with the OR / AND each goal carries,
+        so 'A OR B AND C' is (A OR B) AND C."""
         global ALL_STATS_COUNTS
         ALL_STATS_COUNTS = bool(self._all_stats_var.get())
-        name = self._stat_var.get()
-        unit = next((u for n, _w, u in POTENTIAL_STATS if n == name), "%")
-        self._unit_label.config(text=unit)
-        raw = self._min_var.get().strip().rstrip("%")
-        modes = [k for k, v in self._mode_vars.items() if v.get()]
-        chosen = [n for n, v in self._combo_vars.items() if v.get()]
-        self._refresh_perstat_menus()
-        needs = {}
-        for _row, stat_var, count_var in self._perstat_rows:
-            needs[stat_var.get()] = needs.get(stat_var.get(), 0) + int(count_var.get())
-        self._add_row_button.config(state="normal" if len(self._perstat_rows) < 3 else "disabled")
-        frames = {"total": self._goal_row, "combo": self._combo_frame, "perstat": self._perstat_frame}
-        for key, frame in frames.items():
-            frame.pack_forget()
-        for row in self._join_rows:
-            row.pack_forget()
-        # Each ticked section, with that gap's OR / AND between consecutive ones.
-        titles = {"total": "Reach a total", "combo": "Combination of stats", "perstat": "Lines per stat"}
-        shown, previous = 0, None
-        for key in self._goal_order:
-            if key not in modes:
-                continue
-            if shown:
-                row = self._join_rows[shown - 1]
-                row.caption.config(text=f"between {titles[previous]} and {titles[key]}")
-                row.pack(fill="x", padx=24, pady=(2, 4), before=self._target_label)
-            previous = key
-            frames[key].pack(fill="x", padx=14, pady=(0, 10 if key == "total" else 8), before=self._target_label)
-            shown += 1
-        goals, problems = [], []
-        for key in [k for k in self._goal_order if k in modes]:
-            if key == "total":
+        goals, joins, problems = [], [], []
+        for entry in self._goal_rows:
+            kind, made = entry["kind"], None
+            if kind == "total":
+                name = entry["stat_var"].get()
+                unit = next((u for n, _w, u in POTENTIAL_STATS if n == name), "%")
+                entry["unit_label"].config(text=unit)
+                raw = entry["min_var"].get().strip().rstrip("%")
                 if raw.isdigit() and int(raw) > 0:
-                    goals.append(self._wrap(TotalGoal(name, int(raw), unit), "total"))
+                    made = TotalGoal(name, int(raw), unit)
                 else:
                     problems.append("enter a minimum value for the total")
-            elif key == "combo":
+            elif kind == "combo":
+                chosen = [n for n, v in entry["combo_vars"].items() if v.get()]
                 if chosen:
-                    goals.append(self._wrap(ComboGoal(chosen, int(self._count_var.get())), "combo"))
+                    made = ComboGoal(chosen, int(entry["count_var"].get()))
                 else:
                     problems.append("tick the stats for the combination")
             else:
-                total_needed = sum(needs.values())
+                needs = {}
+                for _r, stat_var, count_var in entry["perstat_rows"]:
+                    needs[stat_var.get()] = needs.get(stat_var.get(), 0) + int(count_var.get())
+                entry["add_perstat_button"].config(
+                    state="normal" if len(entry["perstat_rows"]) < 3 else "disabled")
                 if not needs:
                     problems.append("add a stat and how many lines of it you need")
-                elif total_needed > 3:
-                    problems.append(f"lines per stat needs {total_needed} lines - an item only has 3")
+                elif sum(needs.values()) > 3:
+                    problems.append(f"lines per stat needs {sum(needs.values())} lines - an item only has 3")
                 else:
-                    goals.append(self._wrap(PerStatGoal(needs), "perstat"))
-        if not modes:
-            self.target = None
-            self._target_label.config(text="Tick at least one way of cubing.", fg=UI_MUTED)
-        elif problems:
+                    made = PerStatGoal(needs)
+            if made is not None:
+                need = entry["leg_var"].get()
+                goals.append(LegendaryOnly(made, int(need)) if need in ("2", "3") else made)
+                if len(goals) > 1 and entry["join_var"] is not None:
+                    joins.append(entry["join_var"].get())
+        if problems:
             self.target = None
             self._target_label.config(text="; ".join(problems).capitalize() + ".", fg=UI_PRIMARY)
+        elif not goals:
+            self.target = None
+            self._target_label.config(text="Add a goal to cube for.", fg=UI_MUTED)
         else:
-            self.target = (goals[0] if len(goals) == 1
-                           else CombinedGoal(goals, [v.get() for v in self._join_vars]))
+            self.target = goals[0] if len(goals) == 1 else CombinedGoal(goals, joins)
             self._target_label.config(text="Stop when: " + self.target.describe(), fg=UI_ACCENT)
         try:
-            CUBES_TARGET_FILE.write_text(json.dumps({"modes": modes, "joins": [v.get() for v in self._join_vars],
-                                                     "order": list(self._goal_order),
-                                                     "stat": name, "min": raw, "combo": chosen,
-                                                     "count": int(self._count_var.get()), "needs": needs,
-                                                     "all_stats": ALL_STATS_COUNTS,
-                                                     "legendary": {k: v.get() for k, v in self._leg_vars.items()}}),
-                                         encoding="utf-8")
+            CUBES_TARGET_FILE.write_text(json.dumps({"goals": self._goal_list(),
+                                                     "all_stats": ALL_STATS_COUNTS}), encoding="utf-8")
         except Exception:
             pass
 
