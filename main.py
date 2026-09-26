@@ -346,13 +346,15 @@ class CubeProfile:
     def __init__(self, name, label_path, block=(79 / 50, 12 / 15, 250 / 50, 70 / 15),
                  icon_x=(9 / 210, 19 / 210), icon_y=(4 / 70, 13 / 70), line_step=25 / 70,
                  row=(-4 / 50, 192 / 15, 400 / 50, 38 / 15), target_height=210, calibrated=True,
-                 pick_label="only", cubes_left="highlight", count_box=None, commit_on_match=True):
+                 pick_label="only", cubes_left="highlight", count_box=None, commit_on_match=True,
+                 enters=CUBES_SEQUENCE_ENTERS):
         self.name = name
         self.label_path = label_path
         self.pick_label = pick_label          # "only": one label expected; "rightmost": AFTER card of a BEFORE/AFTER pair
         self.cubes_left = cubes_left          # "highlight": cyan slot in the material row; "count": OCR a remaining-count pill
         self.count_box = count_box            # unused since the pill is anchored to the "Remaining" label (see REMAINING_COUNT_BOX)
         self.commit_on_match = commit_on_match  # False: the game shows the result before you commit, so a match means STOP, don't press
+        self.enters = max(1, int(enters))     # Enters after the click; Glowing rolls on the first one
         self.block_dx, self.block_dy, self.block_w, self.block_h = block
         self.icon_x, self.icon_y, self.line_step = icon_x, icon_y, line_step
         self.row_x0, self.row_dy, self.row_w, self.row_h = row
@@ -378,7 +380,9 @@ class CubeProfile:
 
 
 CUBE_PROFILES = {
-    "glowing": CubeProfile("Glowing", POTENTIAL_LABEL_PATH),
+    # One click + one Enter and the Glowing cube rolls straight away; a second
+    # Enter is just 50 ms of stray input per roll.
+    "glowing": CubeProfile("Glowing", POTENTIAL_LABEL_PATH, enters=1),
     # Bright cubes use the game's Reset dialog: BEFORE and AFTER cards side by side, the new
     # roll shown BEFORE you commit, "Reset x1" to roll again (which makes AFTER the new
     # BEFORE). Measured on assets/reference/bright_example.png: Flames' own "Combat Power
@@ -4471,10 +4475,11 @@ class CubesApp:
         self._set_status(message)
 
     def _press_sequence(self):
-        """One cube: left click, then Enters, with a small jittered gap."""
+        """One cube: left click, then this cube type's Enters, with a small
+        jittered gap."""
         pydirectinput.click()
         self._mouse.reassert()
-        for _ in range(CUBES_SEQUENCE_ENTERS):
+        for _ in range(self.profile.enters):
             time.sleep(OverlayApp._jittered(CUBES_PRESS_GAP))
             if not self.looping:
                 return
@@ -4509,10 +4514,14 @@ class CubesApp:
                 # send the sequence again before giving up. (Seen in play: stopped with
                 # cubes left and the dialog open - one dropped input.)
                 t0 = time.perf_counter()
+                repressed = 0
                 for attempt in range(1 + CUBES_SEQUENCE_RETRIES):
                     if attempt:
+                        repressed = attempt
                         self._requests.put(lambda a=attempt: self._set_status(
-                            f"Panel didn't change - pressing again ({a}/{CUBES_SEQUENCE_RETRIES})."))
+                            f"No change in {CUBES_CHANGE_TIMEOUT:.0f}s - pressing again "
+                            f"({a}/{CUBES_SEQUENCE_RETRIES}). A dropped press, or the game was slow "
+                            f"(then this spends another cube)."))
                     self._press_sequence()
                     t1 = time.perf_counter()
                     deadline = time.perf_counter() + CUBES_CHANGE_TIMEOUT
@@ -4565,7 +4574,10 @@ class CubesApp:
                 # Where the time of one roll went - the log shows it, so a slow
                 # run says which stage (press / redraw / settle / read) is slow.
                 t4 = time.perf_counter()
-                timing = (f"{t4 - t0:.1f}s: press {t1 - t0:.2f}, redraw {t2 - t1:.2f}, "
+                # t1 is the end of the LAST press attempt, so on a re-press the
+                # gap to t0 holds the failed attempt and its wait - say so.
+                extra = f" (+{repressed} re-press)" if repressed else ""
+                timing = (f"{t4 - t0:.1f}s: press {t1 - t0:.2f}{extra}, redraw {t2 - t1:.2f}, "
                           f"settle {t3 - t2:.2f}, read {t4 - t3:.2f}")
             else:
                 timing = ""
