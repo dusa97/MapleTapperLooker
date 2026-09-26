@@ -303,6 +303,8 @@ CUBES_PRESS_GAP = 0.05       # seconds between the presses of one sequence (jitt
 CUBES_SEQUENCE_ENTERS = 2    # Enters after the click - the game needs two; a dropped press is
                              # covered by the re-send below, not by extra presses (each is 50 ms per roll)
 CUBES_SEQUENCE_RETRIES = 2   # re-send the sequence this many times if the panel doesn't change
+CUBES_COUNT_EVERY = 10       # re-read the Remaining count every N rolls; in between it is tracked
+                             # locally (one press spends one cube per AFTER card)
 # Flames uses the same sequence; its dialog can need another press (confirm popups), so
 # a no-change wait is short and simply leads to the next sequence rather than a stop.
 FLAMES_CHANGE_TIMEOUT = 1.0  # seconds to wait for the box to redraw after a sequence
@@ -729,6 +731,13 @@ def _line_is_stat(line, words, unit="%"):
             and "all" in haystack and "stat" in haystack)
 
 
+def _min_legendary(goal):
+    """Fewest legendary lines any satisfying roll must have. 0 when the goal
+    doesn't care. Used to skip the OCR on a roll the tier colours already rule
+    out - the colours cost 0.6 ms, a read costs 140 ms."""
+    return getattr(goal, "min_legendary", lambda: 0)()
+
+
 class TotalGoal:
     """Stop when the item's summed value for one stat reaches a minimum
     (the original mode). Carries the (words, minimum, wants_pct, None)
@@ -739,6 +748,10 @@ class TotalGoal:
 
     def describe(self):
         return f"{self.name} >= {self.minimum}{self.unit if self.unit == '%' else ' ' + self.unit} (total)"
+
+    @staticmethod
+    def min_legendary():
+        return 0
 
     def check(self, lines, tiers):
         total = potential_total_for(lines, tiers, self.tuple)
@@ -767,6 +780,10 @@ class ComboGoal:
 
     def _matching(self, lines):
         return [any(_line_is_stat(line, w, u) for w, u in self.words) for line in lines]
+
+    @staticmethod
+    def min_legendary():
+        return 0
 
     def check(self, lines, tiers):
         n = sum(self._matching(lines)[:3])
@@ -811,6 +828,10 @@ class PerStatGoal:
                     free.remove(line)
         return have, from_all
 
+    @staticmethod
+    def min_legendary():
+        return 0
+
     def check(self, lines, tiers):
         have, from_all = self._have(lines)
         if not all(have[n] >= c for n, c in self.needs.items()):
@@ -847,6 +868,9 @@ class LegendaryOnly:
     def _legendary(lines, tiers):
         return [line if tier == "legendary" else (line[0], None) for line, tier in zip(lines, tiers)]
 
+    def min_legendary(self):
+        return max(self.need, _min_legendary(self.goal))
+
     def check(self, lines, tiers):
         if sum(1 for t in tiers[:3] if t == "legendary") < self.need:
             return None
@@ -877,6 +901,15 @@ class CombinedGoal:
             out += ("  AND  " if op == "all" else "  OR  ") + g.describe()
             previous = op
         return out
+
+    def min_legendary(self):
+        """Folded the same way as check(): an AND needs the stricter of the
+        two, an OR only the looser one."""
+        acc = _min_legendary(self.goals[0])
+        for op, g in zip(self.joins, self.goals[1:]):
+            need = _min_legendary(g)
+            acc = max(acc, need) if op == "all" else min(acc, need)
+        return acc
 
     def check(self, lines, tiers):
         found = [g.check(lines, tiers) for g in self.goals]
@@ -3245,6 +3278,9 @@ HELP_SECTIONS = (
 
 
 UPDATE_LOG = (
+    ("2026-09-27", (
+        "Cubes are faster again: the read starts while the panel is still settling, the Remaining count is read once every 10 rolls instead of every roll, and a roll without enough legendary lines is skipped without reading at all when the goal needs legendary.",
+    )),
     ("2026-09-26", (
         "Cubes: the 'Stop when' line brackets mixed OR / AND so it cannot be misread - '(A OR B) AND C'.",
         "Cubes: 'Looking for' is a list of goals - add as many as you like, any mix, and the same kind more than once (e.g. Attack Power >= 30% OR Magic Attack >= 30%). Each goal has its own OR / AND and its own legendary rule.",
@@ -4451,13 +4487,14 @@ class CubesApp:
         new lines, check the total; on a miss, spam on again. Everything
         UI-facing goes back to the Tk thread through the request queue."""
         target = self.target
+        need_legendary = _min_legendary(target)
         time.sleep(0.1)                  # let the overlay's hide land on screen before the first grab
         img = _grab(self.region)
         first = True
-        cubes_left = None                # Remaining-count read, started alongside the card read
+        self._left_guess, self._left_since = None, 0   # Remaining count, tracked between reads
         while self.looping and self._running:
             if not first:
-                if not (cubes_left.result() if cubes_left is not None else self._cubes_left()):
+                if not self._cubes_left_cached():
                     n = max(1, len(self.panels))
                     why = (f"fewer than the {n} cubes a Reset x{n} needs" if n > 1
                            else "no cubes left (no cube selected in the material row)")
@@ -4496,14 +4533,34 @@ class CubesApp:
                         f"{1 + CUBES_SEQUENCE_RETRIES} tries (out of cubes, or the dialog closed?)."))
                     return
                 # The redraw may still be animating on the first differing frame -
-                # wait for the pixels to hold still before trusting the OCR.
+                # wait for the pixels to hold still before trusting the OCR, but
+                # start reading that frame now: on a panel that was already still
+                # the read is done by the time the wait is over.
                 t2 = time.perf_counter()
-                img = self._settle(img)
+                # A goal that needs legendary lines can be ruled out from the icon
+                # colours alone (0.6 ms), so don't pay for a read that cannot match.
+                skip = bool(need_legendary) and not self._tiers_could_match(img, need_legendary)
+                early = (None if skip or not self._has_text(img)
+                         else _OCR_POOL.submit(self._read_panels, img))
+                settled = self._settle(img)
+                if early is not None and self._same_frame(img, settled):
+                    results = early.result()          # the frame never moved - that read stands
+                else:
+                    results = None
+                img = settled
+                if skip and not self._tiers_could_match(img, need_legendary):
+                    results = "skip"                  # no read at all: the tiers cannot satisfy the goal
                 t3 = time.perf_counter()
                 self.rolls += 1
+            else:
+                results = None
             first = False
-            cubes_left = _OCR_POOL.submit(self._cubes_left)   # in parallel with the card OCR below
-            results = self._read_panels(img)
+            if results == "skip":
+                self._requests.put(lambda r=self.rolls: self._set_status(
+                    f"Roll {r}: not enough legendary lines - skipped the read."))
+                continue
+            if results is None:
+                results = self._read_panels(img)
             if self.rolls:
                 # Where the time of one roll went - the log shows it, so a slow
                 # run says which stage (press / redraw / settle / read) is slow.
@@ -4528,6 +4585,55 @@ class CubesApp:
                 return
             self._requests.put(lambda timing=timing: self._set_status(
                 f"Roll {self.rolls}: no match yet ({timing})." if self.rolls else "Current item doesn't match - cubing..."))
+
+    @staticmethod
+    def _same_frame(a, b):
+        """Two grabs of the same box with no pixels moved between them."""
+        x = np.asarray(a.convert("L"), dtype=np.int16)
+        y = np.asarray(b.convert("L"), dtype=np.int16)
+        return x.shape == y.shape and (np.abs(x - y) > 40).mean() < CUBES_CHANGE_FRAC
+
+    def _tiers_could_match(self, img, need):
+        """Could any panel in this grab have *need* legendary lines? Read from
+        the icon colours only - no OCR."""
+        ox, oy = self.region[0], self.region[1]
+        for px, py, pw, ph in (self.panels or [self.region]):
+            crop = img.crop((px - ox, py - oy, px - ox + pw, py - oy + ph))
+            try:
+                tiers = read_potential_tiers(crop, self.profile)
+            except Exception:
+                return True                       # can't tell - never skip on a guess
+            if sum(1 for t in tiers[:3] if t == "legendary") >= need:
+                return True
+        return False
+
+    def _cubes_left_cached(self):
+        """Is there another cube to spend? The Remaining count costs a Tesseract
+        spawn, so read it only every CUBES_COUNT_EVERY rolls (or once the running
+        guess gets close to empty) and track it in between."""
+        if self.profile.cubes_left != "count" or not self.count_box:
+            return self._cubes_left()
+        per_roll = max(1, len(self.panels))
+        guess, since = self._left_guess, getattr(self, "_left_since", 0)
+        # Trust the running guess only while it was counted recently AND there is
+        # comfortably more than one press left; near empty, count every roll.
+        if guess is not None and since < CUBES_COUNT_EVERY and guess - per_roll >= per_roll:
+            self._left_guess, self._left_since = guess - per_roll, since + 1
+            return True
+        count = self._remaining_count()
+        self._left_guess, self._left_since = count, 0
+        return count is None or count >= per_roll
+
+    def _remaining_count(self):
+        """The Remaining pill as a number, or None when it can't be read."""
+        try:
+            img = _grab(self.count_box)
+            big = img.resize((img.width * 4, img.height * 4), Image.LANCZOS)
+            txt = pytesseract.image_to_string(
+                big, config="--psm 7 -c tessedit_char_whitelist=0123456789").strip()
+        except Exception:
+            return None
+        return int(txt) if txt.isdigit() else None
 
     @staticmethod
     def _has_text(img):
