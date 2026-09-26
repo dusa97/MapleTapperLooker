@@ -291,7 +291,10 @@ POTENTIAL_STATS = (
 # A timer would read stale lines on a slow client and could stop on the previous roll.
 CUBES_CHANGE_POLL   = 0.03   # seconds between cheap pixel-difference checks while waiting for the redraw
 CUBES_CHANGE_FRAC   = 0.004  # fraction of pixels that must differ to count as "the panel changed"
-CUBES_CHANGE_TIMEOUT = 1.0   # no change this long after a press = the press was dropped, press again
+CUBES_CHANGE_TIMEOUT = 1.0   # longest wait for the panel to change before assuming the press was dropped
+CUBES_CHANGE_MIN_WAIT = 0.35 # ...and the shortest. The wait between the two is learned from the redraws
+CUBES_CHANGE_SAFETY = 3.0    # this run has actually taken: 3x the median, so a merely slow roll is never
+                             # re-pressed (a needless re-press spends a cube and can roll a match away)
 CUBES_SETTLE_MAX     = 1.5   # after the first changed frame, wait up to this long for the panel to be back (the blink)
 CUBES_STILL_MAX      = 0.25  # once the text is back, wait at most this long for it to hold still - the Glowing
                              # window never goes fully still (the cube's glow animates), so a long wait is a long stall
@@ -3283,6 +3286,7 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-27", (
+        "Cubes: Glowing rolls on one click + one Enter (Bright still needs two), and a dropped press is re-sent after a wait learned from your own redraw times instead of a flat second.",
         "Cubes are faster again: the read starts while the panel is still settling, the Remaining count is read once every 10 rolls instead of every roll, and a roll without enough legendary lines is skipped without reading at all when the goal needs legendary.",
     )),
     ("2026-09-26", (
@@ -4497,6 +4501,7 @@ class CubesApp:
         img = _grab(self.region)
         first = True
         self._left_guess, self._left_since = None, 0   # Remaining count, tracked between reads
+        self._redraws = []               # recent redraw times; the re-press wait is learned from them
         while self.looping and self._running:
             if not first:
                 if not self._cubes_left_cached():
@@ -4519,12 +4524,12 @@ class CubesApp:
                     if attempt:
                         repressed = attempt
                         self._requests.put(lambda a=attempt: self._set_status(
-                            f"No change in {CUBES_CHANGE_TIMEOUT:.0f}s - pressing again "
+                            f"No change in {self._change_wait():.2f}s - pressing again "
                             f"({a}/{CUBES_SEQUENCE_RETRIES}). A dropped press, or the game was slow "
                             f"(then this spends another cube)."))
                     self._press_sequence()
                     t1 = time.perf_counter()
-                    deadline = time.perf_counter() + CUBES_CHANGE_TIMEOUT
+                    deadline = time.perf_counter() + self._change_wait()
                     while self.looping and self._running and time.perf_counter() < deadline:
                         time.sleep(CUBES_CHANGE_POLL)
                         cur_img = _grab(self.region)
@@ -4546,6 +4551,8 @@ class CubesApp:
                 # start reading that frame now: on a panel that was already still
                 # the read is done by the time the wait is over.
                 t2 = time.perf_counter()
+                self._redraws.append(t2 - t1)        # what this game/PC really takes to redraw
+                del self._redraws[:-20]
                 # A goal that needs legendary lines can be ruled out from the icon
                 # colours alone (0.6 ms), so don't pay for a read that cannot match.
                 skip = bool(need_legendary) and not self._tiers_could_match(img, need_legendary)
@@ -4597,6 +4604,15 @@ class CubesApp:
                 return
             self._requests.put(lambda timing=timing: self._set_status(
                 f"Roll {self.rolls}: no match yet ({timing})." if self.rolls else "Current item doesn't match - cubing..."))
+
+    def _change_wait(self):
+        """How long to wait for the panel to change before assuming the press
+        was dropped. Learned from this run's redraws (x3 for safety) instead of
+        a flat second, so a dropped press is re-sent sooner on a fast client."""
+        if len(self._redraws) < 3:
+            return CUBES_CHANGE_TIMEOUT
+        median = sorted(self._redraws)[len(self._redraws) // 2]
+        return max(CUBES_CHANGE_MIN_WAIT, min(CUBES_CHANGE_TIMEOUT, median * CUBES_CHANGE_SAFETY))
 
     @staticmethod
     def _same_frame(a, b):
