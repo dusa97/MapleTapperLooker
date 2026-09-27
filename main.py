@@ -50,6 +50,7 @@ import re
 import sys
 import time
 import difflib
+import hashlib
 import json
 import math
 import random
@@ -293,7 +294,7 @@ CUBES_CHANGE_POLL   = 0.03   # seconds between cheap pixel-difference checks whi
 CUBES_CHANGE_FRAC   = 0.004  # fraction of pixels that must differ to count as "the panel changed"
 CUBES_CHANGE_TIMEOUT = 1.0   # longest wait for the panel to change before assuming the press was dropped
 CUBES_CHANGE_MIN_WAIT = 0.35 # ...and the shortest. The wait between the two is learned from the redraws
-CUBES_CHANGE_SAFETY = 3.0    # this run has actually taken: 3x the median, so a merely slow roll is never
+CUBES_CHANGE_SAFETY = 1.5    # this run has actually taken: 1.5x the slowest, so a merely slow roll is never
                              # re-pressed (a needless re-press spends a cube and can roll a match away)
 CUBES_SETTLE_MAX     = 1.5   # after the first changed frame, wait up to this long for the panel to be back (the blink)
 CUBES_STILL_MAX      = 0.25  # once the text is back, wait at most this long for it to hold still - the Glowing
@@ -306,6 +307,8 @@ CUBES_PRESS_GAP = 0.05       # seconds between the presses of one sequence (jitt
 CUBES_SEQUENCE_ENTERS = 2    # Enters after the click - the game needs two; a dropped press is
                              # covered by the re-send below, not by extra presses (each is 50 ms per roll)
 CUBES_SEQUENCE_RETRIES = 2   # re-send the sequence this many times if the panel doesn't change
+CUBES_LINE_CACHE_MAX = 4000  # stat lines remembered by their pixels; cleared wholesale when full
+                             # (14 stats x a handful of values x 3 positions is far below this)
 CUBES_COUNT_EVERY = 10       # re-read the Remaining count every N rolls; in between it is tracked
                              # locally (one press spends one cube per AFTER card)
 # Flames uses the same sequence; its dialog can need another press (confirm popups), so
@@ -3286,6 +3289,7 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-27", (
+        "Cubes: every stat line the app reads is remembered by its pixels, so a line it has seen before costs nothing to read again - a roll of familiar lines skips Tesseract entirely (the roll line in the Log shows the hit rate).",
         "Cubes: Glowing rolls on one click + one Enter (Bright still needs two), and a dropped press is re-sent after a wait learned from your own redraw times instead of a flat second.",
         "Cubes are faster again: the read starts while the panel is still settling, the Remaining count is read once every 10 rolls instead of every roll, and a roll without enough legendary lines is skipped without reading at all when the goal needs legendary.",
     )),
@@ -3440,6 +3444,8 @@ class CubesApp:
         if self.profile.pick_label != "rightmost":     # several cards only exist on the Bright reset dialog
             self.panels = self.panels[:1]
         self.count_box = self._load_box("count")      # the Remaining pill, located by F7 (Bright)
+        self._line_cache = {}                         # line pixels -> the (stat, value) already read from them
+        self._cache_hits = self._cache_misses = 0
         self.lines = []
         self._running = True
         self._selector = None
@@ -4336,6 +4342,21 @@ class CubesApp:
         y2 = max(b[1] + b[3] for b in boxes)
         return (x1, y1, x2 - x1, y2 - y1)
 
+    def _line_keys(self, crop):
+        """One key per stat line: the raw pixels of that line's band. Identical
+        pixels mean identical text, so a key that has been read before never
+        needs Tesseract again."""
+        w, h = crop.size
+        top, step = self.profile.icon_y[0], self.profile.line_step
+        keys = []
+        for i in range(3):
+            y0 = max(0, round(h * (top + i * step)) - 2)
+            y1 = min(h, round(h * (top + (i + 1) * step)) + 2)
+            if y1 - y0 < 4:
+                return None                      # geometry doesn't give three bands - don't cache
+            keys.append(hashlib.blake2b(crop.crop((0, y0, w, y1)).tobytes(), digest_size=16).digest())
+        return keys
+
     def _read_panels(self, img):
         """Read every panel out of one grab of the union box: each card's
         three lines are OCR'd and totalled on their own. Returns a list of
@@ -4346,11 +4367,25 @@ class CubesApp:
             px, py, pw, ph = box
             crop = img.crop((px - ox, py - oy, px - ox + pw, py - oy + ph))
             try:
-                return read_potential_tiers(crop, self.profile), read_potential_lines(crop, self.profile)
+                tiers = read_potential_tiers(crop, self.profile)
+                keys = self._line_keys(crop)
+                if keys is not None:
+                    known = [self._line_cache.get(k) for k in keys]
+                    if all(line is not None for line in known):
+                        self._cache_hits += 1
+                        return tiers, list(known)
+                lines = read_potential_lines(crop, self.profile)
+                self._cache_misses += 1
+                if keys is not None and len(lines) == 3:
+                    if len(self._line_cache) > CUBES_LINE_CACHE_MAX:
+                        self._line_cache.clear()
+                    for key, line in zip(keys, lines):
+                        self._line_cache[key] = line
+                return tiers, lines
             except Exception:
                 return [None] * 3, []
-        # Each read is its own Tesseract process (~150 ms): three cards in parallel
-        # take one read's time, not three.
+        # A read that misses the cache is its own Tesseract process (~150 ms):
+        # three cards in parallel take one read's time, not three.
         return list(_OCR_POOL.map(read, self.panels or [self.region]))
 
     # ---- read --------------------------------------------------------------
@@ -4530,12 +4565,19 @@ class CubesApp:
                     self._press_sequence()
                     t1 = time.perf_counter()
                     deadline = time.perf_counter() + self._change_wait()
+                    blanked = False
                     while self.looping and self._running and time.perf_counter() < deadline:
                         time.sleep(CUBES_CHANGE_POLL)
                         cur_img = _grab(self.region)
                         cur = np.asarray(cur_img.convert("L"), dtype=np.int16)
                         if cur.shape == before.shape and (np.abs(cur - before) > 40).mean() >= CUBES_CHANGE_FRAC:
                             img = cur_img
+                            break
+                        has_text = self._has_text(cur_img)
+                        if not has_text:
+                            blanked = True          # the panel went away: the press landed
+                        elif blanked:
+                            img = cur_img           # ...and it is back, even if it repainted the same lines
                             break
                     if img is not None or not self.looping:
                         break
@@ -4584,8 +4626,10 @@ class CubesApp:
                 # t1 is the end of the LAST press attempt, so on a re-press the
                 # gap to t0 holds the failed attempt and its wait - say so.
                 extra = f" (+{repressed} re-press)" if repressed else ""
+                seen = self._cache_hits + self._cache_misses
+                cached = f", cache {100 * self._cache_hits // max(1, seen)}%" if seen else ""
                 timing = (f"{t4 - t0:.1f}s: press {t1 - t0:.2f}{extra}, redraw {t2 - t1:.2f}, "
-                          f"settle {t3 - t2:.2f}, read {t4 - t3:.2f}")
+                          f"settle {t3 - t2:.2f}, read {t4 - t3:.2f}{cached}")
             else:
                 timing = ""
             hit, which = None, 0
@@ -4611,8 +4655,8 @@ class CubesApp:
         a flat second, so a dropped press is re-sent sooner on a fast client."""
         if not self._redraws:            # nothing measured yet - only the first roll
             return CUBES_CHANGE_TIMEOUT
-        median = sorted(self._redraws)[len(self._redraws) // 2]
-        return max(CUBES_CHANGE_MIN_WAIT, min(CUBES_CHANGE_TIMEOUT, median * CUBES_CHANGE_SAFETY))
+        slowest = sorted(self._redraws)[-2 if len(self._redraws) > 4 else -1]   # ignore one freak outlier
+        return max(CUBES_CHANGE_MIN_WAIT, min(CUBES_CHANGE_TIMEOUT, slowest * CUBES_CHANGE_SAFETY))
 
     @staticmethod
     def _same_frame(a, b):
