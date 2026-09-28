@@ -297,8 +297,9 @@ CUBES_CHANGE_MIN_WAIT = 0.35 # ...and the shortest. The wait between the two is 
 CUBES_CHANGE_SAFETY = 1.5    # this run has actually taken: 1.5x the slowest, so a merely slow roll is never
                              # re-pressed (a needless re-press spends a cube and can roll a match away)
 CUBES_SETTLE_MAX     = 1.5   # after the first changed frame, wait up to this long for the panel to be back (the blink)
-CUBES_INK_SETTLED    = 0.0008 # two frames whose text masks differ by less than this are the same text;
-                              # a panel still fading in differs by far more, a background glow by less
+CUBES_INK_SETTLED    = 0.0005 # two frames whose text masks differ by less than this are the same text.
+                              # Tight on purpose: a panel 95% drawn still reads wrong (it drops a line),
+                              # and its mask is ten times further off than this
 CUBES_STILL_MAX      = 0.25  # once the text is back, wait at most this long for it to hold still - the Glowing
                              # window never goes fully still (the cube's glow animates), so a long wait is a long stall
 CUBES_MIN_TEXT_INK   = 0.008 # fraction of OCR-mask ink that means "the stat lines are on screen" (real panels 0.02-0.05)
@@ -4642,6 +4643,11 @@ class CubesApp:
                 continue
             if results is None:
                 results = self._read_panels(img)
+            if self._looks_partial(results):
+                # More tier icons than lines read: the panel was still drawing.
+                # One more grab, properly settled this time.
+                img = self._settle(_grab(self.region))
+                results = self._read_panels(img)
             if self.rolls:
                 # Where the time of one roll went - the log shows it, so a slow
                 # run says which stage (press / redraw / settle / read) is slow.
@@ -4680,6 +4686,17 @@ class CubesApp:
             return CUBES_CHANGE_TIMEOUT
         slowest = sorted(self._redraws)[-2 if len(self._redraws) > 4 else -1]   # ignore one freak outlier
         return max(CUBES_CHANGE_MIN_WAIT, min(CUBES_CHANGE_TIMEOUT, slowest * CUBES_CHANGE_SAFETY))
+
+    @staticmethod
+    def _looks_partial(results):
+        """A card showing three tier icons but fewer than three readable lines
+        was caught mid-draw - the icons appear before the text finishes."""
+        for tiers, lines in results:
+            icons = sum(1 for t in tiers[:3] if t)
+            read = sum(1 for _s, v in lines if v)
+            if icons > read:
+                return True
+        return False
 
     @staticmethod
     def _ink(img):
