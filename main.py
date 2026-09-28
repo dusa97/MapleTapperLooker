@@ -3313,6 +3313,7 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-28", (
+        "Log tab: a run starts with a block naming the version, cube type, boxes and goal, and every roll records what each card read plus how long each stage took - enough to diagnose a bad run from a paste.",
         "Cubes (x3): 'has the panel finished drawing?' is judged on the cards themselves now - the moving game background between them was being counted as the text changing.",
         "Cubes: a match now has to survive a second read before the run stops, so a panel caught mid-draw can never end a run on lines that were never there.",
         "Cubes: the app waits for every card's tier icons (drawn before the text) before reading, which adapts to a slow client instead of guessing a delay.",
@@ -4535,9 +4536,20 @@ class CubesApp:
         self.overlay.withdraw()          # the box must not be in the crops the loop takes
         self.root.update_idletasks()     # ...so make sure it is actually gone before the first grab
         self._mouse.lock()
+        self._log_run_details()
         self._loop_thread = threading.Thread(target=self._cube_loop, daemon=True, name="cube-loop")
         self._loop_thread.start()
         self._set_status(f"Cubing until {self._describe(self.target)} ...")
+
+    def _log_run_details(self):
+        """Everything needed to make sense of the rolls that follow."""
+        boxes = " ".join("[%d,%d %dx%d]" % tuple(int(v) for v in b) for b in (self.panels or [self.region]))
+        self._log(f"--- Start: {APP_VERSION}, {self.profile.name} cube, {len(self.panels or [1])} card(s)")
+        self._log(f"    box {tuple(int(v) for v in self.region)}  cards {boxes}"
+                  f"  count box {tuple(int(v) for v in self.count_box) if self.count_box else 'none'}")
+        self._log(f"    goal: {self._describe(self.target)}")
+        self._log(f"    All Stats counts as base stats: {bool(self._all_stats_var.get())}"
+                  f"  |  needs {_min_legendary(self.target)} legendary line(s)")
 
     def _stop_loop(self, message):
         self.looping = False
@@ -4630,7 +4642,9 @@ class CubesApp:
                     # any text on it is well short of all nine lines. A moment here
                     # is cheaper than reading garbage and rolling on it.
                     time.sleep(CUBES_MULTI_CARD_DELAY)
+                t_icons = time.perf_counter()
                 img = self._wait_for_icons(img)
+                icons_took = time.perf_counter() - t_icons
                 t2 = time.perf_counter()
                 self._redraws.append(t2 - t1)        # what this game/PC really takes to redraw
                 del self._redraws[:-20]
@@ -4658,7 +4672,8 @@ class CubesApp:
                 continue
             if results is None:
                 results = self._read_panels(img)
-            if self._looks_partial(results):
+            partial = self._looks_partial(results)
+            if partial:
                 # More tier icons than lines read: the panel was still drawing.
                 # One more grab, properly settled this time.
                 img = self._settle(_grab(self.region))
@@ -4670,10 +4685,12 @@ class CubesApp:
                 # t1 is the end of the LAST press attempt, so on a re-press the
                 # gap to t0 holds the failed attempt and its wait - say so.
                 extra = f" (+{repressed} re-press)" if repressed else ""
+                redo = ", RE-READ (was still drawing)" if partial else ""
                 seen = self._cache_hits + self._cache_misses
                 cached = f", cache {100 * self._cache_hits // max(1, seen)}%" if seen else ""
                 timing = (f"{t4 - t0:.1f}s: press {t1 - t0:.2f}{extra}, redraw {t2 - t1:.2f}, "
-                          f"settle {t3 - t2:.2f}, read {t4 - t3:.2f}{cached}")
+                          f"icons {icons_took:.2f}, settle {t3 - t2:.2f}, read {t4 - t3:.2f}"
+                          f"{cached}{redo}")
             else:
                 timing = ""
             hit, which = None, 0
@@ -4702,6 +4719,8 @@ class CubesApp:
                 return
             self._requests.put(lambda timing=timing: self._set_status(
                 f"Roll {self.rolls}: no match yet ({timing})." if self.rolls else "Current item doesn't match - cubing..."))
+            if self.rolls:      # what every card actually said, so a bad read can be seen afterwards
+                self._requests.put(lambda cards=self._describe_cards(results): self._log("    " + cards))
 
     def _wait_for_icons(self, img):
         """Return a grab taken once every card shows its three tier icons, or
@@ -4756,6 +4775,16 @@ class CubesApp:
             return CUBES_CHANGE_TIMEOUT
         slowest = sorted(self._redraws)[-2 if len(self._redraws) > 4 else -1]   # ignore one freak outlier
         return max(CUBES_CHANGE_MIN_WAIT, min(CUBES_CHANGE_TIMEOUT, slowest * CUBES_CHANGE_SAFETY))
+
+    @staticmethod
+    def _describe_cards(results):
+        """One line holding every card's reading - lines, tiers and totals."""
+        out = []
+        for i, (tiers, lines) in enumerate(results, 1):
+            shown = ", ".join(f"{st} {v}" if v else f"{st}?" for st, v in lines[:3]) or "nothing read"
+            marks = "".join((t or "-")[0] for t in tiers[:3])
+            out.append(f"#{i} [{marks}] {shown}")
+        return " | ".join(out)
 
     @staticmethod
     def _looks_partial(results):
