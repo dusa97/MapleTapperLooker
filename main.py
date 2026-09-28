@@ -297,6 +297,7 @@ CUBES_CHANGE_MIN_WAIT = 0.35 # ...and the shortest. The wait between the two is 
 CUBES_CHANGE_SAFETY = 1.5    # this run has actually taken: 1.5x the slowest, so a merely slow roll is never
                              # re-pressed (a needless re-press spends a cube and can roll a match away)
 CUBES_SETTLE_MAX     = 1.5   # after the first changed frame, wait up to this long for the panel to be back (the blink)
+CUBES_MULTI_CARD_DELAY = 0.1  # let a multi-card (Reset x3) panel draw before looking at it
 CUBES_INK_SETTLED    = 0.0005 # two frames whose text masks differ by less than this are the same text.
                               # Tight on purpose: a panel 95% drawn still reads wrong (it drops a line),
                               # and its mask is ten times further off than this
@@ -3308,6 +3309,7 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-28", (
+        "Cubes: a Reset x3 panel gets a moment to draw before the app looks at it - three cards appear more slowly than one.",
         "Cubes (x3 especially): the app now waits for the text itself to stop changing before reading, instead of guessing from raw pixels - no more reading three cards mid-fade and rolling on nonsense.",
         "Cubes: a line is only read once the panel is fully drawn - text still fading in was being read as nonsense ('Max MP +10%' as 'htax MIF +4701%').",
         "Cubes: a percentage no line can give (over 60%) is refused instead of counted, so a broken read can never fake a hit.",
@@ -4616,6 +4618,11 @@ class CubesApp:
                 # wait for the pixels to hold still before trusting the OCR, but
                 # start reading that frame now: on a panel that was already still
                 # the read is done by the time the wait is over.
+                if len(self.panels) > 1:
+                    # Reset x3: three cards draw together and the first frame with
+                    # any text on it is well short of all nine lines. A moment here
+                    # is cheaper than reading garbage and rolling on it.
+                    time.sleep(CUBES_MULTI_CARD_DELAY)
                 t2 = time.perf_counter()
                 self._redraws.append(t2 - t1)        # what this game/PC really takes to redraw
                 del self._redraws[:-20]
