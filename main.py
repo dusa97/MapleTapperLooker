@@ -594,6 +594,16 @@ def read_potential_tiers(img, profile=None):
     return tiers
 
 
+POTENTIAL_MAX_PERCENT = 60   # the biggest percentage a single potential line can give is 40% (Boss
+                             # Damage / Ignore Defense); anything past this is a broken read, not a roll
+
+
+def _percent_is_impossible(value):
+    """Is this a percentage no single line could ever show?"""
+    m = re.fullmatch(r"[+-]?(\d+)\s*%", (value or "").strip())
+    return bool(m) and int(m.group(1)) > POTENTIAL_MAX_PERCENT
+
+
 def _snap_stat_name(name):
     """Pull an OCR'd stat name back onto the nearest real one ('Baoss Damage'
     -> 'Boss Damage'). Tesseract garbles a letter often enough that an
@@ -632,7 +642,13 @@ def read_potential_lines(img, profile=None):
             # Tesseract drops the spaces ("MaxHP+120", "-2sec"); put them back
             stat = _snap_stat_name(re.sub(r"(?<=[a-z])(?=[A-Z])", " ", m.group(1)))
             value = re.sub(r"(?<=\d)(?=[A-Za-z])", " ", m.group(2))
-            out.append((stat, value))
+            if _percent_is_impossible(value):
+                # No potential line in the game gives this much. The read is
+                # broken (a fading panel turns "+10%" into "+101%"), so keep the
+                # text but no value - a wrong number must never count as a hit.
+                out.append((stat + " " + value, None))
+            else:
+                out.append((stat, value))
         else:
             out.append((raw, None))
     return out
@@ -3288,6 +3304,10 @@ HELP_SECTIONS = (
 
 
 UPDATE_LOG = (
+    ("2026-09-28", (
+        "Cubes: a line is only read once the panel is fully drawn - text still fading in was being read as nonsense ('Max MP +10%' as 'htax MIF +4701%').",
+        "Cubes: a percentage no line can give (over 60%) is refused instead of counted, so a broken read can never fake a hit.",
+    )),
     ("2026-09-27", (
         "Cubes: every stat line the app reads is remembered by its pixels, so a line it has seen before costs nothing to read again - a roll of familiar lines skips Tesseract entirely (the roll line in the Log shows the hit rate).",
         "Cubes: Glowing rolls on one click + one Enter (Bright still needs two), and a dropped press is re-sent after a wait learned from your own redraw times instead of a flat second.",
@@ -4660,10 +4680,13 @@ class CubesApp:
 
     @staticmethod
     def _same_frame(a, b):
-        """Two grabs of the same box with no pixels moved between them."""
+        """Two grabs of the same box that are, to the pixel, the same picture.
+        Deliberately near-exact: this decides whether a read taken while the
+        panel was still appearing may be trusted, and text fading in changes
+        far fewer pixels than a whole new roll does."""
         x = np.asarray(a.convert("L"), dtype=np.int16)
         y = np.asarray(b.convert("L"), dtype=np.int16)
-        return x.shape == y.shape and (np.abs(x - y) > 40).mean() < CUBES_CHANGE_FRAC
+        return x.shape == y.shape and (np.abs(x - y) > 12).mean() < 0.0002
 
     def _tiers_could_match(self, img, need):
         """Could any panel in this grab have *need* legendary lines? Read from
