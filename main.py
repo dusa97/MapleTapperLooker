@@ -4708,19 +4708,26 @@ class CubesApp:
         the stat text, so this is the cheapest 'the panel is coming' signal
         there is - and it adapts to a slow client on its own."""
         deadline = time.perf_counter() + CUBES_ICONS_MAX_WAIT
+        want = 3 * len(self.panels or [self.region])
+        seen, stable = -1, 0
         while self.looping and self._running:
             ox, oy = self.region[0], self.region[1]
-            ready = True
+            count = 0
             for px, py, pw, ph in (self.panels or [self.region]):
                 crop = img.crop((px - ox, py - oy, px - ox + pw, py - oy + ph))
                 try:
-                    if sum(1 for t in read_potential_tiers(crop, self.profile)[:3] if t) < 3:
-                        ready = False
-                        break
+                    count += sum(1 for t in read_potential_tiers(crop, self.profile)[:3] if t)
                 except Exception:
                     return img               # can't tell - don't hold the run up
-            if ready or time.perf_counter() >= deadline:
+            # Every icon there, or the count has stopped growing (some tiers just
+            # don't classify - never stall the run waiting for an icon that won't come).
+            stable = stable + 1 if count == seen else 0
+            # Every icon there; or the panel is clearly drawn and the count has
+            # stopped moving (some tiers just don't classify - never stall on an
+            # icon that will not come); or we have waited long enough.
+            if count >= want or (stable >= 2 and self._has_text(img)) or time.perf_counter() >= deadline:
                 return img
+            seen = count
             time.sleep(CUBES_CHANGE_POLL)
             img = _grab(self.region)
         return img
