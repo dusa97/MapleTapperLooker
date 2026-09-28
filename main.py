@@ -297,6 +297,8 @@ CUBES_CHANGE_MIN_WAIT = 0.35 # ...and the shortest. The wait between the two is 
 CUBES_CHANGE_SAFETY = 1.5    # this run has actually taken: 1.5x the slowest, so a merely slow roll is never
                              # re-pressed (a needless re-press spends a cube and can roll a match away)
 CUBES_SETTLE_MAX     = 1.5   # after the first changed frame, wait up to this long for the panel to be back (the blink)
+CUBES_INK_SETTLED    = 0.0008 # two frames whose text masks differ by less than this are the same text;
+                              # a panel still fading in differs by far more, a background glow by less
 CUBES_STILL_MAX      = 0.25  # once the text is back, wait at most this long for it to hold still - the Glowing
                              # window never goes fully still (the cube's glow animates), so a long wait is a long stall
 CUBES_MIN_TEXT_INK   = 0.008 # fraction of OCR-mask ink that means "the stat lines are on screen" (real panels 0.02-0.05)
@@ -3305,6 +3307,7 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-28", (
+        "Cubes (x3 especially): the app now waits for the text itself to stop changing before reading, instead of guessing from raw pixels - no more reading three cards mid-fade and rolling on nonsense.",
         "Cubes: a line is only read once the panel is fully drawn - text still fading in was being read as nonsense ('Max MP +10%' as 'htax MIF +4701%').",
         "Cubes: a percentage no line can give (over 60%) is refused instead of counted, so a broken read can never fake a hit.",
     )),
@@ -4679,14 +4682,23 @@ class CubesApp:
         return max(CUBES_CHANGE_MIN_WAIT, min(CUBES_CHANGE_TIMEOUT, slowest * CUBES_CHANGE_SAFETY))
 
     @staticmethod
-    def _same_frame(a, b):
-        """Two grabs of the same box that are, to the pixel, the same picture.
-        Deliberately near-exact: this decides whether a read taken while the
-        panel was still appearing may be trusted, and text fading in changes
-        far fewer pixels than a whole new roll does."""
-        x = np.asarray(a.convert("L"), dtype=np.int16)
-        y = np.asarray(b.convert("L"), dtype=np.int16)
-        return x.shape == y.shape and (np.abs(x - y) > 12).mean() < 0.0002
+    def _ink(img):
+        """The text pixels of a grab - the same mask the OCR is given. Glows and
+        sparkles behind the panel barely touch it, but text fading in changes it
+        on every frame, which is exactly the difference that matters here."""
+        hsv = np.array(img.convert("HSV")).astype(int)
+        return (hsv[..., 2] > OCR_MASK_VALUE_MIN) & (hsv[..., 1] < OCR_MASK_SATURATION_MAX)
+
+    @classmethod
+    def _same_text(cls, a, b):
+        """Is the text in these two grabs finished changing? Compared on the ink
+        mask, so a read is only trusted once every stroke has arrived."""
+        x, y = (a if isinstance(a, np.ndarray) else cls._ink(a)), cls._ink(b)
+        return x.shape == y.shape and (x != y).mean() < CUBES_INK_SETTLED
+
+    @classmethod
+    def _same_frame(cls, a, b):
+        return cls._same_text(a, b)
 
     def _tiers_could_match(self, img, need):
         """Could any panel in this grab have *need* legendary lines? Read from
@@ -4736,30 +4748,23 @@ class CubesApp:
         vanishes for a moment and comes back, so the first 'change' the
         detector sees is often the BLANK. A real panel is 2-5% text ink
         (bright + desaturated pixels, the OCR mask); a blank is ~0%."""
-        hsv = np.array(img.convert("HSV")).astype(int)
-        ink = (hsv[..., 2] > OCR_MASK_VALUE_MIN) & (hsv[..., 1] < OCR_MASK_SATURATION_MAX)
-        return ink.mean() >= CUBES_MIN_TEXT_INK
+        return CubesApp._ink(img).mean() >= CUBES_MIN_TEXT_INK
 
     def _settle(self, img):
         """Return a grab taken once the panel is BACK (has text) and two
         consecutive polls agree (it has finished redrawing) - or, if it keeps
         animating, CUBES_STILL_MAX after the text came back; or the latest
         grab after CUBES_SETTLE_MAX."""
-        prev = np.asarray(img.convert("L"), dtype=np.int16)
+        prev = self._ink(img)
         deadline = time.perf_counter() + CUBES_SETTLE_MAX
-        text_since = None
         while self.looping and self._running and time.perf_counter() < deadline:
             time.sleep(CUBES_CHANGE_POLL)
             img = _grab(self.region)
-            cur = np.asarray(img.convert("L"), dtype=np.int16)
-            still = cur.shape == prev.shape and (np.abs(cur - prev) > 40).mean() < CUBES_CHANGE_FRAC
-            if self._has_text(img):
-                if text_since is None:
-                    text_since = time.perf_counter()
-                if still or time.perf_counter() - text_since >= CUBES_STILL_MAX:
-                    return img
-            else:
-                text_since = None
+            cur = self._ink(img)
+            # Enough text to be a panel, and not one stroke different from the
+            # frame before it: the lines have finished drawing.
+            if cur.mean() >= CUBES_MIN_TEXT_INK and self._same_text(prev, img):
+                return img
             prev = cur
         return img
 
