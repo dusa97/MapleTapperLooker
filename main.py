@@ -3313,6 +3313,7 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-28", (
+        "Cubes (x3): 'has the panel finished drawing?' is judged on the cards themselves now - the moving game background between them was being counted as the text changing.",
         "Cubes: a match now has to survive a second read before the run stops, so a panel caught mid-draw can never end a run on lines that were never there.",
         "Cubes: the app waits for every card's tier icons (drawn before the text) before reading, which adapts to a slow client instead of guessing a delay.",
         "Cubes: a Reset x3 panel gets a moment to draw before the app looks at it - three cards appear more slowly than one.",
@@ -4775,16 +4776,27 @@ class CubesApp:
         hsv = np.array(img.convert("HSV")).astype(int)
         return (hsv[..., 2] > OCR_MASK_VALUE_MIN) & (hsv[..., 1] < OCR_MASK_SATURATION_MAX)
 
-    @classmethod
-    def _same_text(cls, a, b):
+    def _cards_ink(self, img):
+        """The text mask of the cards only. One grab covers all of them, and the
+        gaps in between hold moving game background - judging 'has the panel
+        finished drawing?' on that noise is what let reads land mid-draw."""
+        if len(self.panels) < 2:
+            return self._ink(img)
+        ox, oy = self.region[0], self.region[1]
+        parts = [self._ink(img.crop((px - ox, py - oy, px - ox + pw, py - oy + ph)))
+                 for px, py, pw, ph in self.panels]
+        width = min(p.shape[1] for p in parts)
+        return np.concatenate([p[:, :width] for p in parts], axis=0)
+
+    def _same_text(self, a, b):
         """Is the text in these two grabs finished changing? Compared on the ink
         mask, so a read is only trusted once every stroke has arrived."""
-        x, y = (a if isinstance(a, np.ndarray) else cls._ink(a)), cls._ink(b)
+        x = a if isinstance(a, np.ndarray) else self._cards_ink(a)
+        y = self._cards_ink(b)
         return x.shape == y.shape and (x != y).mean() < CUBES_INK_SETTLED
 
-    @classmethod
-    def _same_frame(cls, a, b):
-        return cls._same_text(a, b)
+    def _same_frame(self, a, b):
+        return self._same_text(a, b)
 
     def _tiers_could_match(self, img, need):
         """Could any panel in this grab have *need* legendary lines? Read from
@@ -4841,12 +4853,12 @@ class CubesApp:
         consecutive polls agree (it has finished redrawing) - or, if it keeps
         animating, CUBES_STILL_MAX after the text came back; or the latest
         grab after CUBES_SETTLE_MAX."""
-        prev = self._ink(img)
+        prev = self._cards_ink(img)
         deadline = time.perf_counter() + CUBES_SETTLE_MAX
         while self.looping and self._running and time.perf_counter() < deadline:
             time.sleep(CUBES_CHANGE_POLL)
             img = _grab(self.region)
-            cur = self._ink(img)
+            cur = self._cards_ink(img)
             # Enough text to be a panel, and not one stroke different from the
             # frame before it: the lines have finished drawing.
             if cur.mean() >= CUBES_MIN_TEXT_INK and self._same_text(prev, img):
