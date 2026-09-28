@@ -298,6 +298,10 @@ CUBES_CHANGE_SAFETY = 1.5    # this run has actually taken: 1.5x the slowest, so
                              # re-pressed (a needless re-press spends a cube and can roll a match away)
 CUBES_SETTLE_MAX     = 1.5   # after the first changed frame, wait up to this long for the panel to be back (the blink)
 CUBES_MULTI_CARD_DELAY = 0.1  # let a multi-card (Reset x3) panel draw before looking at it
+CUBES_ICONS_MAX_WAIT = 0.6    # ...then wait up to this long for every card's tier icons to appear.
+                              # They are drawn before the stat text, so icons present = text coming
+CUBES_HIT_CONFIRMS = 2        # a match must still be there on a fresh read before the run stops;
+                              # one bad read must never end a run or roll a real hit away
 CUBES_INK_SETTLED    = 0.0005 # two frames whose text masks differ by less than this are the same text.
                               # Tight on purpose: a panel 95% drawn still reads wrong (it drops a line),
                               # and its mask is ten times further off than this
@@ -3309,6 +3313,8 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-28", (
+        "Cubes: a match now has to survive a second read before the run stops, so a panel caught mid-draw can never end a run on lines that were never there.",
+        "Cubes: the app waits for every card's tier icons (drawn before the text) before reading, which adapts to a slow client instead of guessing a delay.",
         "Cubes: a Reset x3 panel gets a moment to draw before the app looks at it - three cards appear more slowly than one.",
         "Cubes (x3 especially): the app now waits for the text itself to stop changing before reading, instead of guessing from raw pixels - no more reading three cards mid-fade and rolling on nonsense.",
         "Cubes: a line is only read once the panel is fully drawn - text still fading in was being read as nonsense ('Max MP +10%' as 'htax MIF +4701%').",
@@ -4623,6 +4629,7 @@ class CubesApp:
                     # any text on it is well short of all nine lines. A moment here
                     # is cheaper than reading garbage and rolling on it.
                     time.sleep(CUBES_MULTI_CARD_DELAY)
+                img = self._wait_for_icons(img)
                 t2 = time.perf_counter()
                 self._redraws.append(t2 - t1)        # what this game/PC really takes to redraw
                 del self._redraws[:-20]
@@ -4680,10 +4687,58 @@ class CubesApp:
                 setattr(self, "tiers", tiers), setattr(self, "lines", lines),
                 setattr(self, "results", results), self._show_lines()))
             if hit is not None:
+                # One read is not enough to end a run: look again and make sure
+                # the match is really there (a panel caught mid-draw invents lines).
+                again, again_which = self._confirm_hit(target)
+                if again is None:
+                    self._requests.put(lambda: self._set_status(
+                        f"Roll {self.rolls}: a match vanished when re-read (panel was still drawing) "
+                        f"- kept going."))
+                    continue
+                hit, which = again, again_which
+                self._shown_panel = which
                 self._requests.put(lambda hit=hit: self._on_hit(hit))
                 return
             self._requests.put(lambda timing=timing: self._set_status(
                 f"Roll {self.rolls}: no match yet ({timing})." if self.rolls else "Current item doesn't match - cubing..."))
+
+    def _wait_for_icons(self, img):
+        """Return a grab taken once every card shows its three tier icons, or
+        the latest grab after CUBES_ICONS_MAX_WAIT. The icons are drawn before
+        the stat text, so this is the cheapest 'the panel is coming' signal
+        there is - and it adapts to a slow client on its own."""
+        deadline = time.perf_counter() + CUBES_ICONS_MAX_WAIT
+        while self.looping and self._running:
+            ox, oy = self.region[0], self.region[1]
+            ready = True
+            for px, py, pw, ph in (self.panels or [self.region]):
+                crop = img.crop((px - ox, py - oy, px - ox + pw, py - oy + ph))
+                try:
+                    if sum(1 for t in read_potential_tiers(crop, self.profile)[:3] if t) < 3:
+                        ready = False
+                        break
+                except Exception:
+                    return img               # can't tell - don't hold the run up
+            if ready or time.perf_counter() >= deadline:
+                return img
+            time.sleep(CUBES_CHANGE_POLL)
+            img = _grab(self.region)
+        return img
+
+    def _confirm_hit(self, target):
+        """Read the panel again and look for the match a second time. Returns
+        (hit, panel index) or (None, 0) if it is not there any more."""
+        for _ in range(CUBES_HIT_CONFIRMS):
+            if not (self.looping and self._running):
+                break
+            img = self._settle(self._wait_for_icons(_grab(self.region)))
+            for i, (tiers, lines) in enumerate(self._read_panels(img)):
+                found = target.check(lines, tiers)
+                if found:
+                    self._requests.put(lambda tiers=tiers, lines=lines: (
+                        setattr(self, "tiers", tiers), setattr(self, "lines", lines), self._show_lines()))
+                    return (found, ""), i
+        return None, 0
 
     def _change_wait(self):
         """How long to wait for the panel to change before assuming the press
