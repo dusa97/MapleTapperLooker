@@ -315,6 +315,8 @@ CUBES_PRESS_GAP = 0.05       # seconds between the presses of one sequence (jitt
 CUBES_SEQUENCE_ENTERS = 2    # Enters after the click - the game needs two; a dropped press is
                              # covered by the re-send below, not by extra presses (each is 50 ms per roll)
 CUBES_SEQUENCE_RETRIES = 2   # re-send the sequence this many times if the panel doesn't change
+CUBES_SNAP_COOLDOWN = 1.5    # seconds between saved panel pictures, so a bad run can't fill the disk
+CUBES_SNAP_KEEP = 120        # how many to keep; the oldest go first
 CUBES_LINE_CACHE_MAX = 4000  # stat lines remembered by their pixels; cleared wholesale when full
                              # (14 stats x a handful of values x 3 positions is far below this)
 CUBES_COUNT_EVERY = 10       # re-read the Remaining count every N rolls; in between it is tracked
@@ -3313,6 +3315,7 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-28", (
+        "Cubes: a small picture of the panel (a few KB, in debug_captures) is kept whenever a read looks doubtful and whenever a hit is found, so a bad read can be looked at afterwards.",
         "Log tab: a run starts with a block naming the version, cube type, boxes and goal, and every roll records what each card read plus how long each stage took - enough to diagnose a bad run from a paste.",
         "Cubes (x3): 'has the panel finished drawing?' is judged on the cards themselves now - the moving game background between them was being counted as the text changing.",
         "Cubes: a match now has to survive a second read before the run stops, so a panel caught mid-draw can never end a run on lines that were never there.",
@@ -4707,8 +4710,11 @@ class CubesApp:
             if hit is not None:
                 # One read is not enough to end a run: look again and make sure
                 # the match is really there (a panel caught mid-draw invents lines).
+                self._snap(img, "hit")
                 again, again_which = self._confirm_hit(target)
                 if again is None:
+                    self._last_snap = 0.0           # always keep the picture of a vanished match
+                    self._snap(img, "vanished")
                     self._requests.put(lambda: self._set_status(
                         f"Roll {self.rolls}: a match vanished when re-read (panel was still drawing) "
                         f"- kept going."))
@@ -4721,6 +4727,10 @@ class CubesApp:
                 f"Roll {self.rolls}: no match yet ({timing})." if self.rolls else "Current item doesn't match - cubing..."))
             if self.rolls:      # what every card actually said, so a bad read can be seen afterwards
                 self._requests.put(lambda cards=self._describe_cards(results): self._log("    " + cards))
+                if self._unsure(results):
+                    name = self._snap(img, "partial" if partial else "unsure")
+                    if name:
+                        self._requests.put(lambda n=name: self._log(f"    saved {n} (a line was doubtful)"))
 
     def _wait_for_icons(self, img):
         """Return a grab taken once every card shows its three tier icons, or
@@ -4775,6 +4785,34 @@ class CubesApp:
             return CUBES_CHANGE_TIMEOUT
         slowest = sorted(self._redraws)[-2 if len(self._redraws) > 4 else -1]   # ignore one freak outlier
         return max(CUBES_CHANGE_MIN_WAIT, min(CUBES_CHANGE_TIMEOUT, slowest * CUBES_CHANGE_SAFETY))
+
+    def _snap(self, img, tag):
+        """Save the panel as a small greyscale PNG, for looking at later. Best
+        effort only - a failure here must never disturb a run."""
+        now = time.perf_counter()
+        if now - getattr(self, "_last_snap", 0.0) < CUBES_SNAP_COOLDOWN:
+            return None
+        self._last_snap = now
+        try:
+            DEBUG_CAPTURE_DIR.mkdir(exist_ok=True)
+            name = f"cubes_{tag}_{time.strftime('%Y%m%d_%H%M%S')}.png"
+            img.convert("L").save(DEBUG_CAPTURE_DIR / name, optimize=True)
+            kept = sorted(DEBUG_CAPTURE_DIR.glob("cubes_*.png"), key=lambda f: f.stat().st_mtime)
+            for f in kept[:-CUBES_SNAP_KEEP]:
+                f.unlink(missing_ok=True)
+            return name
+        except Exception:
+            return None
+
+    @staticmethod
+    def _unsure(results):
+        """Did anything about this read look doubtful? A line the OCR could not
+        turn into a value, a card that came back empty, or fewer lines than the
+        tier icons say are there."""
+        for tiers, lines in results:
+            if not lines or any(v is None for _s, v in lines):
+                return True
+        return CubesApp._looks_partial(results)
 
     @staticmethod
     def _describe_cards(results):
