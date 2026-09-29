@@ -315,8 +315,10 @@ CUBES_PRESS_GAP = 0.05       # seconds between the presses of one sequence (jitt
 CUBES_SEQUENCE_ENTERS = 2    # Enters after the click - the game needs two; a dropped press is
                              # covered by the re-send below, not by extra presses (each is 50 ms per roll)
 CUBES_SEQUENCE_RETRIES = 2   # re-send the sequence this many times if the panel doesn't change
-CUBES_SNAP_COOLDOWN = 1.5    # seconds between saved panel pictures, so a bad run can't fill the disk
-CUBES_SNAP_KEEP = 120        # how many to keep; the oldest go first
+CUBES_SNAP_COOLDOWN = 0.3    # seconds between saved panel pictures of the SAME kind; hits and vanished
+                             # matches are never skipped - they are the ones worth having
+CUBES_SNAP_KEEP = 120        # how many to keep OF EACH KIND, so a run of doubtful reads can never push
+                             # the hits out; ~6 KB each, so a full set is a couple of MB
 CUBES_LINE_CACHE_MAX = 4000  # stat lines remembered by their pixels; cleared wholesale when full
                              # (14 stats x a handful of values x 3 positions is far below this)
 CUBES_COUNT_EVERY = 10       # re-read the Remaining count every N rolls; in between it is tracked
@@ -3315,7 +3317,7 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-28", (
-        "Cubes: a small picture of the panel (a few KB, in debug_captures) is kept whenever a read looks doubtful and whenever a hit is found, so a bad read can be looked at afterwards.",
+        "Cubes: a small picture of the panel (about 6 KB, in debug_captures) is kept whenever a read looks doubtful and whenever a hit is found - 120 of each kind, so hits are never pushed out by a run of doubtful reads.",
         "Log tab: a run starts with a block naming the version, cube type, boxes and goal, and every roll records what each card read plus how long each stage took - enough to diagnose a bad run from a paste.",
         "Cubes (x3): 'has the panel finished drawing?' is judged on the cards themselves now - the moving game background between them was being counted as the text changing.",
         "Cubes: a match now has to survive a second read before the run stops, so a panel caught mid-draw can never end a run on lines that were never there.",
@@ -4713,7 +4715,6 @@ class CubesApp:
                 self._snap(img, "hit")
                 again, again_which = self._confirm_hit(target)
                 if again is None:
-                    self._last_snap = 0.0           # always keep the picture of a vanished match
                     self._snap(img, "vanished")
                     self._requests.put(lambda: self._set_status(
                         f"Roll {self.rolls}: a match vanished when re-read (panel was still drawing) "
@@ -4790,14 +4791,17 @@ class CubesApp:
         """Save the panel as a small greyscale PNG, for looking at later. Best
         effort only - a failure here must never disturb a run."""
         now = time.perf_counter()
-        if now - getattr(self, "_last_snap", 0.0) < CUBES_SNAP_COOLDOWN:
+        last = getattr(self, "_last_snap", {})
+        if tag in ("unsure", "partial") and now - last.get(tag, 0.0) < CUBES_SNAP_COOLDOWN:
             return None
-        self._last_snap = now
+        last[tag] = now
+        self._last_snap = last
         try:
             DEBUG_CAPTURE_DIR.mkdir(exist_ok=True)
-            name = f"cubes_{tag}_{time.strftime('%Y%m%d_%H%M%S')}.png"
+            name = f"cubes_{tag}_{time.strftime('%Y%m%d_%H%M%S_')}{int(now * 1000) % 1000:03d}.png"
             img.convert("L").save(DEBUG_CAPTURE_DIR / name, optimize=True)
-            kept = sorted(DEBUG_CAPTURE_DIR.glob("cubes_*.png"), key=lambda f: f.stat().st_mtime)
+            # Pruned per kind: a long run of doubtful reads must not evict the hits.
+            kept = sorted(DEBUG_CAPTURE_DIR.glob(f"cubes_{tag}_*.png"), key=lambda f: f.stat().st_mtime)
             for f in kept[:-CUBES_SNAP_KEEP]:
                 f.unlink(missing_ok=True)
             return name
