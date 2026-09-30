@@ -4833,8 +4833,21 @@ class CubesApp:
         self._last_snap = last
         try:
             DEBUG_CAPTURE_DIR.mkdir(exist_ok=True)
-            name = f"cubes_{tag}_{time.strftime('%Y%m%d_%H%M%S_')}{int(now * 1000) % 1000:03d}.png"
-            img.convert("L").save(DEBUG_CAPTURE_DIR / name, optimize=True)
+            # The tiers go in the name too (l/u/e/r per line, "-" for none), so a
+            # folder listing already says what each roll was without opening it.
+            marks = []
+            ox, oy = self.region[0], self.region[1]
+            for px, py, pw, ph in (self.panels or [self.region]):
+                try:
+                    crop = img.crop((px - ox, py - oy, px - ox + pw, py - oy + ph))
+                    marks.append("".join((t or "-")[0] for t in read_potential_tiers(crop, self.profile)[:3]))
+                except Exception:
+                    marks.append("???")
+            name = (f"cubes_{tag}_{time.strftime('%Y%m%d_%H%M%S_')}{int(now * 1000) % 1000:03d}"
+                    f"_{'-'.join(marks)}.png")
+            # Colour, not greyscale: the tier of each line is only in the icon
+            # colour, and a picture without it can't say what the roll really was.
+            img.convert("RGB").save(DEBUG_CAPTURE_DIR / name, optimize=True)
             # Pruned per kind: a long run of doubtful reads must not evict the hits.
             kept = sorted(DEBUG_CAPTURE_DIR.glob(f"cubes_{tag}_*.png"), key=lambda f: f.stat().st_mtime)
             for f in kept[:-CUBES_SNAP_KEEP]:
