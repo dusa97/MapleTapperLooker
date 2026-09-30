@@ -292,9 +292,12 @@ POTENTIAL_STATS = (
 # A timer would read stale lines on a slow client and could stop on the previous roll.
 CUBES_CHANGE_POLL   = 0.03   # seconds between cheap pixel-difference checks while waiting for the redraw
 CUBES_CHANGE_FRAC   = 0.004  # fraction of pixels that must differ to count as "the panel changed"
-CUBES_CHANGE_TIMEOUT = 1.0   # longest wait for the panel to change before assuming the press was dropped
-CUBES_CHANGE_MIN_WAIT = 0.35 # ...and the shortest. The wait between the two is learned from the redraws
-CUBES_CHANGE_SAFETY = 1.5    # this run has actually taken: 1.5x the slowest, so a merely slow roll is never
+CUBES_CHANGE_TIMEOUT = 1.5   # longest wait for the panel to change before assuming the press was dropped.
+                             # Deliberately generous: waiting half a second too long costs half a second,
+                             # while pressing again too early spends a cube and can roll away a result
+                             # nobody ever saw
+CUBES_CHANGE_MIN_WAIT = 0.6  # ...and the shortest. The wait between the two is learned from the redraws
+CUBES_CHANGE_SAFETY = 3.0    # this run has actually taken: 3x the slowest, so a merely slow roll is never
                              # re-pressed (a needless re-press spends a cube and can roll a match away)
 CUBES_SETTLE_MAX     = 1.5   # after the first changed frame, wait up to this long for the panel to be back (the blink)
 CUBES_MULTI_CARD_DELAY = 0.1  # let a multi-card (Reset x3) panel draw before looking at it
@@ -3454,6 +3457,7 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-30", (
+        "Cubes: the app waits longer before deciding a press was dropped (3x your slowest redraw, at least 0.6s). It was re-pressing on merely slow rolls, which spends a cube and can roll away a result you never saw.",
         "Cubes: a panel whose lines will not read is re-read a few times and then the run STOPS - it no longer keeps pressing, which was spending cubes on rolls nobody could see.",
         "Cubes: a line with no number in it (like 'HP Recovery Items and Skills..') is no longer mistaken for a half-drawn panel - that was costing every such roll an extra read.",
         "Cubes: for lines written with a minus in game (Skill Cooldowns -2 sec, Skill MP Cost -17%) type just the number - 2 and -2 mean the same thing.",
