@@ -3457,6 +3457,7 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-30", (
+        "Cubes: a panel that comes back showing the same lines is not counted as a roll any more - one press was being counted as two, the second being the tail of the first one's animation.",
         "Cubes: the app waits longer before deciding a press was dropped (3x your slowest redraw, at least 0.6s). It was re-pressing on merely slow rolls, which spends a cube and can roll away a result you never saw.",
         "Cubes: a panel whose lines will not read is re-read a few times and then the run STOPS - it no longer keeps pressing, which was spending cubes on rolls nobody could see.",
         "Cubes: a line with no number in it (like 'HP Recovery Items and Skills..') is no longer mistaken for a half-drawn panel - that was costing every such roll an extra read.",
@@ -4740,6 +4741,9 @@ class CubesApp:
         img = _grab(self.region)
         first = True
         self._left_guess, self._left_since = None, 0   # Remaining count, tracked between reads
+        press_now = True                 # False while waiting out a change that was not a real roll
+        first_read = True                # the read before any press is not a roll
+        last_seen = None                 # the lines already judged, to spot a repeat of them
         self._redraws = []               # recent redraw times; the re-press wait is learned from them
         while self.looping and self._running:
             if not first:
@@ -4759,14 +4763,15 @@ class CubesApp:
                 # cubes left and the dialog open - one dropped input.)
                 t0 = time.perf_counter()
                 repressed = 0
-                for attempt in range(1 + CUBES_SEQUENCE_RETRIES):
+                for attempt in range((1 + CUBES_SEQUENCE_RETRIES) if press_now else 1):
                     if attempt:
                         repressed = attempt
                         self._requests.put(lambda a=attempt: self._set_status(
                             f"No change in {self._change_wait():.2f}s - pressing again "
                             f"({a}/{CUBES_SEQUENCE_RETRIES}). A dropped press, or the game was slow "
                             f"(then this spends another cube)."))
-                    self._press_sequence()
+                    if press_now:
+                        self._press_sequence()
                     t1 = time.perf_counter()
                     deadline = time.perf_counter() + self._change_wait()
                     blanked = False
@@ -4788,6 +4793,9 @@ class CubesApp:
                 if not self.looping:
                     break
                 if img is None:
+                    if not press_now:
+                        press_now = True      # the repeat settled; press again next time round
+                        continue
                     self._requests.put(lambda: self._stop_loop(
                         f"Stopped after {self.rolls} roll(s): the panel did not change after "
                         f"{1 + CUBES_SEQUENCE_RETRIES} tries (out of cubes, or the dialog closed?)."))
@@ -4821,7 +4829,6 @@ class CubesApp:
                 if skip and not self._tiers_could_match(img, need_legendary):
                     results = "skip"                  # no read at all: the tiers cannot satisfy the goal
                 t3 = time.perf_counter()
-                self.rolls += 1
             else:
                 results = None
             first = False
@@ -4846,6 +4853,20 @@ class CubesApp:
                 time.sleep(CUBES_CHANGE_POLL * 3)
                 img = self._settle(self._wait_for_icons(_grab(self.region)))
                 results = self._read_panels(img)
+            if last_seen is not None and results == last_seen:
+                # The same lines as the roll just judged: the panel did not roll,
+                # the detector caught the end of the previous animation. Not a
+                # roll, and nothing to press - wait for the real change.
+                press_now = False
+                self._requests.put(lambda r=self.rolls: self._set_status(
+                    f"Roll {r}: panel repeated itself - waiting for the real change."))
+                continue
+            press_now = True
+            last_seen = results
+            if first_read:
+                first_read = False
+            else:
+                self.rolls += 1
             if self._unsure(results):
                 shown = self._describe_cards(results)
                 self._snap(img, "unreadable")
