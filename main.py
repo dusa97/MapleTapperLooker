@@ -762,7 +762,9 @@ def read_potential_lines(img, profile=None):
                 # No potential line in the game gives this much. The read is
                 # broken (a fading panel turns "+10%" into "+101%"), so keep the
                 # text but no value - a wrong number must never count as a hit.
-                out.append((stat + " " + value, None))
+                # Marked the same way as a line the tier table throws out, so it
+                # is treated as doubtful and the panel is read again.
+                out.append((f"?? {stat} {value}", None))
             else:
                 out.append((stat, value))
         else:
