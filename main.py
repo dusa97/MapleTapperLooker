@@ -318,7 +318,8 @@ CUBES_MIN_TEXT_INK   = 0.008 # fraction of OCR-mask ink that means "the stat lin
 # between presses so the game registers each. No continuous spam: a fixed sequence can't
 # land a press mid-read, so there is nothing to freeze and no race with the change detector.
 CUBES_PRESS_GAP = 0.05       # seconds between the presses of one sequence (jittered +/-30%)
-CUBES_SEQUENCE_ENTERS = 2    # Enters after the click - the game needs two; a dropped press is
+CUBES_SEQUENCE_ENTERS = 3    # Enters after the click - the default; each cube type sets its own. A
+                             # dropped press is
                              # covered by the re-send below, not by extra presses (each is 50 ms per roll)
 CUBES_SEQUENCE_RETRIES = 2   # re-send the sequence this many times if the panel doesn't change
 CUBES_SNAP_COOLDOWN = 0.3    # seconds between saved panel pictures of the SAME kind; hits and vanished
@@ -404,9 +405,9 @@ class CubeProfile:
 
 
 CUBE_PROFILES = {
-    # One click + one Enter and the Glowing cube rolls straight away; a second
-    # Enter is just 50 ms of stray input per roll.
-    "glowing": CubeProfile("Glowing", POTENTIAL_LABEL_PATH, enters=1),
+    # Glowing rolls on one click + one Enter; the second is a spare in case one
+    # gets dropped. Bright needs two, so it sends three.
+    "glowing": CubeProfile("Glowing", POTENTIAL_LABEL_PATH, enters=2),
     # Bright cubes use the game's Reset dialog: BEFORE and AFTER cards side by side, the new
     # roll shown BEFORE you commit, "Reset x1" to roll again (which makes AFTER the new
     # BEFORE). Measured on assets/reference/bright_example.png: Flames' own "Combat Power
@@ -420,7 +421,7 @@ CUBE_PROFILES = {
                           icon_x=(9 / 202, 19 / 202), icon_y=(6 / 70, 16 / 70), line_step=24 / 70,
                           pick_label="rightmost", cubes_left="count",
                           count_box=(-258 / 146, 213 / 10, 58 / 146, 20 / 10),
-                          commit_on_match=False),
+                          commit_on_match=False, enters=3),
 }
 CUBE_TYPE_DEFAULT = "glowing"
 # The Cubes tab is tinted with the chosen cube's colour: the Glowing cube's cyan
@@ -693,7 +694,10 @@ def _percent_is_impossible(value):
 # Every line name the app can recognise - the ones it can aim for, plus the
 # ones it only has to read without mistaking them for garbled text.
 KNOWN_LINE_NAMES = tuple(n for n, _w, _u in POTENTIAL_STATS) + (
-    "Critical Rate", "Damage", "Max HP", "Max MP", "Skill MP Cost", "DEF")
+    "Critical Rate", "Damage", "Max HP", "Max MP", "Skill MP Cost", "DEF",
+    # Sentence lines - no number to read, but real lines all the same. Tesseract
+    # drops the spaces, so the squashed form is listed as well.
+    "HP Recovery Items and Skills", "HPRecoveryItemsandSkills")
 NAME_SNAP_CUTOFF = 0.85   # this close to a real name: correct it ("Baoss Damage" -> "Boss Damage")
 NAME_SUSPECT_CUTOFF = 0.5 # merely this close: a mangled name, not a line we don't know - refuse it.
                           # Real lines the table does not list score well below this ("Speed" 0.32,
