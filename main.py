@@ -1069,9 +1069,11 @@ def _is_all_stats(line):
 
 
 class LegendaryOnly:
-    """Wrap a goal so it only sees legendary lines, and additionally
-    requires at least *need* (2 or 3) of the three lines to be legendary.
-    Set per goal kind; the other goals are unaffected."""
+    """Wrap a goal so the item must ALSO show at least *need* (2 or 3) of its
+    three lines at legendary tier. It is a requirement on the item, not a
+    filter on what counts: the goal still sees every line, so an item of
+    13% + 10% + 10% STR is 33% whatever the tiers are - it simply has to carry
+    the legendary lines as well. Set per goal; the others are unaffected."""
     def __init__(self, goal, need=3):
         self.goal = goal
         self.need = need
@@ -1080,21 +1082,17 @@ class LegendaryOnly:
         return self.goal.describe() + (" (all 3 lines legendary)" if self.need >= 3
                                        else f" ({self.need}+ legendary lines)")
 
-    @staticmethod
-    def _legendary(lines, tiers):
-        return [line if tier == "legendary" else (line[0], None) for line, tier in zip(lines, tiers)]
-
     def min_legendary(self):
         return max(self.need, _min_legendary(self.goal))
 
     def check(self, lines, tiers):
         if sum(1 for t in tiers[:3] if t == "legendary") < self.need:
             return None
-        return self.goal.check(self._legendary(lines, tiers), tiers)
+        return self.goal.check(lines, tiers)
 
     def progress(self, lines, tiers):
         n = sum(1 for t in tiers[:3] if t == "legendary")
-        return self.goal.progress(self._legendary(lines, tiers), tiers) + f"  [{n}/3 legendary, need {self.need}]"
+        return self.goal.progress(lines, tiers) + f"  [{n}/3 legendary, need {self.need}]"
 
 
 class CombinedGoal:
@@ -1118,14 +1116,7 @@ class CombinedGoal:
                 out[-1].append(g)
             else:
                 out.append([g])
-        return [self._level_legendary(grp) for grp in out]
-
-    @staticmethod
-    def _level_legendary(group):
-        need = max(_min_legendary(g) for g in group)
-        if need <= 0:
-            return group
-        return [LegendaryOnly(g.goal if isinstance(g, LegendaryOnly) else g, need) for g in group]
+        return out
 
     def describe(self):
         groups = self.groups()
@@ -3510,8 +3501,8 @@ HELP_SECTIONS = (
         "Reach a total: one stat and a minimum, e.g. STR >= 30%. All three lines of that stat are added up (All Stats lines too, if the checkbox below is on) and the run stops when the sum reaches the minimum.",
         "Combination of stats: tick the stats you would accept, then pick how many of the 3 lines must come from that set (1, 2 or 3). Example: tick STR and All Stats, need 2 - STR 12% + All Stats 6% + Speed 4% is a match.",
         "Lines per stat: rows of [stat] x [1 / 2 / 3]. Each row says how many lines of that stat the item must have; '+ Add a stat' adds a row (up to 3 rows, 3 lines in total). Example: LUK x2 + All Stats x1 matches only an item with two LUK lines and one All Stats line.",
-        "In a group of ANDs the strictest legendary setting applies to all of them: the goals have to hold on the same roll, so they are judged on the same lines rather than each seeing a different version of the item.",
-        "Legendary: each goal has its own any / 2+ / all 3 setting - how many of the three lines must be legendary tier (read from the line's icon colour) on top of the goal itself.",
+        "Each goal keeps its own legendary setting, even inside an AND group - 'STR >= 33% with 2 legendary lines AND 2 lines of STR at any tier' means exactly that.",
+        "Legendary: each goal has its own any / 2+ / all 3 setting - how many of the three lines the ITEM must show at legendary tier, on top of the goal itself. It is not a filter: with '2+ legendary' an item of 13% + 10% + 10% STR still counts as 33%, it just also has to show two legendary lines.",
         "All Stats counts as STR / DEX / INT / LUK: with this on, an All Stats line counts as a line of each base stat for Reach a total and Lines per stat.",
         "Reset: puts every Looking for control back to its default (the cube type stays).",
         "Presets: goal, cube type and the All Stats setting are saved per item name; pick one from the PRESET menu to load it, Save as... to store the current settings, Delete to remove it.",
@@ -3526,6 +3517,8 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-30", (
+        "Cubes: a goal's legendary setting is a requirement on the item, not a filter on what counts - an item of 13% + 10% + 10% STR now reads as 33% and separately has to show the legendary lines you asked for.",
+        "Cubes: each goal keeps its own legendary setting inside an AND group, instead of all of them taking the strictest.",
         "Cubes: a freshly rolled card is drawn dimmer for about half a second, and the app was throwing that text away and waiting for it to brighten. Brightness is now judged relative to the card, which more than halves the time to a correct read (0.86s to 0.36s, measured on a recording).",
         "Cubes: the app no longer looks at the panel for the first 0.3s after a roll - the game repaints the PREVIOUS roll's lines there, and they read perfectly as the wrong roll.",
         "Cubes: the app learns a line the moment it reads it cleanly twice - line by line, so the good lines beside a garbled one are learned too, and never on the strength of a single reading.",
