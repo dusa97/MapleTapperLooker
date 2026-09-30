@@ -327,6 +327,9 @@ CUBES_SEQUENCE_ENTERS = 3    # Enters after the click - the default; each cube t
 CUBES_SEQUENCE_RETRIES = 2   # re-send the sequence this many times if the panel doesn't change
 CUBES_SNAP_COOLDOWN = 0.3    # seconds between saved panel pictures of the SAME kind; hits and vanished
                              # matches are never skipped - they are the ones worth having
+CUBES_SNAP_CONTEXT_PAD = 260 # pixels of screen kept around the box in the "_game" picture, so a bad
+                             # read can be checked against what the game was actually showing
+CUBES_SNAP_CONTEXT_SCALE = 2 # ...saved at 1/this size (about 120 KB instead of 330 KB)
 CUBES_SNAP_KEEP = 120        # how many to keep OF EACH KIND, so a run of doubtful reads can never push
                              # the hits out; ~6 KB each, so a full set is a couple of MB
 CUBES_LINE_CACHE_MAX = 4000  # stat lines remembered by their pixels; cleared wholesale when full
@@ -3465,6 +3468,7 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-30", (
+        "Cubes: every saved picture now has a '_game' picture beside it - a wider shot of the screen at that moment, so what the app read can be checked against what the game was showing.",
         "Cubes: a short stat name that is not one of STR / DEX / INT / LUK / DEF is refused outright - misreads like 'QEN', 'CEs' and 'STF' were passing as unknown lines.",
         "Cubes: a panel that comes back showing the same lines is not counted as a roll any more - one press was being counted as two, the second being the tail of the first one's animation.",
         "Cubes: the app waits longer before deciding a press was dropped (3x your slowest redraw, at least 0.6s). It was re-pressing on merely slow rolls, which spends a cube and can roll away a result you never saw.",
@@ -5030,13 +5034,31 @@ class CubesApp:
             # Colour, not greyscale: the tier of each line is only in the icon
             # colour, and a picture without it can't say what the roll really was.
             img.convert("RGB").save(DEBUG_CAPTURE_DIR / name, optimize=True)
+            self._snap_context(name)
             # Pruned per kind: a long run of doubtful reads must not evict the hits.
-            kept = sorted(DEBUG_CAPTURE_DIR.glob(f"cubes_{tag}_*.png"), key=lambda f: f.stat().st_mtime)
+            kept = [f for f in sorted(DEBUG_CAPTURE_DIR.glob(f"cubes_{tag}_*.png"),
+                                      key=lambda f: f.stat().st_mtime)
+                    if not f.name.endswith("_game.png")]
             for f in kept[:-CUBES_SNAP_KEEP]:
                 f.unlink(missing_ok=True)
+                f.with_name(f.name.replace(".png", "_game.png")).unlink(missing_ok=True)
             return name
         except Exception:
             return None
+
+    def _snap_context(self, name):
+        """The screen around the box, so the picture the app read can be checked
+        against what the game was showing at that moment. Half scale - it is for
+        reading with your eyes, not for OCR."""
+        try:
+            pad = CUBES_SNAP_CONTEXT_PAD
+            left, top, width, height = (int(v) for v in self.region)
+            shot = _grab((left - pad, top - pad, width + 2 * pad, height + 2 * pad))
+            small = shot.resize((max(1, shot.width // CUBES_SNAP_CONTEXT_SCALE),
+                                 max(1, shot.height // CUBES_SNAP_CONTEXT_SCALE)))
+            small.save(DEBUG_CAPTURE_DIR / name.replace(".png", "_game.png"), optimize=True)
+        except Exception:
+            pass                         # never let a picture disturb a run
 
     @staticmethod
     def _unsure(results):
