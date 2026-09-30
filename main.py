@@ -302,6 +302,9 @@ CUBES_ICONS_MAX_WAIT = 0.6    # ...then wait up to this long for every card's ti
                               # They are drawn before the stat text, so icons present = text coming
 CUBES_HIT_CONFIRMS = 2        # a match must still be there on a fresh read before the run stops;
                               # one bad read must never end a run or roll a real hit away
+CUBES_TEXT_SETTLE_CAP = 0.6  # once the text is up, wait at most this long for it to hold perfectly
+                             # still. Something in the panel always animates a little, and a run must
+                             # not pay the full settle timeout on every roll because of it
 CUBES_INK_SETTLED    = 0.0005 # two frames whose text masks differ by less than this are the same text.
                               # Tight on purpose: a panel 95% drawn still reads wrong (it drops a line),
                               # and its mask is ten times further off than this
@@ -671,7 +674,10 @@ def _drop_impossible(lines, tiers):
     for i, (stat, value) in enumerate(lines):
         tier = tiers[i] if i < len(tiers) else None
         broken = _name_is_suspect(stat) or not _value_fits_tier(stat, tier, value)
-        out.append((f"{stat} {value}", None) if value and broken else (stat, value))
+        # "??" marks a line the gates threw out, so the log says which one and
+        # nothing downstream mistakes it for a line that simply has no number
+        # (a sentence line like "HP Recovery Items and Skills.." has none).
+        out.append((f"?? {stat} {value}", None) if value and broken else (stat, value))
     return out
 
 
@@ -3439,6 +3445,7 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-30", (
+        "Cubes: a line with no number in it (like 'HP Recovery Items and Skills..') is no longer mistaken for a half-drawn panel - that was costing every such roll an extra read.",
         "Cubes: for lines written with a minus in game (Skill Cooldowns -2 sec, Skill MP Cost -17%) type just the number - 2 and -2 mean the same thing.",
         "Cubes: a stat name that is nearly right but not quite ('Gtiax MP', 'WNT', 'Bass Darnage') is either corrected to the real line or refused outright, so a broken read cannot pass as a roll.",
         "Cubes: a value the game cannot give at that tier is refused - a unique INT line can only be 9% or 10%, so a read of 70% is treated as a misread and the panel is read again.",
@@ -3612,6 +3619,7 @@ class CubesApp:
         if self.profile.pick_label != "rightmost":     # several cards only exist on the Bright reset dialog
             self.panels = self.panels[:1]
         self.count_box = self._load_box("count")      # the Remaining pill, located by F7 (Bright)
+        self._settle_capped = 0                       # rolls where the panel never fully stopped moving
         self._line_cache = {}                         # line pixels -> the (stat, value) already read from them
         self._cache_hits = self._cache_misses = 0
         self.lines = []
@@ -4825,6 +4833,7 @@ class CubesApp:
                 redo = ", RE-READ (was still drawing)" if partial else ""
                 seen = self._cache_hits + self._cache_misses
                 cached = f", cache {100 * self._cache_hits // max(1, seen)}%" if seen else ""
+                cached += f", settle capped x{self._settle_capped}" if self._settle_capped else ""
                 timing = (f"{t4 - t0:.1f}s: press {t1 - t0:.2f}{extra}, redraw {t2 - t1:.2f}, "
                           f"icons {icons_took:.2f}, settle {t3 - t2:.2f}, read {t4 - t3:.2f}"
                           f"{cached}{redo}")
@@ -4955,11 +4964,12 @@ class CubesApp:
 
     @staticmethod
     def _unsure(results):
-        """Did anything about this read look doubtful? A line the OCR could not
-        turn into a value, a card that came back empty, or fewer lines than the
-        tier icons say are there."""
-        for tiers, lines in results:
-            if not lines or any(v is None for _s, v in lines):
+        """Did anything about this read look doubtful? A line the gates threw
+        out, a card that came back empty, or fewer lines than the tier icons say
+        are there. A line with no number is NOT doubtful on its own - the game
+        has plenty of those."""
+        for _tiers, lines in results:
+            if not lines or any(str(s).startswith("?? ") for s, _v in lines):
                 return True
         return CubesApp._looks_partial(results)
 
@@ -4975,12 +4985,12 @@ class CubesApp:
 
     @staticmethod
     def _looks_partial(results):
-        """A card showing three tier icons but fewer than three readable lines
-        was caught mid-draw - the icons appear before the text finishes."""
+        """A card showing more tier icons than it has lines was caught mid-draw -
+        the icons appear before the text finishes. Counted on lines PRESENT, not
+        lines with a number: plenty of real lines carry no number at all
+        ("HP Recovery Items and Skills.."), and they are not a broken read."""
         for tiers, lines in results:
-            icons = sum(1 for t in tiers[:3] if t)
-            read = sum(1 for _s, v in lines if v)
-            if icons > read:
+            if sum(1 for t in tiers[:3] if t) > len(lines[:3]):
                 return True
         return False
 
@@ -5071,14 +5081,26 @@ class CubesApp:
         grab after CUBES_SETTLE_MAX."""
         prev = self._cards_ink(img)
         deadline = time.perf_counter() + CUBES_SETTLE_MAX
+        text_since = None
         while self.looping and self._running and time.perf_counter() < deadline:
             time.sleep(CUBES_CHANGE_POLL)
             img = _grab(self.region)
             cur = self._cards_ink(img)
+            has_text = cur.mean() >= CUBES_MIN_TEXT_INK
             # Enough text to be a panel, and not one stroke different from the
             # frame before it: the lines have finished drawing.
-            if cur.mean() >= CUBES_MIN_TEXT_INK and self._same_text(prev, img):
+            if has_text and self._same_text(prev, img):
                 return img
+            if has_text:
+                # Something in the card keeps moving - a glow, a sparkle, a
+                # cursor. Waiting for perfect stillness would cost the whole
+                # 1.5 s every roll, so give the text a bounded moment instead.
+                text_since = text_since or time.perf_counter()
+                if time.perf_counter() - text_since >= CUBES_TEXT_SETTLE_CAP:
+                    self._settle_capped += 1
+                    return img
+            else:
+                text_since = None
             prev = cur
         return img
 
