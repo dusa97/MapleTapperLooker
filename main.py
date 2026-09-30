@@ -316,6 +316,11 @@ CUBES_INK_SETTLED    = 0.0005 # two frames whose text masks differ by less than 
                               # and its mask is ten times further off than this
 CUBES_STILL_MAX      = 0.25  # once the text is back, wait at most this long for it to hold still - the Glowing
                              # window never goes fully still (the cube's glow animates), so a long wait is a long stall
+CUBES_BLANK_INK      = 0.0002 # below this the panel is really gone. The mask collapses fast as the
+                              # panel dims (70% brightness is already 0.001), so only a near-black
+                              # frame counts - a dim one must not read as "the panel vanished"
+CUBES_BLANK_POLLS    = 2      # ...and it has to stay gone this many polls running. One dim frame was
+                              # being read as a whole roll, which then came back showing the same lines
 CUBES_MIN_TEXT_INK   = 0.008 # fraction of OCR-mask ink that means "the stat lines are on screen" (real panels 0.02-0.05)
 # One cube is exactly one fixed input sequence - left click, Enter, Enter - with a short gap
 # between presses so the game registers each. No continuous spam: a fixed sequence can't
@@ -3468,6 +3473,7 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-30", (
+        "Cubes: a single dim frame is no longer mistaken for the panel blinking out - that was being counted as a roll, which then 'repeated itself' and cost a wait on nearly every roll.",
         "Cubes: every saved picture now has a '_game' picture beside it - a wider shot of the screen at that moment, so what the app read can be checked against what the game was showing.",
         "Cubes: a short stat name that is not one of STR / DEX / INT / LUK / DEF is refused outright - misreads like 'QEN', 'CEs' and 'STF' were passing as unknown lines.",
         "Cubes: a panel that comes back showing the same lines is not counted as a roll any more - one press was being counted as two, the second being the tail of the first one's animation.",
@@ -4798,7 +4804,7 @@ class CubesApp:
                         self._press_sequence()
                     t1 = time.perf_counter()
                     deadline = time.perf_counter() + self._change_wait()
-                    blanked = False
+                    blanked, blank_polls = False, 0
                     while self.looping and self._running and time.perf_counter() < deadline:
                         time.sleep(CUBES_CHANGE_POLL)
                         cur_img = _grab(self.region)
@@ -4806,12 +4812,16 @@ class CubesApp:
                         if cur.shape == before.shape and (np.abs(cur - before) > 40).mean() >= CUBES_CHANGE_FRAC:
                             img = cur_img
                             break
-                        has_text = self._has_text(cur_img)
-                        if not has_text:
-                            blanked = True          # the panel went away: the press landed
-                        elif blanked:
-                            img = cur_img           # ...and it is back, even if it repainted the same lines
-                            break
+                        ink = self._cards_ink(cur_img).mean()
+                        if ink < CUBES_BLANK_INK:
+                            blank_polls += 1        # the panel really went away, not a flicker
+                            if blank_polls >= CUBES_BLANK_POLLS:
+                                blanked = True      # the press landed
+                        else:
+                            blank_polls = 0
+                            if blanked and ink >= CUBES_MIN_TEXT_INK:
+                                img = cur_img       # ...and it is back, even if it repainted the same lines
+                                break
                     if img is not None or not self.looping:
                         break
                 if not self.looping:
