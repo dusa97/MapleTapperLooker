@@ -947,6 +947,15 @@ def _line_is_stat(line, words, unit="%"):
             and "all" in haystack and "stat" in haystack)
 
 
+def _progress_rows(goal, lines, tiers):
+    """A goal's progress as [(text, met)] - one row per goal, so the display can
+    highlight the one that is actually satisfied."""
+    rows = getattr(goal, "progress_rows", None)
+    if rows is not None:
+        return rows(lines, tiers)
+    return [(goal.progress(lines, tiers), bool(goal.check(lines, tiers)))]
+
+
 def _min_legendary(goal):
     """Fewest legendary lines any satisfying roll must have. 0 when the goal
     doesn't care. Used to skip the OCR on a roll the tier colours already rule
@@ -1094,6 +1103,9 @@ class LegendaryOnly:
         n = sum(1 for t in tiers[:3] if t == "legendary")
         return self.goal.progress(lines, tiers) + f"  [{n}/3 legendary, need {self.need}]"
 
+    def progress_rows(self, lines, tiers):
+        return [(self.progress(lines, tiers), bool(self.check(lines, tiers)))]
+
 
 class CombinedGoal:
     """Several goals joined by the OR / AND each one carries. AND binds tighter
@@ -1144,21 +1156,27 @@ class CombinedGoal:
         return "  +  ".join(met) if met else None
 
     def progress(self, lines, tiers):
-        # One line per goal, with brackets round each group of ANDs so it is
-        # clear which ones have to hold together and which are alternatives.
+        return "\n\u2192 ".join(text for text, _met in self.progress_rows(lines, tiers))
+
+    def progress_rows(self, lines, tiers):
+        """One row per goal, each saying whether it is met, with brackets round
+        a group of ANDs so it is clear which have to hold together. A goal only
+        counts as met when its whole group is - half an AND is not a match."""
         groups = self.groups()
         out = []
         for i, grp in enumerate(groups):
             if i:
-                out.append("OR")
-            if len(grp) > 1 and len(groups) > 1:
-                for k, g in enumerate(grp):
+                out.append(("OR", False))
+            whole_group = all(g.check(lines, tiers) for g in grp)
+            for k, g in enumerate(grp):
+                met = bool(g.check(lines, tiers)) and whole_group
+                if len(grp) > 1 and len(groups) > 1:
                     lead = "  ( " if k == 0 else "  AND "
-                    out.append(lead + g.progress(lines, tiers) + (" )" if k == len(grp) - 1 else ""))
-            else:
-                for k, g in enumerate(grp):
-                    out.append(("AND  " if k else "") + g.progress(lines, tiers))
-        return "\n\u2192 ".join(out)
+                    tail = " )" if k == len(grp) - 1 else ""
+                    out.append((lead + g.progress(lines, tiers) + tail, met))
+                else:
+                    out.append((("AND  " if k else "") + g.progress(lines, tiers), met))
+        return out
 
 
 def line_matches_target(line, target):
@@ -3517,6 +3535,7 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-30", (
+        "Cubes: when a roll matches, the goal that actually matched is the one highlighted - with several goals, knowing that something matched was not the same as knowing which one.",
         "Cubes: a goal's legendary setting is a requirement on the item, not a filter on what counts - an item of 13% + 10% + 10% STR now reads as 33% and separately has to show the legendary lines you asked for.",
         "Cubes: each goal keeps its own legendary setting inside an AND group, instead of all of them taking the strictest.",
         "Cubes: a freshly rolled card is drawn dimmer for about half a second, and the app was throwing that text away and waiting for it to brighten. Brightness is now judged relative to the card, which more than halves the time to a correct read (0.86s to 0.36s, measured on a recording).",
@@ -3801,7 +3820,12 @@ class CubesApp:
             total = tk.Label(col, text="-", fg=UI_TEXT, bg=UI_SURFACE, font=("Segoe UI", 12, "bold"),
                              anchor="w", justify="left")
             total.pack(fill="x")
-            self._cols.append({"frame": col, "head": head, "lines": lines, "dots": dots, "total": total})
+            # One label per goal, so the one that is actually met can be the
+            # only thing highlighted.
+            steps = tk.Frame(col, bg=UI_SURFACE)
+            steps.pack(fill="x")
+            self._cols.append({"frame": col, "head": head, "lines": lines, "dots": dots,
+                               "total": total, "steps": steps, "step_labels": []})
         self._line_labels, self._line_dots = self._cols[0]["lines"], self._cols[0]["dots"]
         self._total_label = self._cols[0]["total"]
         self._status = tk.Label(card, text="", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9), anchor="w")
@@ -4740,12 +4764,28 @@ class CubesApp:
             totals = total_potential_lines(good)
             text = "\n".join(f"{stat}  {value}" for stat, value in totals) if totals else "-"
             matched = self.target is not None and good and self.target.check(lines, tiers)
-            if self.target is not None and good:
-                text += "\n\u2192 " + self.target.progress(lines, tiers)
+            rows = _progress_rows(self.target, lines, tiers) if (self.target is not None and good) else []
+            self._show_steps(col, rows)
             col["total"].config(text=text, fg=UI_ACCENT if matched else UI_TEXT)
             col["head"].config(fg=UI_ACCENT if matched else UI_MUTED)
         which = f" (AFTER #{self._shown_panel + 1} of {len(self.panels)})" if len(self.panels) > 1 else ""
         self._set_status(f"Read {good_total} line(s){which}." if good_total else "Nothing readable in the box.")
+
+    def _show_steps(self, col, rows):
+        """One line per goal under the total, the met one in the accent colour."""
+        labels = col["step_labels"]
+        wrap = col["total"].cget("wraplength") or 0
+        while len(labels) < len(rows):
+            lbl = tk.Label(col["steps"], text="", fg=UI_MUTED, bg=UI_SURFACE, anchor="w",
+                           justify="left", font=("Segoe UI", 9), wraplength=wrap)
+            lbl.pack(fill="x")
+            labels.append(lbl)
+        for lbl, (text, met) in zip(labels, rows):
+            lbl.config(text="\u2192 " + text, fg=UI_ACCENT if met else UI_MUTED,
+                       font=("Segoe UI", 9, "bold") if met else ("Segoe UI", 9), wraplength=wrap)
+            lbl.pack(fill="x")
+        for lbl in labels[len(rows):]:
+            lbl.pack_forget()
 
     # ---- cube loop -------------------------------------------------------------
     def _toggle_beep(self):
