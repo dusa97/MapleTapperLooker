@@ -4730,6 +4730,17 @@ class CubesApp:
             pydirectinput.press("enter")
 
     def _cube_loop(self):
+        """Wrapper so a crash in the watch thread is reported instead of leaving
+        the app sitting there looking busy."""
+        try:
+            self._cube_loop_body()
+        except Exception as error:
+            detail = f"{type(error).__name__}: {error}"
+            self._requests.put(lambda detail=detail: self._stop_loop(
+                f"Stopped after {self.rolls} roll(s): the run hit an internal error ({detail}). "
+                f"Nothing was pressed after it."))
+
+    def _cube_loop_body(self):
         """Watch thread. Read the current lines first (an item that already
         matches is never rolled away). Then: spam on, poll the box until its
         pixels change (the panel redrew with a new roll), spam OFF, OCR the
@@ -4794,7 +4805,11 @@ class CubesApp:
                     break
                 if img is None:
                     if not press_now:
-                        press_now = True      # the repeat settled; press again next time round
+                        # The repeat never turned into a real change, so the press
+                        # really was the end of it: press again next time round.
+                        # Re-grab first - the next pass reads this frame.
+                        press_now = True
+                        img = _grab(self.region)
                         continue
                     self._requests.put(lambda: self._stop_loop(
                         f"Stopped after {self.rolls} roll(s): the panel did not change after "
