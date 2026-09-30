@@ -655,7 +655,8 @@ def _value_fits_tier(stat, tier, value):
         return True                      # a sentence line - nothing to check
     shape = m.group(2) or "n"
     allowed = POTENTIAL_LINE_VALUES.get((stat, tier, shape))
-    return allowed is None or int(m.group(1)) in allowed
+    # By size: the table may say -2 and the line may read 2, or the other way.
+    return allowed is None or abs(int(m.group(1))) in {abs(v) for v in allowed}
 
 
 POTENTIAL_MAX_PERCENT = 60   # the biggest percentage a single potential line can give is 40% (Boss
@@ -3438,6 +3439,7 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-30", (
+        "Cubes: for lines written with a minus in game (Skill Cooldowns -2 sec, Skill MP Cost -17%) type just the number - 2 and -2 mean the same thing.",
         "Cubes: a stat name that is nearly right but not quite ('Gtiax MP', 'WNT', 'Bass Darnage') is either corrected to the real line or refused outright, so a broken read cannot pass as a roll.",
         "Cubes: a value the game cannot give at that tier is refused - a unique INT line can only be 9% or 10%, so a read of 70% is treated as a misread and the panel is read again.",
         "Cubes: goals joined by AND share the strictest legendary setting among them, so the two halves of a group can no longer disagree about which lines count.",
@@ -4339,7 +4341,10 @@ class CubesApp:
                 name = entry["stat_var"].get()
                 unit = next((u for n, _w, u in POTENTIAL_STATS if n == name), "%")
                 entry["unit_label"].config(text=unit)
-                raw = entry["min_var"].get().strip().rstrip("%")
+                # Cooldowns and MP cost are written with a minus in game ("-2 sec").
+                # Type 2 or -2 - both mean the same thing, since totals are counted
+                # by size, not by sign.
+                raw = entry["min_var"].get().strip().rstrip("%").lstrip("+-").strip()
                 if raw.isdigit() and int(raw) > 0:
                     made = TotalGoal(name, int(raw), unit)
                 else:
