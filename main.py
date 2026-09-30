@@ -305,7 +305,7 @@ CUBES_ICONS_MAX_WAIT = 0.6    # ...then wait up to this long for every card's ti
                               # They are drawn before the stat text, so icons present = text coming
 CUBES_HIT_CONFIRMS = 2        # a match must still be there on a fresh read before the run stops;
                               # one bad read must never end a run or roll a real hit away
-CUBES_TEXT_SETTLE_CAP = 0.6  # once the text is up, wait at most this long for it to hold perfectly
+CUBES_TEXT_SETTLE_CAP = 0.35  # once the text is up, wait at most this long for it to hold perfectly
                              # still. Something in the panel always animates a little, and a run must
                              # not pay the full settle timeout on every roll because of it
 CUBES_INK_SETTLED    = 0.0005 # two frames whose text masks differ by less than this are the same text.
@@ -5031,6 +5031,25 @@ class CubesApp:
         y = np.asarray(b.convert("L"), dtype=np.int16)
         return x.shape == y.shape and (np.abs(x - y) > 40).mean() < CUBES_CHANGE_FRAC
 
+    def _cards_ink(self, img):
+        """The text mask of the cards only. One grab covers all of them, and the
+        gaps in between hold moving game background - judging 'has the panel
+        finished drawing?' on that noise is what let reads land mid-draw."""
+        if len(self.panels) < 2:
+            return self._ink(img)
+        ox, oy = self.region[0], self.region[1]
+        parts = [self._ink(img.crop((px - ox, py - oy, px - ox + pw, py - oy + ph)))
+                 for px, py, pw, ph in self.panels]
+        width = min(p.shape[1] for p in parts)
+        return np.concatenate([p[:, :width] for p in parts], axis=0)
+
+    def _same_text(self, a, b):
+        """Is the text in these two grabs finished changing? Compared on the ink
+        mask, so a read is only trusted once every stroke has arrived."""
+        x = a if isinstance(a, np.ndarray) else self._cards_ink(a)
+        y = self._cards_ink(b)
+        return x.shape == y.shape and (x != y).mean() < CUBES_INK_SETTLED
+
     @staticmethod
     def _has_text(img):
         """Does the crop contain stat-line text? On a re-roll the panel
@@ -5044,18 +5063,25 @@ class CubesApp:
         consecutive polls agree (it has finished redrawing) - or, if it keeps
         animating, CUBES_STILL_MAX after the text came back; or the latest
         grab after CUBES_SETTLE_MAX."""
-        prev = np.asarray(img.convert("L"), dtype=np.int16)
+        prev = self._cards_ink(img)
         deadline = time.perf_counter() + CUBES_SETTLE_MAX
         text_since = None
         while self.looping and self._running and time.perf_counter() < deadline:
             time.sleep(CUBES_CHANGE_POLL)
             img = _grab(self.region)
-            cur = np.asarray(img.convert("L"), dtype=np.int16)
-            still = cur.shape == prev.shape and (np.abs(cur - prev) > 40).mean() < CUBES_CHANGE_FRAC
-            if self._has_text(img):
-                if text_since is None:
-                    text_since = time.perf_counter()
-                if still or time.perf_counter() - text_since >= CUBES_STILL_MAX:
+            cur = self._cards_ink(img)
+            has_text = cur.mean() >= CUBES_MIN_TEXT_INK
+            # Enough text to be a panel, and not one stroke different from the
+            # frame before it: the lines have finished drawing.
+            if has_text and self._same_text(prev, img):
+                return img
+            if has_text:
+                # Something in the card keeps moving - a glow, a sparkle, a
+                # cursor. Waiting for perfect stillness would cost the whole
+                # 1.5 s every roll, so give the text a bounded moment instead.
+                text_since = text_since or time.perf_counter()
+                if time.perf_counter() - text_since >= CUBES_TEXT_SETTLE_CAP:
+                    self._settle_capped += 1
                     return img
             else:
                 text_since = None
