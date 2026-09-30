@@ -669,10 +669,8 @@ def _drop_impossible(lines, tiers):
     out = []
     for i, (stat, value) in enumerate(lines):
         tier = tiers[i] if i < len(tiers) else None
-        if value and not _value_fits_tier(stat, tier, value):
-            out.append((f"{stat} {value}", None))
-        else:
-            out.append((stat, value))
+        broken = _name_is_suspect(stat) or not _value_fits_tier(stat, tier, value)
+        out.append((f"{stat} {value}", None) if value and broken else (stat, value))
     return out
 
 
@@ -682,16 +680,42 @@ def _percent_is_impossible(value):
     return bool(m) and int(m.group(1)) > POTENTIAL_MAX_PERCENT
 
 
+# Every line name the app can recognise - the ones it can aim for, plus the
+# ones it only has to read without mistaking them for garbled text.
+KNOWN_LINE_NAMES = tuple(n for n, _w, _u in POTENTIAL_STATS) + (
+    "Critical Rate", "Damage", "Max HP", "Max MP", "Skill MP Cost", "DEF")
+NAME_SNAP_CUTOFF = 0.85   # this close to a real name: correct it ("Baoss Damage" -> "Boss Damage")
+NAME_SUSPECT_CUTOFF = 0.5 # merely this close: a mangled name, not a line we don't know - refuse it.
+                          # Real lines the table does not list score well below this ("Speed" 0.32,
+                          # "Decent Sharp Eyes" 0.39), so they are left alone.
+
+
+def _name_score(name):
+    """The closest real line name, and how close it is."""
+    low = [n.lower() for n in KNOWN_LINE_NAMES]
+    best = max((difflib.SequenceMatcher(None, (name or "").lower(), k).ratio(), i)
+               for i, k in enumerate(low))
+    return best[0], KNOWN_LINE_NAMES[best[1]]
+
+
 def _snap_stat_name(name):
     """Pull an OCR'd stat name back onto the nearest real one ('Baoss Damage'
     -> 'Boss Damage'). Tesseract garbles a letter often enough that an
     otherwise perfect line would never match a goal. Only a close match is
     snapped, so an unknown line keeps the text that was actually read."""
-    known = [n for n, _w, _u in POTENTIAL_STATS]
-    if name in known:
+    if name in KNOWN_LINE_NAMES:
         return name
-    hit = difflib.get_close_matches(name.lower(), [n.lower() for n in known], n=1, cutoff=0.8)
-    return next((n for n in known if n.lower() == hit[0]), name) if hit else name
+    score, best = _name_score(name)
+    return best if score >= NAME_SNAP_CUTOFF else name
+
+
+def _name_is_suspect(name):
+    """A name that is nearly a real line but not quite - "Gtiax MP", "WNT". It
+    came out of a broken read, so nothing it says can be trusted."""
+    if name in KNOWN_LINE_NAMES:
+        return False
+    score, _best = _name_score(name)
+    return NAME_SUSPECT_CUTOFF <= score < NAME_SNAP_CUTOFF
 
 
 def read_potential_lines(img, profile=None):
@@ -3414,6 +3438,7 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-30", (
+        "Cubes: a stat name that is nearly right but not quite ('Gtiax MP', 'WNT', 'Bass Darnage') is either corrected to the real line or refused outright, so a broken read cannot pass as a roll.",
         "Cubes: a value the game cannot give at that tier is refused - a unique INT line can only be 9% or 10%, so a read of 70% is treated as a misread and the panel is read again.",
         "Cubes: goals joined by AND share the strictest legendary setting among them, so the two halves of a group can no longer disagree about which lines count.",
         "Cubes: AND binds tighter than OR now, the way it normally does - goals chained by AND form a group that must hold together, and the groups are alternatives. The 'Stop when' line and the progress lines put brackets round each group.",
