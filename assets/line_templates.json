@@ -1,0 +1,97 @@
+{
+ "version": 1,
+ "lines": {
+  "bright:202x70": {
+   "080ed9bebff1ea367201af7f64aa2f04": [
+    "LUK",
+    "+13%"
+   ],
+   "0d1b1225aa98deee205bea3c256992b3": [
+    "All Stats",
+    "+10%"
+   ],
+   "12fc87ad98de9262cd139c4e45956e21": [
+    "Skill MP Cost",
+    "-17%"
+   ],
+   "22ee8c87c3a1ddfc20d9732190d77c10": [
+    "LUK",
+    "+10%"
+   ],
+   "36da83019301f6f796af524870de8a0d": [
+    "HPRecoveryItemsandSkills",
+    null
+   ],
+   "453cddc8e57f7e30d089fe490526059b": [
+    "DEX",
+    "+10%"
+   ],
+   "48868c7a82647ec90a49e7a0f68e7033": [
+    "STR",
+    "+13%"
+   ],
+   "550bd23ac4b44e64f519ba473f031d2e": [
+    "INT",
+    "+13%"
+   ],
+   "5a202769bb6b6ed533eb3f1fbac75239": [
+    "All Stats",
+    "+10%"
+   ],
+   "6f2575607f2d85f0e20381e76053f546": [
+    "LUK",
+    "+10%"
+   ],
+   "8cf5efbfe5eb557acfc02e7046b1389e": [
+    "STR",
+    "+10%"
+   ],
+   "8e7f65a7f016f0fbc09704631758f183": [
+    "All Stats",
+    "+7%"
+   ],
+   "8e94352821192727f7bfa4aaa04f0e1f": [
+    "DEX",
+    "+10%"
+   ],
+   "8febb6c4efbe7410b4af54438ed878a2": [
+    "INT",
+    "+10%"
+   ],
+   "9c3b658a259134aee2b387903cf2640f": [
+    "STR",
+    "+10%"
+   ],
+   "9ef2ded529533729b98f475e7cf1cee3": [
+    "Mesos Obtained",
+    "+20%"
+   ],
+   "b7a08a466889d354f93f836aeee0cebb": [
+    "Mesos Obtained",
+    "+20%"
+   ],
+   "bfc287f8ec5267811a20e128cb33ff8d": [
+    "All Stats",
+    "+7%"
+   ],
+   "dfeaac728ab066f4d46d9b636a6162b3": [
+    "DEX",
+    "+13%"
+   ],
+   "e9d83dbc0b4eb0133df8d51436a25d6c": [
+    "DEX",
+    "+13%"
+   ],
+   "f46798fe7723b6017622488c443fbd22": [
+    "HPRecoveryItemsandSkills",
+    null
+   ]
+  },
+  "glowing:270x92": {
+   "e214520d427f378e109f74bc9886cb11": [
+    "DEX",
+    "+13%"
+   ]
+  }
+ }
+}

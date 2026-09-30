@@ -334,6 +334,9 @@ CUBES_SNAP_CONTEXT_PAD = 260 # pixels of screen kept around the box in the "_gam
 CUBES_SNAP_CONTEXT_SCALE = 2 # ...saved at 1/this size (about 120 KB instead of 330 KB)
 CUBES_SNAP_KEEP = 120        # how many to keep OF EACH KIND, so a run of doubtful reads can never push
                              # the hits out; ~6 KB each, so a full set is a couple of MB
+LINE_TEMPLATES_ASSET = Path(__file__).parent / "assets" / "line_templates.json"
+LINE_TEMPLATES_FILE = _BASE_DIR / "cubes_line_templates.json"   # what this machine has learned since
+CUBES_TEMPLATE_SAVE_EVERY = 10  # new line pictures learned before writing them out
 CUBES_LINE_CACHE_MAX = 4000  # stat lines remembered by their pixels; cleared wholesale when full
                              # (14 stats x a handful of values x 3 positions is far below this)
 CUBES_COUNT_EVERY = 10       # re-read the Remaining count every N rolls; in between it is tracked
@@ -718,6 +721,41 @@ def _name_score(name):
     best = max((difflib.SequenceMatcher(None, (name or "").lower(), k).ratio(), i)
                for i, k in enumerate(low))
     return best[0], KNOWN_LINE_NAMES[best[1]]
+
+
+def line_band_key(crop, profile, line):
+    """The binarised picture of one stat line, as a digest, plus the band
+    itself. The tier icon is left out - the same text at a different tier is
+    the same text. tools/build_line_templates.py uses this very function, so
+    the templates it builds can never drift from what the app looks up."""
+    w, h = crop.size
+    top = profile.icon_y[0] + line * profile.line_step
+    y0 = max(0, round(h * top) - 2)
+    y1 = min(h, round(h * (top + profile.line_step)) + 1)
+    x0 = round(w * profile.icon_x[1])
+    if y1 - y0 < 4 or w - x0 < 10:
+        return None, None
+    band = crop.crop((x0, y0, w, y1))
+    hsv = np.array(band.convert("HSV")).astype(int)
+    ink = (hsv[..., 2] > OCR_MASK_VALUE_MIN) & (hsv[..., 1] < OCR_MASK_SATURATION_MAX)
+    if ink.sum() < 20:
+        return None, None                      # an empty line
+    return hashlib.blake2b(ink.tobytes(), digest_size=16).hexdigest(), band
+
+
+def _load_line_templates():
+    """The shipped table plus anything this machine has learned since."""
+    table = {}
+    for path in (LINE_TEMPLATES_ASSET, LINE_TEMPLATES_FILE):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for geometry, entries in (data.get("lines") or {}).items():
+            into = table.setdefault(geometry, {})
+            for key, pair in entries.items():
+                into[key] = (pair[0], pair[1])
+    return table
 
 
 def _snap_stat_name(name):
@@ -3470,6 +3508,7 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-30", (
+        "Cubes: stat lines are recognised by their picture instead of read letter by letter - the game draws them in a fixed font, so a line the app has seen before is a lookup that takes no time and cannot be misread. Anything new still goes to the OCR and joins the table afterwards.",
         "Cubes: the roll loop is the one from the build that was fast - press, wait for the picture to change, wait for it to hold still, read, check. Everything piled on top of it that cost time per roll is gone; the checks that only mark a bad read, the pictures and the log stay.",
         "Cubes: the roll loop is back to its simple shape - press, wait for the picture to change, wait for it to hold still, read, check. The blink detector, repeat check, icon gate, overlapped read and press pause are gone: each was fixing a symptom of the one before, and together they cost more than they saved. The checks that catch bad reads stay.",
         "Cubes: a short pause before each press, so the click is not swallowed by the tail of the last roll's animation - a swallowed press cost a full no-change wait before it was sent again.",
@@ -3654,7 +3693,8 @@ class CubesApp:
             self.panels = self.panels[:1]
         self.count_box = self._load_box("count")      # the Remaining pill, located by F7 (Bright)
         self._settle_capped = 0                       # rolls where the panel never fully stopped moving
-        self._line_cache = {}                         # line pixels -> the (stat, value) already read from them
+        self._templates = _load_line_templates()      # line picture -> the (stat, value) it says
+        self._new_templates = 0
         self._cache_hits = self._cache_misses = 0
         self.lines = []
         self._running = True
@@ -4555,21 +4595,6 @@ class CubesApp:
         y2 = max(b[1] + b[3] for b in boxes)
         return (x1, y1, x2 - x1, y2 - y1)
 
-    def _line_keys(self, crop):
-        """One key per stat line: the raw pixels of that line's band. Identical
-        pixels mean identical text, so a key that has been read before never
-        needs Tesseract again."""
-        w, h = crop.size
-        top, step = self.profile.icon_y[0], self.profile.line_step
-        keys = []
-        for i in range(3):
-            y0 = max(0, round(h * (top + i * step)) - 2)
-            y1 = min(h, round(h * (top + (i + 1) * step)) + 2)
-            if y1 - y0 < 4:
-                return None                      # geometry doesn't give three bands - don't cache
-            keys.append(hashlib.blake2b(crop.crop((0, y0, w, y1)).tobytes(), digest_size=16).digest())
-        return keys
-
     def _read_panels(self, img):
         """Read every panel out of one grab of the union box: each card's
         three lines are OCR'd and totalled on their own. Returns a list of
@@ -4581,25 +4606,55 @@ class CubesApp:
             crop = img.crop((px - ox, py - oy, px - ox + pw, py - oy + ph))
             try:
                 tiers = read_potential_tiers(crop, self.profile)
-                keys = self._line_keys(crop)
-                if keys is not None:
-                    known = [self._line_cache.get(k) for k in keys]
-                    if all(line is not None for line in known):
-                        self._cache_hits += 1
-                        return tiers, list(known)
+                geometry = f"{self.profile.name.lower()}:{crop.width}x{crop.height}"
+                known = self._templates.setdefault(geometry, {})
+                keys = [key for key, _band in
+                        (line_band_key(crop, self.profile, i) for i in range(3)) if key]
+                # Every line already recognised: no OCR at all, and a match is a
+                # lookup rather than a reading, so it cannot come out wrong.
+                if keys and all(key in known for key in keys):
+                    self._cache_hits += 1
+                    return tiers, [known[key] for key in keys]
                 lines = _drop_impossible(read_potential_lines(crop, self.profile), tiers)
                 self._cache_misses += 1
-                if keys is not None and len(lines) == 3:
-                    if len(self._line_cache) > CUBES_LINE_CACHE_MAX:
-                        self._line_cache.clear()
-                    for key, line in zip(keys, lines):
-                        self._line_cache[key] = line
+                self._learn_lines(known, keys, lines)
                 return tiers, lines
             except Exception:
                 return [None] * 3, []
         # A read that misses the cache is its own Tesseract process (~150 ms):
         # three cards in parallel take one read's time, not three.
         return list(_OCR_POOL.map(read, self.panels or [self.region]))
+
+    def _learn_lines(self, known, keys, lines):
+        """Remember a reading, but only one that is certainly right: as many
+        lines as the panel has, each a line the game can really show. A wrong
+        template would be believed for ever, so the bar is high."""
+        if not lines or len(lines) != len(keys):
+            return
+        pairs = []
+        for key, (stat, value) in zip(keys, lines):
+            if str(stat).startswith("?? ") or stat not in KNOWN_LINE_NAMES:
+                return
+            if value is not None and not (_value_fits_tier(stat, "unique", value)
+                                          or _value_fits_tier(stat, "legendary", value)):
+                return
+            pairs.append((key, (stat, value)))
+        for key, line in pairs:
+            if key not in known:
+                known[key] = line
+                self._new_templates += 1
+        if self._new_templates >= CUBES_TEMPLATE_SAVE_EVERY:
+            self._save_templates()
+
+    def _save_templates(self):
+        """Write what this machine has learned, so a restart keeps it."""
+        self._new_templates = 0
+        try:
+            data = {"version": 1, "lines": {g: {k: list(v) for k, v in e.items()}
+                                            for g, e in self._templates.items() if e}}
+            LINE_TEMPLATES_FILE.write_text(json.dumps(data), encoding="utf-8")
+        except Exception:
+            pass
 
     # ---- read --------------------------------------------------------------
     def _read(self):
@@ -4855,7 +4910,9 @@ class CubesApp:
                 # gap to t0 holds the failed attempt and its wait - say so.
                 extra = f" (+{repressed} re-press)" if repressed else ""
                 timing = (f"{t4 - t0:.1f}s: press {t1 - t0:.2f}{extra}, redraw {t2 - t1:.2f}, "
-                          f"settle {t3 - t2:.2f}, read {t4 - t3:.2f}")
+                          f"settle {t3 - t2:.2f}, read {t4 - t3:.2f}"
+                          f", known {100 * self._cache_hits // max(1, self._cache_hits + self._cache_misses)}%"
+                          f" of {sum(len(e) for e in self._templates.values())}")
             else:
                 timing = ""
             hit, which = None, 0
