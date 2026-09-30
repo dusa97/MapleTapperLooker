@@ -85,6 +85,46 @@
    "f46798fe7723b6017622488c443fbd22": [
     "HPRecoveryItemsandSkills",
     null
+   ],
+   "25c4cb623c731e3bd7d3c7723e9ed184": [
+    "Max HP",
+    "+10%"
+   ],
+   "a387294443ebe77a62bf6cfc9cc08c30": [
+    "Max HP",
+    "+10%"
+   ],
+   "46c36dcc03bf393af20bf1e708732675": [
+    "Max MP",
+    "+13%"
+   ],
+   "97ce107cee16ad49477c925a071f6b7f": [
+    "Max MP",
+    "+10%"
+   ],
+   "8c2a72a04ebbe8d87686d523790144b2": [
+    "Skill MP Cost",
+    "-35%"
+   ],
+   "4b810867f0f7f5ca6a796e4d70bd4a40": [
+    "INT",
+    "+10%"
+   ],
+   "517ca6760b3d210b75887278373942c9": [
+    "Item Drop Rate",
+    "+20%"
+   ],
+   "0fc9f82c22db375bf6ea4f1ff782a42d": [
+    "Max HP",
+    "+13%"
+   ],
+   "91d726f524667cf728a45d8252d66e7d": [
+    "Max MP",
+    "+10%"
+   ],
+   "8dcf44d5f29c3ca82e53ad77183014eb": [
+    "STR",
+    "+13%"
    ]
   },
   "glowing:270x92": {
