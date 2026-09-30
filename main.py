@@ -606,8 +606,74 @@ def read_potential_tiers(img, profile=None):
     return tiers
 
 
+# What each line can actually roll at unique and legendary, from
+# tools/potential_lines.txt. A value that is not in here did not come from the
+# game: the panel was caught mid-draw, or a glyph broke. Rare and epic are left
+# out on purpose - nobody cubes for them, so their values are not checked.
+POTENTIAL_LINE_VALUES = {
+    ("All Stats", "legendary", "%"): (9, 10),
+    ("All Stats", "unique", "%"): (6, 7),
+    ("Attack Power", "legendary", "%"): (12, 13),
+    ("Attack Power", "unique", "%"): (9, 10),
+    ("Boss Damage", "legendary", "%"): (40, 45),
+    ("Boss Damage", "unique", "%"): (30,),
+    ("Critical Damage", "legendary", "%"): (8,),
+    ("Critical Rate", "legendary", "%"): (12,),
+    ("Critical Rate", "unique", "%"): (9,),
+    ("DEX", "legendary", "%"): (12, 13),
+    ("DEX", "unique", "%"): (9, 10),
+    ("Damage", "legendary", "%"): (12,),
+    ("Damage", "unique", "%"): (9,),
+    ("INT", "legendary", "%"): (12, 13),
+    ("INT", "unique", "%"): (9, 10),
+    ("Ignore Defense", "legendary", "%"): (40, 45),
+    ("Ignore Defense", "unique", "%"): (30,),
+    ("Item Drop Rate", "legendary", "%"): (20,),
+    ("LUK", "legendary", "%"): (12, 13),
+    ("LUK", "unique", "%"): (9, 10),
+    ("Magic Attack", "legendary", "%"): (12, 13),
+    ("Magic Attack", "unique", "%"): (9, 10),
+    ("Max HP", "legendary", "%"): (12, 13),
+    ("Max HP", "unique", "%"): (9, 10),
+    ("Max MP", "legendary", "%"): (12, 13),
+    ("Max MP", "unique", "%"): (9, 10),
+    ("Mesos Obtained", "legendary", "%"): (20,),
+    ("STR", "legendary", "%"): (12, 13),
+    ("STR", "unique", "%"): (9, 10),
+    ("Skill Cooldowns", "legendary", "sec"): (-2, -1),
+    ("Skill MP Cost", "legendary", "%"): (-35, -17),
+}
+
+
+def _value_fits_tier(stat, tier, value):
+    """Could this line really show this value at this tier? True when it could,
+    or when there is nothing in the table to judge it by."""
+    if tier not in ("unique", "legendary") or not value:
+        return True
+    m = re.fullmatch(r"([+-]?\d+)\s*(%|sec)?", value.strip())
+    if not m:
+        return True                      # a sentence line - nothing to check
+    shape = m.group(2) or "n"
+    allowed = POTENTIAL_LINE_VALUES.get((stat, tier, shape))
+    return allowed is None or int(m.group(1)) in allowed
+
+
 POTENTIAL_MAX_PERCENT = 60   # the biggest percentage a single potential line can give is 40% (Boss
                              # Damage / Ignore Defense); anything past this is a broken read, not a roll
+
+
+def _drop_impossible(lines, tiers):
+    """Blank the value of any line the tier says could not read that way. The
+    text is kept so the log shows what was seen; without a value the line counts
+    for nothing and the roll is treated as doubtful, which forces a re-read."""
+    out = []
+    for i, (stat, value) in enumerate(lines):
+        tier = tiers[i] if i < len(tiers) else None
+        if value and not _value_fits_tier(stat, tier, value):
+            out.append((f"{stat} {value}", None))
+        else:
+            out.append((stat, value))
+    return out
 
 
 def _percent_is_impossible(value):
@@ -3348,6 +3414,7 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-30", (
+        "Cubes: a value the game cannot give at that tier is refused - a unique INT line can only be 9% or 10%, so a read of 70% is treated as a misread and the panel is read again.",
         "Cubes: goals joined by AND share the strictest legendary setting among them, so the two halves of a group can no longer disagree about which lines count.",
         "Cubes: AND binds tighter than OR now, the way it normally does - goals chained by AND form a group that must hold together, and the groups are alternatives. The 'Stop when' line and the progress lines put brackets round each group.",
     )),
@@ -4448,7 +4515,7 @@ class CubesApp:
                     if all(line is not None for line in known):
                         self._cache_hits += 1
                         return tiers, list(known)
-                lines = read_potential_lines(crop, self.profile)
+                lines = _drop_impossible(read_potential_lines(crop, self.profile), tiers)
                 self._cache_misses += 1
                 if keys is not None and len(lines) == 3:
                     if len(self._line_cache) > CUBES_LINE_CACHE_MAX:
