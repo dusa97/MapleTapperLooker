@@ -292,11 +292,11 @@ POTENTIAL_STATS = (
 # A timer would read stale lines on a slow client and could stop on the previous roll.
 CUBES_CHANGE_POLL   = 0.03   # seconds between cheap pixel-difference checks while waiting for the redraw
 CUBES_CHANGE_FRAC   = 0.004  # fraction of pixels that must differ to count as "the panel changed"
-CUBES_CHANGE_TIMEOUT = 1.5   # longest wait for the panel to change before assuming the press was dropped.
+CUBES_CHANGE_TIMEOUT = 1.0   # longest wait for the panel to change before assuming the press was dropped.
                              # Deliberately generous: waiting half a second too long costs half a second,
                              # while pressing again too early spends a cube and can roll away a result
                              # nobody ever saw
-CUBES_CHANGE_MIN_WAIT = 0.6  # ...and the shortest. The wait between the two is learned from the redraws
+CUBES_CHANGE_MIN_WAIT = 0.35  # ...and the shortest. The wait between the two is learned from the redraws
 CUBES_CHANGE_SAFETY = 3.0    # this run has actually taken: 3x the slowest, so a merely slow roll is never
                              # re-pressed (a needless re-press spends a cube and can roll a match away)
 CUBES_SETTLE_MAX     = 1.5   # after the first changed frame, wait up to this long for the panel to be back (the blink)
@@ -305,9 +305,6 @@ CUBES_ICONS_MAX_WAIT = 0.6    # ...then wait up to this long for every card's ti
                               # They are drawn before the stat text, so icons present = text coming
 CUBES_HIT_CONFIRMS = 2        # a match must still be there on a fresh read before the run stops;
                               # one bad read must never end a run or roll a real hit away
-CUBES_UNREADABLE_TRIES = 4   # re-reads before giving up on a panel whose lines will not read. The run
-                             # stops rather than pressing again: a press spends a cube and could roll
-                             # away the hit that could not be read
 CUBES_TEXT_SETTLE_CAP = 0.6  # once the text is up, wait at most this long for it to hold perfectly
                              # still. Something in the panel always animates a little, and a run must
                              # not pay the full settle timeout on every roll because of it
@@ -325,8 +322,6 @@ CUBES_MIN_TEXT_INK   = 0.008 # fraction of OCR-mask ink that means "the stat lin
 # One cube is exactly one fixed input sequence - left click, Enter, Enter - with a short gap
 # between presses so the game registers each. No continuous spam: a fixed sequence can't
 # land a press mid-read, so there is nothing to freeze and no race with the change detector.
-CUBES_PRESS_COOLDOWN = 0.15  # pause before pressing, so the click is not sent into the tail of the
-                             # last roll's animation and dropped
 CUBES_PRESS_GAP = 0.05       # seconds between the presses of one sequence (jittered +/-30%)
 CUBES_SEQUENCE_ENTERS = 3    # Enters after the click - the default; each cube type sets its own. A
                              # dropped press is
@@ -3475,6 +3470,7 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-30", (
+        "Cubes: the roll loop is the one from the build that was fast - press, wait for the picture to change, wait for it to hold still, read, check. Everything piled on top of it that cost time per roll is gone; the checks that only mark a bad read, the pictures and the log stay.",
         "Cubes: the roll loop is back to its simple shape - press, wait for the picture to change, wait for it to hold still, read, check. The blink detector, repeat check, icon gate, overlapped read and press pause are gone: each was fixing a symptom of the one before, and together they cost more than they saved. The checks that catch bad reads stay.",
         "Cubes: a short pause before each press, so the click is not swallowed by the tail of the last roll's animation - a swallowed press cost a full no-change wait before it was sent again.",
         "Cubes: a single dim frame is no longer mistaken for the panel blinking out - that was being counted as a roll, which then 'repeated itself' and cost a wait on nearly every roll.",
@@ -4775,7 +4771,6 @@ class CubesApp:
         img = _grab(self.region)
         first = True
         self._left_guess, self._left_since = None, 0   # Remaining count, tracked between reads
-        first_read = True                # the read before any press is not a roll
         self._redraws = []               # recent redraw times; the re-press wait is learned from them
         while self.looping and self._running:
             if not first:
@@ -4825,21 +4820,24 @@ class CubesApp:
                 # wait for the pixels to hold still before trusting the OCR, but
                 # start reading that frame now: on a panel that was already still
                 # the read is done by the time the wait is over.
-                if len(self.panels) > 1:
-                    # Reset x3: three cards draw together and the first frame with
-                    # any text on it is well short of all nine lines. A moment here
-                    # is cheaper than reading garbage and rolling on it.
-                    time.sleep(CUBES_MULTI_CARD_DELAY)
-                icons_took = 0.0
                 t2 = time.perf_counter()
                 self._redraws.append(t2 - t1)        # what this game/PC really takes to redraw
                 del self._redraws[:-20]
                 # A goal that needs legendary lines can be ruled out from the icon
                 # colours alone (0.6 ms), so don't pay for a read that cannot match.
-                img = self._settle(img)
-                results = ("skip" if bool(need_legendary)
-                           and not self._tiers_could_match(img, need_legendary) else None)
+                skip = bool(need_legendary) and not self._tiers_could_match(img, need_legendary)
+                early = (None if skip or not self._has_text(img)
+                         else _OCR_POOL.submit(self._read_panels, img))
+                settled = self._settle(img)
+                if early is not None and self._same_frame(img, settled):
+                    results = early.result()          # the frame never moved - that read stands
+                else:
+                    results = None
+                img = settled
+                if skip and not self._tiers_could_match(img, need_legendary):
+                    results = "skip"                  # no read at all: the tiers cannot satisfy the goal
                 t3 = time.perf_counter()
+                self.rolls += 1
             else:
                 results = None
             first = False
@@ -4849,33 +4847,6 @@ class CubesApp:
                 continue
             if results is None:
                 results = self._read_panels(img)
-            partial = self._looks_partial(results)
-            if partial:
-                # More tier icons than lines read: the panel was still drawing.
-                # One more grab, properly settled this time.
-                img = self._settle(_grab(self.region))
-                results = self._read_panels(img)
-            # A line the gates threw out means this roll was never really read.
-            # Look again rather than press on - pressing would spend a cube and
-            # could roll away the very hit that could not be read.
-            tries = 0
-            while self._unsure(results) and tries < CUBES_UNREADABLE_TRIES and self.looping and self._running:
-                tries += 1
-                time.sleep(CUBES_CHANGE_POLL * 3)
-                img = self._settle(self._wait_for_icons(_grab(self.region)))
-                results = self._read_panels(img)
-            if first_read:
-                first_read = False
-            else:
-                self.rolls += 1
-            if self._unsure(results):
-                shown = self._describe_cards(results)
-                self._snap(img, "unreadable")
-                self._requests.put(lambda shown=shown: self._stop_loop(
-                    f"Stopped after {self.rolls} roll(s): could not read the panel after "
-                    f"{CUBES_UNREADABLE_TRIES} tries - {shown}. Nothing was pressed, so whatever is "
-                    f"on the item is still there."))
-                return
             if self.rolls:
                 # Where the time of one roll went - the log shows it, so a slow
                 # run says which stage (press / redraw / settle / read) is slow.
@@ -4883,13 +4854,8 @@ class CubesApp:
                 # t1 is the end of the LAST press attempt, so on a re-press the
                 # gap to t0 holds the failed attempt and its wait - say so.
                 extra = f" (+{repressed} re-press)" if repressed else ""
-                redo = ", RE-READ (was still drawing)" if partial else ""
-                seen = self._cache_hits + self._cache_misses
-                cached = f", cache {100 * self._cache_hits // max(1, seen)}%" if seen else ""
-                cached += f", settle capped x{self._settle_capped}" if self._settle_capped else ""
                 timing = (f"{t4 - t0:.1f}s: press {t1 - t0:.2f}{extra}, redraw {t2 - t1:.2f}, "
-                          f"icons {icons_took:.2f}, settle {t3 - t2:.2f}, read {t4 - t3:.2f}"
-                          f"{cached}{redo}")
+                          f"settle {t3 - t2:.2f}, read {t4 - t3:.2f}")
             else:
                 timing = ""
             hit, which = None, 0
@@ -4904,73 +4870,16 @@ class CubesApp:
                 setattr(self, "tiers", tiers), setattr(self, "lines", lines),
                 setattr(self, "results", results), self._show_lines()))
             if hit is not None:
-                # One read is not enough to end a run: look again and make sure
-                # the match is really there (a panel caught mid-draw invents lines).
-                self._snap(img, "hit")
-                again, again_which = self._confirm_hit(target)
-                if again is None:
-                    self._snap(img, "vanished")
-                    self._requests.put(lambda: self._set_status(
-                        f"Roll {self.rolls}: a match vanished when re-read (panel was still drawing) "
-                        f"- kept going."))
-                    continue
-                hit, which = again, again_which
-                self._shown_panel = which
                 self._requests.put(lambda hit=hit: self._on_hit(hit))
                 return
             self._requests.put(lambda timing=timing: self._set_status(
                 f"Roll {self.rolls}: no match yet ({timing})." if self.rolls else "Current item doesn't match - cubing..."))
-            if self.rolls:      # what every card actually said, so a bad read can be seen afterwards
+            if self.rolls:      # what every card said, so a bad read can be seen afterwards
                 self._requests.put(lambda cards=self._describe_cards(results): self._log("    " + cards))
                 if self._unsure(results):
-                    name = self._snap(img, "partial" if partial else "unsure")
+                    name = self._snap(img, "unsure")
                     if name:
                         self._requests.put(lambda n=name: self._log(f"    saved {n} (a line was doubtful)"))
-
-    def _wait_for_icons(self, img):
-        """Return a grab taken once every card shows its three tier icons, or
-        the latest grab after CUBES_ICONS_MAX_WAIT. The icons are drawn before
-        the stat text, so this is the cheapest 'the panel is coming' signal
-        there is - and it adapts to a slow client on its own."""
-        deadline = time.perf_counter() + CUBES_ICONS_MAX_WAIT
-        want = 3 * len(self.panels or [self.region])
-        seen, stable = -1, 0
-        while self.looping and self._running:
-            ox, oy = self.region[0], self.region[1]
-            count = 0
-            for px, py, pw, ph in (self.panels or [self.region]):
-                crop = img.crop((px - ox, py - oy, px - ox + pw, py - oy + ph))
-                try:
-                    count += sum(1 for t in read_potential_tiers(crop, self.profile)[:3] if t)
-                except Exception:
-                    return img               # can't tell - don't hold the run up
-            # Every icon there, or the count has stopped growing (some tiers just
-            # don't classify - never stall the run waiting for an icon that won't come).
-            stable = stable + 1 if count == seen else 0
-            # Every icon there; or the panel is clearly drawn and the count has
-            # stopped moving (some tiers just don't classify - never stall on an
-            # icon that will not come); or we have waited long enough.
-            if count >= want or (stable >= 2 and self._has_text(img)) or time.perf_counter() >= deadline:
-                return img
-            seen = count
-            time.sleep(CUBES_CHANGE_POLL)
-            img = _grab(self.region)
-        return img
-
-    def _confirm_hit(self, target):
-        """Read the panel again and look for the match a second time. Returns
-        (hit, panel index) or (None, 0) if it is not there any more."""
-        for _ in range(CUBES_HIT_CONFIRMS):
-            if not (self.looping and self._running):
-                break
-            img = self._settle(self._wait_for_icons(_grab(self.region)))
-            for i, (tiers, lines) in enumerate(self._read_panels(img)):
-                found = target.check(lines, tiers)
-                if found:
-                    self._requests.put(lambda tiers=tiers, lines=lines: (
-                        setattr(self, "tiers", tiers), setattr(self, "lines", lines), self._show_lines()))
-                    return (found, ""), i
-        return None, 0
 
     def _change_wait(self):
         """How long to wait for the panel to change before assuming the press
@@ -5073,28 +4982,6 @@ class CubesApp:
         hsv = np.array(img.convert("HSV")).astype(int)
         return (hsv[..., 2] > OCR_MASK_VALUE_MIN) & (hsv[..., 1] < OCR_MASK_SATURATION_MAX)
 
-    def _cards_ink(self, img):
-        """The text mask of the cards only. One grab covers all of them, and the
-        gaps in between hold moving game background - judging 'has the panel
-        finished drawing?' on that noise is what let reads land mid-draw."""
-        if len(self.panels) < 2:
-            return self._ink(img)
-        ox, oy = self.region[0], self.region[1]
-        parts = [self._ink(img.crop((px - ox, py - oy, px - ox + pw, py - oy + ph)))
-                 for px, py, pw, ph in self.panels]
-        width = min(p.shape[1] for p in parts)
-        return np.concatenate([p[:, :width] for p in parts], axis=0)
-
-    def _same_text(self, a, b):
-        """Is the text in these two grabs finished changing? Compared on the ink
-        mask, so a read is only trusted once every stroke has arrived."""
-        x = a if isinstance(a, np.ndarray) else self._cards_ink(a)
-        y = self._cards_ink(b)
-        return x.shape == y.shape and (x != y).mean() < CUBES_INK_SETTLED
-
-    def _same_frame(self, a, b):
-        return self._same_text(a, b)
-
     def _tiers_could_match(self, img, need):
         """Could any panel in this grab have *need* legendary lines? Read from
         the icon colours only - no OCR."""
@@ -5138,6 +5025,13 @@ class CubesApp:
         return int(txt) if txt.isdigit() else None
 
     @staticmethod
+    def _same_frame(a, b):
+        """Two grabs of the same box with no pixels moved between them."""
+        x = np.asarray(a.convert("L"), dtype=np.int16)
+        y = np.asarray(b.convert("L"), dtype=np.int16)
+        return x.shape == y.shape and (np.abs(x - y) > 40).mean() < CUBES_CHANGE_FRAC
+
+    @staticmethod
     def _has_text(img):
         """Does the crop contain stat-line text? On a re-roll the panel
         vanishes for a moment and comes back, so the first 'change' the
@@ -5151,17 +5045,21 @@ class CubesApp:
         animating, CUBES_STILL_MAX after the text came back; or the latest
         grab after CUBES_SETTLE_MAX."""
         prev = np.asarray(img.convert("L"), dtype=np.int16)
-        deadline = time.perf_counter() + CUBES_TEXT_SETTLE_CAP
+        deadline = time.perf_counter() + CUBES_SETTLE_MAX
+        text_since = None
         while self.looping and self._running and time.perf_counter() < deadline:
             time.sleep(CUBES_CHANGE_POLL)
             img = _grab(self.region)
             cur = np.asarray(img.convert("L"), dtype=np.int16)
-            # The panel is there and the pixels have stopped moving: it is drawn.
             still = cur.shape == prev.shape and (np.abs(cur - prev) > 40).mean() < CUBES_CHANGE_FRAC
-            if still and self._has_text(img):
-                return img
+            if self._has_text(img):
+                if text_since is None:
+                    text_since = time.perf_counter()
+                if still or time.perf_counter() - text_since >= CUBES_STILL_MAX:
+                    return img
+            else:
+                text_since = None
             prev = cur
-        self._settle_capped += 1
         return img
 
     def _on_hit(self, hit):
