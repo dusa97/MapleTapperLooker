@@ -959,7 +959,12 @@ class CombinedGoal:
         return "  +  ".join(f for f in found if f) if acc else None
 
     def progress(self, lines, tiers):
-        return "\n\u2192 ".join(g.progress(lines, tiers) for g in self.goals)
+        # Each goal on its own line, carrying the OR / AND that joins it to the
+        # one above - otherwise the list never says what has to hold together.
+        out = [self.goals[0].progress(lines, tiers)]
+        for op, g in zip(self.joins, self.goals[1:]):
+            out.append(("AND  " if op == "all" else "OR   ") + g.progress(lines, tiers))
+        return "\n\u2192 ".join(out)
 
 
 def line_matches_target(line, target):
@@ -3333,7 +3338,7 @@ UPDATE_LOG = (
         "Cubes are faster again: the read starts while the panel is still settling, the Remaining count is read once every 10 rolls instead of every roll, and a roll without enough legendary lines is skipped without reading at all when the goal needs legendary.",
     )),
     ("2026-09-26", (
-        "Cubes: the 'Stop when' line brackets mixed OR / AND so it cannot be misread - '(A OR B) AND C'.",
+        "Cubes: the 'Stop when' line brackets mixed OR / AND so it cannot be misread - '(A OR B) AND C', and the progress lines under TOTAL carry the OR / AND too.",
         "Cubes: 'Looking for' is a list of goals - add as many as you like, any mix, and the same kind more than once (e.g. Attack Power >= 30% OR Magic Attack >= 30%). Each goal has its own OR / AND and its own legendary rule.",
     )),
     ("2026-09-25", (
