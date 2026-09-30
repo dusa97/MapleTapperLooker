@@ -302,6 +302,9 @@ CUBES_ICONS_MAX_WAIT = 0.6    # ...then wait up to this long for every card's ti
                               # They are drawn before the stat text, so icons present = text coming
 CUBES_HIT_CONFIRMS = 2        # a match must still be there on a fresh read before the run stops;
                               # one bad read must never end a run or roll a real hit away
+CUBES_UNREADABLE_TRIES = 4   # re-reads before giving up on a panel whose lines will not read. The run
+                             # stops rather than pressing again: a press spends a cube and could roll
+                             # away the hit that could not be read
 CUBES_TEXT_SETTLE_CAP = 0.6  # once the text is up, wait at most this long for it to hold perfectly
                              # still. Something in the panel always animates a little, and a run must
                              # not pay the full settle timeout on every roll because of it
@@ -3445,6 +3448,7 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-30", (
+        "Cubes: a panel whose lines will not read is re-read a few times and then the run STOPS - it no longer keeps pressing, which was spending cubes on rolls nobody could see.",
         "Cubes: a line with no number in it (like 'HP Recovery Items and Skills..') is no longer mistaken for a half-drawn panel - that was costing every such roll an extra read.",
         "Cubes: for lines written with a minus in game (Skill Cooldowns -2 sec, Skill MP Cost -17%) type just the number - 2 and -2 mean the same thing.",
         "Cubes: a stat name that is nearly right but not quite ('Gtiax MP', 'WNT', 'Bass Darnage') is either corrected to the real line or refused outright, so a broken read cannot pass as a roll.",
@@ -4823,6 +4827,23 @@ class CubesApp:
                 # One more grab, properly settled this time.
                 img = self._settle(_grab(self.region))
                 results = self._read_panels(img)
+            # A line the gates threw out means this roll was never really read.
+            # Look again rather than press on - pressing would spend a cube and
+            # could roll away the very hit that could not be read.
+            tries = 0
+            while self._unsure(results) and tries < CUBES_UNREADABLE_TRIES and self.looping and self._running:
+                tries += 1
+                time.sleep(CUBES_CHANGE_POLL * 3)
+                img = self._settle(self._wait_for_icons(_grab(self.region)))
+                results = self._read_panels(img)
+            if self._unsure(results):
+                shown = self._describe_cards(results)
+                self._snap(img, "unreadable")
+                self._requests.put(lambda shown=shown: self._stop_loop(
+                    f"Stopped after {self.rolls} roll(s): could not read the panel after "
+                    f"{CUBES_UNREADABLE_TRIES} tries - {shown}. Nothing was pressed, so whatever is "
+                    f"on the item is still there."))
+                return
             if self.rolls:
                 # Where the time of one roll went - the log shows it, so a slow
                 # run says which stage (press / redraw / settle / read) is slow.
