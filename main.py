@@ -920,50 +920,66 @@ class LegendaryOnly:
 
 
 class CombinedGoal:
-    """How the ticked goal kinds combine: one OR / AND per gap, so three goals
-    can be "A OR B AND C". Read left to right, no precedence - that is
-    (A OR B) AND C. *joins* holds one of "any" / "all" per gap."""
+    """Several goals joined by the OR / AND each one carries. AND binds tighter
+    than OR: goals chained by AND form a group that must hold together, and the
+    groups are alternatives - "A OR B AND C" is A OR (B AND C). *joins* holds
+    one of "any" / "all" per gap."""
     def __init__(self, goals, joins=None):
         self.goals = list(goals)
         self.joins = list(joins or [])[:max(0, len(self.goals) - 1)]
         self.joins += ["any"] * (len(self.goals) - 1 - len(self.joins))
 
-    def describe(self):
-        # Brackets whenever the operator changes, so the line can't be read with
-        # the usual "AND binds tighter" precedence - here it is strictly
-        # top to bottom: A OR B AND C is (A OR B) AND C.
-        out, previous = self.goals[0].describe(), None
+    def groups(self):
+        """The goals split into AND-groups. Every goal in a group must hold;
+        any one group holding is enough."""
+        out = [[self.goals[0]]]
         for op, g in zip(self.joins, self.goals[1:]):
-            if previous is not None and op != previous:
-                out = "(" + out + ")"
-            out += ("  AND  " if op == "all" else "  OR  ") + g.describe()
-            previous = op
+            if op == "all":
+                out[-1].append(g)
+            else:
+                out.append([g])
         return out
 
+    def describe(self):
+        groups = self.groups()
+        parts = []
+        for grp in groups:
+            text = "  AND  ".join(g.describe() for g in grp)
+            # Brackets round a group of ANDs, so what holds together is visible.
+            parts.append(f"({text})" if len(grp) > 1 and len(groups) > 1 else text)
+        return "  OR  ".join(parts)
+
     def min_legendary(self):
-        """Folded the same way as check(): an AND needs the stricter of the
-        two, an OR only the looser one."""
-        acc = _min_legendary(self.goals[0])
-        for op, g in zip(self.joins, self.goals[1:]):
-            need = _min_legendary(g)
-            acc = max(acc, need) if op == "all" else min(acc, need)
-        return acc
+        """Every goal in a group must hold (so the group needs the strictest of
+        them); any group will do (so the target needs the easiest group)."""
+        return min(max(_min_legendary(g) for g in grp) for grp in self.groups())
 
     def check(self, lines, tiers):
-        found = [g.check(lines, tiers) for g in self.goals]
-        acc = bool(found[0])
-        for op, f in zip(self.joins, found[1:]):
-            acc = (acc and bool(f)) if op == "all" else (acc or bool(f))
-        # Name every goal that was met - with OR it was often more than the first,
-        # and "why did it stop" is exactly what the ping has to answer.
-        return "  +  ".join(f for f in found if f) if acc else None
+        # A group holds only if every goal in it does; any group holding is a hit.
+        met = []
+        for grp in self.groups():
+            found = [g.check(lines, tiers) for g in grp]
+            if all(found):
+                met.extend(found)
+        # Name every goal that was met - "why did it stop" is exactly what the
+        # ping has to answer.
+        return "  +  ".join(met) if met else None
 
     def progress(self, lines, tiers):
-        # Each goal on its own line, carrying the OR / AND that joins it to the
-        # one above - otherwise the list never says what has to hold together.
-        out = [self.goals[0].progress(lines, tiers)]
-        for op, g in zip(self.joins, self.goals[1:]):
-            out.append(("AND  " if op == "all" else "OR   ") + g.progress(lines, tiers))
+        # One line per goal, with brackets round each group of ANDs so it is
+        # clear which ones have to hold together and which are alternatives.
+        groups = self.groups()
+        out = []
+        for i, grp in enumerate(groups):
+            if i:
+                out.append("OR")
+            if len(grp) > 1 and len(groups) > 1:
+                for k, g in enumerate(grp):
+                    lead = "  ( " if k == 0 else "  AND "
+                    out.append(lead + g.progress(lines, tiers) + (" )" if k == len(grp) - 1 else ""))
+            else:
+                for k, g in enumerate(grp):
+                    out.append(("AND  " if k else "") + g.progress(lines, tiers))
         return "\n\u2192 ".join(out)
 
 
@@ -3311,7 +3327,7 @@ HELP_SECTIONS = (
         "All Stats counts as STR / DEX / INT / LUK: with this on, an All Stats line counts as a line of each base stat for Reach a total and Lines per stat.",
         "Reset: puts every Looking for control back to its default (the cube type stays).",
         "Presets: goal, cube type and the All Stats setting are saved per item name; pick one from the PRESET menu to load it, Save as... to store the current settings, Delete to remove it.",
-        "Every goal after the first starts with its own OR / AND joining it to the goal above. They read strictly top to bottom, NOT with the usual 'AND first' precedence: 'A OR B AND C' means (A OR B) AND C. The 'Stop when' line shows the brackets, so it always says exactly what is required.",
+        "Every goal after the first starts with its own OR / AND joining it to the goal above. AND binds tighter than OR, as usual: goals chained by AND form a group that must all hold, and the groups are alternatives. 'A OR B AND C' means A OR (B AND C), and the brackets are shown in the 'Stop when' line and in the progress lines.",
     )),
     ("Settings and Log", (
         "Settings: Discord alerts per tab (webhook + user ID), and the detection sound - mute, record your own message, volume, test.",
@@ -3321,6 +3337,9 @@ HELP_SECTIONS = (
 
 
 UPDATE_LOG = (
+    ("2026-09-30", (
+        "Cubes: AND binds tighter than OR now, the way it normally does - goals chained by AND form a group that must hold together, and the groups are alternatives. The 'Stop when' line and the progress lines put brackets round each group.",
+    )),
     ("2026-09-28", (
         "Cubes: a small picture of the panel (about 6 KB, in debug_captures) is kept whenever a read looks doubtful and whenever a hit is found - 120 of each kind, so hits are never pushed out by a run of doubtful reads.",
         "Log tab: a run starts with a block naming the version, cube type, boxes and goal, and every roll records what each card read plus how long each stage took - enough to diagnose a bad run from a paste.",
