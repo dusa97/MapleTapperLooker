@@ -3508,6 +3508,7 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-30", (
+        "Cubes: the app learns a line the moment it reads it cleanly twice - line by line, so the good lines beside a garbled one are learned too, and never on the strength of a single reading.",
         "Cubes: stat lines are recognised by their picture instead of read letter by letter - the game draws them in a fixed font, so a line the app has seen before is a lookup that takes no time and cannot be misread. Anything new still goes to the OCR and joins the table afterwards.",
         "Cubes: the roll loop is the one from the build that was fast - press, wait for the picture to change, wait for it to hold still, read, check. Everything piled on top of it that cost time per roll is gone; the checks that only mark a bad read, the pictures and the log stay.",
         "Cubes: the roll loop is back to its simple shape - press, wait for the picture to change, wait for it to hold still, read, check. The blink detector, repeat check, icon gate, overlapped read and press pause are gone: each was fixing a symptom of the one before, and together they cost more than they saved. The checks that catch bad reads stay.",
@@ -3695,6 +3696,7 @@ class CubesApp:
         self._settle_capped = 0                       # rolls where the panel never fully stopped moving
         self._templates = _load_line_templates()      # line picture -> the (stat, value) it says
         self._new_templates = 0
+        self._pending = {}                            # seen once; a second agreeing read promotes it
         self._cache_hits = self._cache_misses = 0
         self.lines = []
         self._running = True
@@ -4626,23 +4628,28 @@ class CubesApp:
         return list(_OCR_POOL.map(read, self.panels or [self.region]))
 
     def _learn_lines(self, known, keys, lines):
-        """Remember a reading, but only one that is certainly right: as many
-        lines as the panel has, each a line the game can really show. A wrong
-        template would be believed for ever, so the bar is high."""
+        """Learn from this reading, line by line. A line only joins the table
+        once TWO separate reads of the same picture have said the same thing -
+        a wrong template would be believed for ever, and one read is not enough
+        to be sure. Lines beside a garbled one are still learned: the garbling
+        is per line, and every line is checked against the names and values the
+        game can actually produce."""
         if not lines or len(lines) != len(keys):
             return
-        pairs = []
         for key, (stat, value) in zip(keys, lines):
+            if key in known:
+                continue
             if str(stat).startswith("?? ") or stat not in KNOWN_LINE_NAMES:
-                return
+                continue                     # a doubtful line teaches nothing
             if value is not None and not (_value_fits_tier(stat, "unique", value)
                                           or _value_fits_tier(stat, "legendary", value)):
-                return
-            pairs.append((key, (stat, value)))
-        for key, line in pairs:
-            if key not in known:
-                known[key] = line
+                continue
+            if self._pending.get(key) == (stat, value):
+                known[key] = (stat, value)   # seen the same thing twice: trust it
+                self._pending.pop(key, None)
                 self._new_templates += 1
+            else:
+                self._pending[key] = (stat, value)
         if self._new_templates >= CUBES_TEMPLATE_SAVE_EVERY:
             self._save_templates()
 
