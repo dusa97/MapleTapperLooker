@@ -325,6 +325,8 @@ CUBES_MIN_TEXT_INK   = 0.008 # fraction of OCR-mask ink that means "the stat lin
 # One cube is exactly one fixed input sequence - left click, Enter, Enter - with a short gap
 # between presses so the game registers each. No continuous spam: a fixed sequence can't
 # land a press mid-read, so there is nothing to freeze and no race with the change detector.
+CUBES_PRESS_COOLDOWN = 0.15  # pause before pressing, so the click is not sent into the tail of the
+                             # last roll's animation and dropped
 CUBES_PRESS_GAP = 0.05       # seconds between the presses of one sequence (jittered +/-30%)
 CUBES_SEQUENCE_ENTERS = 3    # Enters after the click - the default; each cube type sets its own. A
                              # dropped press is
@@ -3473,6 +3475,7 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-30", (
+        "Cubes: a short pause before each press, so the click is not swallowed by the tail of the last roll's animation - a swallowed press cost a full no-change wait before it was sent again.",
         "Cubes: a single dim frame is no longer mistaken for the panel blinking out - that was being counted as a roll, which then 'repeated itself' and cost a wait on nearly every roll.",
         "Cubes: every saved picture now has a '_game' picture beside it - a wider shot of the screen at that moment, so what the app read can be checked against what the game was showing.",
         "Cubes: a short stat name that is not one of STR / DEX / INT / LUK / DEF is refused outright - misreads like 'QEN', 'CEs' and 'STF' were passing as unknown lines.",
@@ -4801,6 +4804,11 @@ class CubesApp:
                             f"({a}/{CUBES_SEQUENCE_RETRIES}). A dropped press, or the game was slow "
                             f"(then this spends another cube)."))
                     if press_now:
+                        # The game swallows a click sent while it is still
+                        # finishing the last roll's animation, and a swallowed
+                        # press costs a whole no-change wait. A breath first is
+                        # far cheaper than that.
+                        time.sleep(CUBES_PRESS_COOLDOWN)
                         self._press_sequence()
                     t1 = time.perf_counter()
                     deadline = time.perf_counter() + self._change_wait()
