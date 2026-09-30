@@ -305,6 +305,9 @@ CUBES_ICONS_MAX_WAIT = 0.6    # ...then wait up to this long for every card's ti
                               # They are drawn before the stat text, so icons present = text coming
 CUBES_HIT_CONFIRMS = 2        # a match must still be there on a fresh read before the run stops;
                               # one bad read must never end a run or roll a real hit away
+CUBES_STALE_WINDOW = 0.30    # after the panel blanks the game repaints the PREVIOUS roll's lines for up
+                             # to 0.23 s. They are crisp and they read perfectly - as the wrong roll - so
+                             # the only defence is to not look during that window (measured at 30 fps)
 CUBES_TEXT_SETTLE_CAP = 0.35  # once the text is up, wait at most this long for it to hold perfectly
                              # still. Something in the panel always animates a little, and a run must
                              # not pay the full settle timeout on every roll because of it
@@ -601,6 +604,23 @@ def locate_label(full_gray, tmpl_gray, max_peaks=4):
     return best_val, peaks, best_shape
 
 
+def _ocr_mask(img):
+    """The text of a crop, as black on white, ready for the OCR.
+
+    The brightness is stretched first: a card the game has just rolled is drawn
+    dimmer for around half a second, and a fixed cut discards that text
+    entirely. Stretching makes the cut relative to the crop, so a dim card and
+    a bright one both read - measured on a recording, it takes the time to a
+    correct read from 0.86 s down to 0.36 s."""
+    hsv = np.array(img.convert("HSV")).astype(int)
+    value = hsv[..., 2]
+    lo, hi = int(value.min()), int(value.max())
+    if hi - lo > 20:                       # a flat crop would only amplify noise
+        value = (value - lo) * 255 // (hi - lo)
+    ink = (value > OCR_MASK_VALUE_MIN) & (hsv[..., 1] < OCR_MASK_SATURATION_MAX)
+    return Image.fromarray(np.where(ink, 0, 255).astype("uint8"), mode="L"), ink
+
+
 def read_potential_tiers(img, profile=None):
     """Tier of each of the three stat lines, from the colour of the lettered
     icon beside it: a list of 3 entries, each 'rare' / 'epic' / 'unique' /
@@ -798,9 +818,7 @@ def read_potential_lines(img, profile=None):
     profile = profile or active_cube_profile()
     scale = max(OCR_SCALE_MIN, min(profile.target_height / img.height, OCR_SCALE_MAX))
     big = img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))), Image.LANCZOS)
-    hsv = np.array(big.convert("HSV"))
-    ink = (hsv[..., 2].astype(int) > OCR_MASK_VALUE_MIN) & (hsv[..., 1].astype(int) < OCR_MASK_SATURATION_MAX)
-    proc = Image.fromarray(np.where(ink, 0, 255).astype("uint8"), mode="L")
+    proc, _ink = _ocr_mask(big)
     text = pytesseract.image_to_string(proc, config=POTENTIAL_OCR_CONFIG)
     out = []
     for raw in text.splitlines():
@@ -3508,6 +3526,8 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-30", (
+        "Cubes: a freshly rolled card is drawn dimmer for about half a second, and the app was throwing that text away and waiting for it to brighten. Brightness is now judged relative to the card, which more than halves the time to a correct read (0.86s to 0.36s, measured on a recording).",
+        "Cubes: the app no longer looks at the panel for the first 0.3s after a roll - the game repaints the PREVIOUS roll's lines there, and they read perfectly as the wrong roll.",
         "Cubes: the app learns a line the moment it reads it cleanly twice - line by line, so the good lines beside a garbled one are learned too, and never on the strength of a single reading.",
         "Cubes: stat lines are recognised by their picture instead of read letter by letter - the game draws them in a fixed font, so a line the app has seen before is a lookup that takes no time and cannot be misread. Anything new still goes to the OCR and joins the table afterwards.",
         "Cubes: the roll loop is the one from the build that was fast - press, wait for the picture to change, wait for it to hold still, read, check. Everything piled on top of it that cost time per roll is gone; the checks that only mark a bad read, the pictures and the log stay.",
@@ -5127,6 +5147,10 @@ class CubesApp:
         consecutive polls agree (it has finished redrawing) - or, if it keeps
         animating, CUBES_STILL_MAX after the text came back; or the latest
         grab after CUBES_SETTLE_MAX."""
+        # What is on screen right now may still be the last roll's lines: the
+        # game repaints them after the blank. Wait that window out first.
+        time.sleep(CUBES_STALE_WINDOW)
+        img = _grab(self.region)
         prev = self._cards_ink(img)
         deadline = time.perf_counter() + CUBES_SETTLE_MAX
         text_since = None
