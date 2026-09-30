@@ -726,12 +726,20 @@ def _snap_stat_name(name):
     return best if score >= NAME_SNAP_CUTOFF else name
 
 
+# The stat abbreviations are a closed set: a short token that is not one of
+# these did not come off the screen intact ("QEN", "CEs", "STF" were all seen).
+SHORT_LINE_NAMES = ("STR", "DEX", "INT", "LUK", "DEF", "HP", "MP", "JUMP")
+
+
 def _name_is_suspect(name):
-    """A name that is nearly a real line but not quite - "Gtiax MP", "WNT". It
-    came out of a broken read, so nothing it says can be trusted."""
+    """A name that is nearly a real line but not quite - "Gtiax MP", "WNT",
+    "QEN". It came out of a broken read, so nothing it says can be trusted."""
     if name in KNOWN_LINE_NAMES:
         return False
-    score, _best = _name_score(name)
+    plain = (name or "").strip()
+    if len(plain) <= 4 and plain.replace(" ", "").isalpha() and plain.upper() not in SHORT_LINE_NAMES:
+        return True                      # a three-letter line can only be a stat
+    score, _best = _name_score(plain)
     return NAME_SUSPECT_CUTOFF <= score < NAME_SNAP_CUTOFF
 
 
@@ -3457,6 +3465,7 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-30", (
+        "Cubes: a short stat name that is not one of STR / DEX / INT / LUK / DEF is refused outright - misreads like 'QEN', 'CEs' and 'STF' were passing as unknown lines.",
         "Cubes: a panel that comes back showing the same lines is not counted as a roll any more - one press was being counted as two, the second being the tail of the first one's animation.",
         "Cubes: the app waits longer before deciding a press was dropped (3x your slowest redraw, at least 0.6s). It was re-pressing on merely slow rolls, which spends a cube and can roll away a result you never saw.",
         "Cubes: a panel whose lines will not read is re-read a few times and then the run STOPS - it no longer keeps pressing, which was spending cubes on rolls nobody could see.",
