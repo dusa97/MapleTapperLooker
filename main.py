@@ -931,14 +931,23 @@ class CombinedGoal:
 
     def groups(self):
         """The goals split into AND-groups. Every goal in a group must hold;
-        any one group holding is enough."""
+        any one group holding is enough. Within a group the strictest legendary
+        setting wins - the goals have to hold on the SAME roll, so they are all
+        judged on the same lines instead of each one seeing a different item."""
         out = [[self.goals[0]]]
         for op, g in zip(self.joins, self.goals[1:]):
             if op == "all":
                 out[-1].append(g)
             else:
                 out.append([g])
-        return out
+        return [self._level_legendary(grp) for grp in out]
+
+    @staticmethod
+    def _level_legendary(group):
+        need = max(_min_legendary(g) for g in group)
+        if need <= 0:
+            return group
+        return [LegendaryOnly(g.goal if isinstance(g, LegendaryOnly) else g, need) for g in group]
 
     def describe(self):
         groups = self.groups()
@@ -3323,6 +3332,7 @@ HELP_SECTIONS = (
         "Reach a total: one stat and a minimum, e.g. STR >= 30%. All three lines of that stat are added up (All Stats lines too, if the checkbox below is on) and the run stops when the sum reaches the minimum.",
         "Combination of stats: tick the stats you would accept, then pick how many of the 3 lines must come from that set (1, 2 or 3). Example: tick STR and All Stats, need 2 - STR 12% + All Stats 6% + Speed 4% is a match.",
         "Lines per stat: rows of [stat] x [1 / 2 / 3]. Each row says how many lines of that stat the item must have; '+ Add a stat' adds a row (up to 3 rows, 3 lines in total). Example: LUK x2 + All Stats x1 matches only an item with two LUK lines and one All Stats line.",
+        "In a group of ANDs the strictest legendary setting applies to all of them: the goals have to hold on the same roll, so they are judged on the same lines rather than each seeing a different version of the item.",
         "Legendary: each goal has its own any / 2+ / all 3 setting - how many of the three lines must be legendary tier (read from the line's icon colour) on top of the goal itself.",
         "All Stats counts as STR / DEX / INT / LUK: with this on, an All Stats line counts as a line of each base stat for Reach a total and Lines per stat.",
         "Reset: puts every Looking for control back to its default (the cube type stays).",
@@ -3338,6 +3348,7 @@ HELP_SECTIONS = (
 
 UPDATE_LOG = (
     ("2026-09-30", (
+        "Cubes: goals joined by AND share the strictest legendary setting among them, so the two halves of a group can no longer disagree about which lines count.",
         "Cubes: AND binds tighter than OR now, the way it normally does - goals chained by AND form a group that must hold together, and the groups are alternatives. The 'Stop when' line and the progress lines put brackets round each group.",
     )),
     ("2026-09-28", (
