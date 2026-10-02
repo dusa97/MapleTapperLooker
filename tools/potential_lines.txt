@@ -1,0 +1,94 @@
+# Potential lines: name, tier, and the exact values that tier can give.
+#
+# Only UNIQUE and LEGENDARY are listed - rare and epic are not worth cubing for,
+# so the app only has to recognise them, not check their values.
+#
+# Why this table: it makes a bad read provable. "WNT +13%" has a name that is
+# not here. "LUK +70%" has a value no unique LUK can give. Either way the app
+# re-reads instead of quietly accepting it.
+#
+#   <name> | <shape> | <tier> | <values>
+#
+#   <shape>   %  = percentage   n = flat number   sec = seconds   text = sentence
+#   <tier>    unique | legendary
+#   <values>  every value that (name, tier) can roll, comma separated.
+#             "?" = not known yet. Delete a row if that combination cannot exist.
+#
+# Lines starting with # are ignored.
+
+# ================================================================== UNIQUE
+# (proven) = read off a colour capture, so the value and tier are certain.
+# (guess)  = my reading of the pattern in your data - please confirm or fix.
+STR             | %   | unique | 9, 10          (guess; 10 proven)
+DEX             | %   | unique | 9, 10          (guess; 10 proven)
+INT             | %   | unique | 9, 10          (guess)
+LUK             | %   | unique | 9, 10          (guess; 10 proven)
+All Stats       | %   | unique | 6, 7           (guess; 6 proven)
+Attack Power    | %   | unique | 9, 10          (guess)
+Magic Attack    | %   | unique | 9, 10          (guess)
+Boss Damage     | %   | unique | 30,35         (guess; 30 proven)
+Ignore Defense  | %   | unique | 30,35         (guess)
+Critical Rate   | %   | unique | 9,10              (guess)
+Damage          | %   | unique | 9,10             (guess)
+Max HP          | %   | unique | 9, 10          (guess; 10 proven)
+Max MP          | %   | unique | 9, 10          (guess; 10 proven)
+
+# =============================================================== LEGENDARY
+STR             | %   | legendary | 12, 13      (guess; 13 proven)
+DEX             | %   | legendary | 12, 13      (guess; 13 proven)
+INT             | %   | legendary | 12, 13      (guess; 13 proven)
+LUK             | %   | legendary | 12, 13      (guess)
+All Stats       | %   | legendary | 9, 10       (guess)
+Attack Power    | %   | legendary | 12, 13      (guess)
+Magic Attack    | %   | legendary | 12, 13      (guess)
+Boss Damage     | %   | legendary | 35, 40, 45      (guess)
+Ignore Defense  | %   | legendary | 35, 40, 45      (guess)
+Critical Damage | %   | legendary | 8
+Critical Rate   | %   | legendary | 12,13          (guess)
+Damage          | %   | legendary | 12,13          (guess)
+Item Drop Rate  | %   | legendary | 20
+Mesos Obtained  | %   | legendary | 20
+Max HP          | %   | legendary | 12, 13      (guess)
+Max MP          | %   | legendary | 12, 13      (guess)
+Skill MP Cost   | %   | legendary | -17, -35         (seen)
+Skill Cooldowns | sec | legendary | -1, -2
+
+# ------------------------------------------------------ legendary-only lines
+# Lines that exist ONLY at legendary. Still guesses - correct the wording and
+# add whatever is missing.
+#
+# Decent Sharp Eyes                | text | legendary | -
+# Decent Speed Infusion            | text | legendary | -
+# 10% chance to ignore 40% damage  | text | legendary | ?
+
+# ---------------------------------------------------------------- where the
+# guesses come from: every value your 82 snapshots and the reference captures
+# actually produced, before splitting by tier.
+#   STR / DEX / INT / LUK      9, 10, 12, 13
+#   All Stats                  6, 7, 9, 10
+#   Attack Power / Magic Att   9, 10, 12, 13   (plus flat +32)
+#   Boss Damage                30, 35, 40, 45
+#   Ignore Defense             30, 35, 40, 45
+#   Critical Damage            8
+#   Critical Rate              9, 12
+#   Damage                     9, 12
+#   Item Drop Rate             20
+#   Mesos Obtained             20
+#   Max HP / Max MP            9, 10, 12, 13
+#   Skill MP Cost              -17, -35
+#   Skill Cooldowns            -1, -2
+# The split I guessed above is simply: the two smaller values are unique, the
+# two larger ones legendary. Correct it where that is wrong.
+
+# ============================================== GARBLED READS SEEN IN THE WILD
+# Not lines - the OCR failing. Kept as evidence: they cluster on the "M" of
+# Max HP / Max MP and the "B" of Boss / Skill.
+#   Bass Darnage +35%/+40%   -> Boss Damage
+#   BSkill MPCost -35%       -> Skill MP Cost
+#   GSkill MPCost -17%       -> Skill MP Cost
+#   Gtiax MP / Ghiax MP / GBMax MP / GMax MP / GShlax MP / Qhiax MP -> Max MP
+#   Gax HP / Gtiax HP / Niax HP / Qhiax HP / Qtiax HP / tax HP      -> Max HP
+#   hant MF / hant MIF / hiax Mi F                                  -> Max MP
+#   Darnage +9%              -> Damage
+#   HLLNKG +10%              -> ?
+#   INT +40%                 -> suspicious: no INT line gives 40%
