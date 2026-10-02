@@ -386,7 +386,7 @@ class CubeProfile:
                  icon_x=(9 / 210, 19 / 210), icon_y=(4 / 70, 13 / 70), line_step=25 / 70,
                  row=(-4 / 50, 192 / 15, 400 / 50, 38 / 15), target_height=210, calibrated=True,
                  pick_label="only", cubes_left="highlight", count_box=None, commit_on_match=True,
-                 enters=CUBES_SEQUENCE_ENTERS):
+                 enters=CUBES_SEQUENCE_ENTERS, stale_window=0.0):
         self.name = name
         self.label_path = label_path
         self.pick_label = pick_label          # "only": one label expected; "rightmost": AFTER card of a BEFORE/AFTER pair
@@ -394,6 +394,8 @@ class CubeProfile:
         self.count_box = count_box            # unused since the pill is anchored to the "Remaining" label (see REMAINING_COUNT_BOX)
         self.commit_on_match = commit_on_match  # False: the game shows the result before you commit, so a match means STOP, don't press
         self.enters = max(1, int(enters))     # Enters after the click; Glowing rolls on the first one
+        self.stale_window = stale_window      # Bright repaints the PREVIOUS roll's lines for a moment
+                                              # after the blank; Glowing does not, so it waits for nothing
         self.block_dx, self.block_dy, self.block_w, self.block_h = block
         self.icon_x, self.icon_y, self.line_step = icon_x, icon_y, line_step
         self.row_x0, self.row_dy, self.row_w, self.row_h = row
@@ -435,7 +437,7 @@ CUBE_PROFILES = {
                           icon_x=(9 / 202, 19 / 202), icon_y=(6 / 70, 16 / 70), line_step=24 / 70,
                           pick_label="rightmost", cubes_left="count",
                           count_box=(-258 / 146, 213 / 10, 58 / 146, 20 / 10),
-                          commit_on_match=False, enters=3),
+                          commit_on_match=False, enters=3, stale_window=CUBES_STALE_WINDOW),
 }
 CUBE_TYPE_DEFAULT = "glowing"
 # The Cubes tab is tinted with the chosen cube's colour: the Glowing cube's cyan
@@ -3539,6 +3541,7 @@ UPDATE_LOG = (
         "Cubes: a goal's legendary setting is a requirement on the item, not a filter on what counts - an item of 13% + 10% + 10% STR now reads as 33% and separately has to show the legendary lines you asked for.",
         "Cubes: each goal keeps its own legendary setting inside an AND group, instead of all of them taking the strictest.",
         "Cubes: a freshly rolled card is drawn dimmer for about half a second, and the app was throwing that text away and waiting for it to brighten. Brightness is now judged relative to the card, which more than halves the time to a correct read (0.86s to 0.36s, measured on a recording).",
+        "Cubes: the wait for the stale repaint is Bright only - Glowing does not repaint the old lines, so it no longer pays for a wait it never needed.",
         "Cubes: the app no longer looks at the panel for the first 0.3s after a roll - the game repaints the PREVIOUS roll's lines there, and they read perfectly as the wrong roll.",
         "Cubes: the app learns a line the moment it reads it cleanly twice - line by line, so the good lines beside a garbled one are learned too, and never on the strength of a single reading.",
         "Cubes: stat lines are recognised by their picture instead of read letter by letter - the game draws them in a fixed font, so a line the app has seen before is a lookup that takes no time and cannot be misread. Anything new still goes to the OCR and joins the table afterwards.",
@@ -5180,10 +5183,12 @@ class CubesApp:
         consecutive polls agree (it has finished redrawing) - or, if it keeps
         animating, CUBES_STILL_MAX after the text came back; or the latest
         grab after CUBES_SETTLE_MAX."""
-        # What is on screen right now may still be the last roll's lines: the
-        # game repaints them after the blank. Wait that window out first.
-        time.sleep(CUBES_STALE_WINDOW)
-        img = _grab(self.region)
+        # On a cube type that repaints the previous roll's lines after the blank
+        # (Bright), what is on screen now may still be the last roll's. Wait
+        # that window out first. Glowing does not do it, so it waits 0.
+        if self.profile.stale_window:
+            time.sleep(self.profile.stale_window)
+            img = _grab(self.region)
         prev = self._cards_ink(img)
         deadline = time.perf_counter() + CUBES_SETTLE_MAX
         text_since = None
