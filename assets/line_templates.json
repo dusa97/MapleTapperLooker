@@ -132,6 +132,256 @@
     "DEX",
     "+13%"
    ]
+  },
+  "glowing:250x70": {
+   "cc3fa78f0e39697cde92744e586cdee5": [
+    "Attack Power",
+    "+13%"
+   ],
+   "62fe94a88d3bba6f64318b51e25b9403": [
+    "Attack Power",
+    "+10%"
+   ],
+   "a5eb830d06d8f69c21b696a6e292fb6a": [
+    "STR",
+    "+10%"
+   ],
+   "d142ca55a7f5065148064a4da8a2fd0f": [
+    "DEX",
+    "+10%"
+   ],
+   "66054c5e8b937d1c1fe7576edf1360f6": [
+    "STR",
+    "+13%"
+   ],
+   "0b3bb822e7b99b228d10aa2e52f93a13": [
+    "Critical Rate",
+    "+10%"
+   ],
+   "e042b566f0236cefa34220d037d4eec2": [
+    "Critical Rate",
+    "+10%"
+   ],
+   "2a007fc50479bc9e6d2897cb95002829": [
+    "DEX",
+    "+13%"
+   ],
+   "0d5c6d031a8dd362e60d9a5c244f7eea": [
+    "DEX",
+    "+10%"
+   ],
+   "96bc53e87150373e4a3973b20c0c5507": [
+    "Magic Attack",
+    "+32"
+   ],
+   "17fdb6cc9f51e03e81ea53ec5828d647": [
+    "All Stats",
+    "+7%"
+   ],
+   "232b68b9205013a77f406b23ee880b41": [
+    "INT",
+    "+10%"
+   ],
+   "71a176e9827c67339160421d2e3daccf": [
+    "All Stats",
+    "+10%"
+   ],
+   "47d1c437305fc102081065f0f272ebb4": [
+    "All Stats",
+    "+7%"
+   ],
+   "db543ae9383d8005464f0f73f8ae47ec": [
+    "INT",
+    "+10%"
+   ],
+   "d5634246db7ee42f27d2d6c8e8060073": [
+    "Ignore Defense",
+    "+30%"
+   ],
+   "9c93ac79a108411157aea0611abea6a6": [
+    "Damage",
+    "+10%"
+   ],
+   "1ee2ec99ce7a144ef4caef9688b86dd0": [
+    "Damage",
+    "+10%"
+   ],
+   "170dcba69b2845aa62485176f74aac28": [
+    "Ignore Defense",
+    "+35%"
+   ],
+   "b631c4d574cab371fc0778cc43bbef2e": [
+    "Ignore Defense",
+    "+40%"
+   ],
+   "e2ce152e97e0429e744d3745c800f8c2": [
+    "LUK",
+    "+13%"
+   ],
+   "f48ca264c9438c20b2f8522f546dc124": [
+    "LUK",
+    "+10%"
+   ],
+   "0c06b278a3ba073d59004222c4081c1b": [
+    "INT",
+    "+13%"
+   ],
+   "8038cd7a8fa6c1c6100f98730d3fda52": [
+    "LUK",
+    "+10%"
+   ],
+   "5107dc804c4d4e0af563b5007d5dca93": [
+    "Magic Attack",
+    "+10%"
+   ],
+   "44230f4d447c2bd63e83e94fdf87f8ec": [
+    "STR",
+    "+10%"
+   ],
+   "286af5758b0fa9d60f3c989665458f71": [
+    "Ignore Defense",
+    "+30%"
+   ],
+   "abfefb5e45c5f46d957e54bbcb81238a": [
+    "Magic Attack",
+    "+13%"
+   ],
+   "522e8869d000e86e15fe30f5539bf164": [
+    "Damage",
+    "+13%"
+   ],
+   "a92e55688f458010723c7c78d6081643": [
+    "Attack Power",
+    "+10%"
+   ],
+   "de8812b9dcc14f30b624dbf9fd8ea22e": [
+    "Magic Attack",
+    "+10%"
+   ],
+   "c9d70c9f284e08855d728d519705a57b": [
+    "Critical Rate",
+    "+12%"
+   ],
+   "1418fb91674bc8d46cfbf4a47455b727": [
+    "DEX",
+    "+12%"
+   ],
+   "da577a2e09b0c7cac9367e4e8ee63d70": [
+    "INT",
+    "+12%"
+   ],
+   "04beef4f5da8e27179ef66763da66d07": [
+    "All Stats",
+    "+6%"
+   ],
+   "3ef25b82f226df996ebb72db2de26a55": [
+    "Magic Attack",
+    "+9%"
+   ],
+   "7c30911f48a3887ab43a1c5294ced4fc": [
+    "DEX",
+    "+9%"
+   ],
+   "380277670118320bffed616f23b78ee0": [
+    "STR",
+    "+9%"
+   ],
+   "cc22ad076fe6c487701eaa693843c872": [
+    "INT",
+    "+9%"
+   ],
+   "399f727a2ec2fab98896b74512a0c1b9": [
+    "STR",
+    "+12%"
+   ],
+   "39fbb7c95b415bd315b44477c7010932": [
+    "All Stats",
+    "+6%"
+   ],
+   "f068b160377f1ad0b0fbc7075b7f70ee": [
+    "INT",
+    "+9%"
+   ],
+   "2d7ad1c380784e4dd9d2d77aef1e7ce4": [
+    "Boss Damage",
+    "+35%"
+   ],
+   "c32431d1964cca531fa5664ab076505e": [
+    "DEX",
+    "+9%"
+   ],
+   "b3cb556633d34b98d150b5bf2c766e21": [
+    "Attack Power",
+    "+9%"
+   ],
+   "5d03230d2874093086abf3faaecf2dff": [
+    "All Stats",
+    "+9%"
+   ],
+   "668e8f751af589a7a380e5c61a3f2705": [
+    "LUK",
+    "+9%"
+   ],
+   "5970048a23dcc308c4ecec6b06643910": [
+    "STR",
+    "+9%"
+   ],
+   "f3aa96498201a475693ebd3e68c0c1f7": [
+    "LUK",
+    "+12%"
+   ],
+   "f7e4f8ac0edc168a271e0b132f73b630": [
+    "Boss Damage",
+    "+30%"
+   ],
+   "9794ef27837660326d44046095553df6": [
+    "LUK",
+    "+9%"
+   ],
+   "3722d188a44c905c6868eb7ffc6b09ba": [
+    "Damage",
+    "+12%"
+   ],
+   "f09c65e6482b26e79953206208b737b0": [
+    "Critical Rate",
+    "+9%"
+   ],
+   "98091b067cf78c4785b1d737f862c3bf": [
+    "Magic Attack",
+    "+12%"
+   ],
+   "61e8171dfec40d9cbb40b266b562d300": [
+    "Boss Damage",
+    "+40%"
+   ],
+   "6a22d89d11e308207547fd13165ea9b4": [
+    "Critical Rate",
+    "+9%"
+   ],
+   "53301d9c0b774ea589c5aba2c25bc681": [
+    "Attack Power",
+    "+12%"
+   ],
+   "a9472323e8b37e611c3ab059643abaa8": [
+    "Damage",
+    "+9%"
+   ],
+   "13b1aa5ad3499e87269b577e30ecce35": [
+    "Attack Power",
+    "+32"
+   ],
+   "ff162370cdf140c591a950c644004d42": [
+    "Magic Attack",
+    "+9%"
+   ],
+   "81633819e847b46c8f9934a03f7ac3a8": [
+    "Damage",
+    "+9%"
+   ],
+   "532584bc413f18a5866958152dada881": [
+    "Boss Damage",
+    "+30%"
+   ]
   }
  }
 }

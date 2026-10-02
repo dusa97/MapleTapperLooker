@@ -98,7 +98,19 @@ def build():
         table.setdefault(geometry, {})[key] = list(parsed)
         kept += 1
 
+    # Merge, never overwrite: the app learns lines at runtime that no saved
+    # picture covers, and a rebuild must not throw those away.
     OUT.parent.mkdir(exist_ok=True)
+    merged = {}
+    for source in (OUT, ROOT / "cubes_line_templates.json"):
+        try:
+            for geometry, entries in json.loads(source.read_text(encoding="utf-8"))["lines"].items():
+                merged.setdefault(geometry, {}).update(entries)
+        except Exception:
+            pass
+    for geometry, entries in table.items():
+        merged.setdefault(geometry, {}).update(entries)
+    table = merged
     OUT.write_text(json.dumps({"version": 1, "lines": table}, indent=1), encoding="utf-8")
     print(f"kept {kept} templates in {len(table)} geometries -> {OUT.relative_to(ROOT)}")
     for geometry, entries in table.items():
