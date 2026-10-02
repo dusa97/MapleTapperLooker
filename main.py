@@ -46,6 +46,7 @@ if __name__ == "__main__":
     import multiprocessing
     multiprocessing.freeze_support()
 
+import io
 import re
 import sys
 import time
@@ -198,6 +199,7 @@ CONFIRM_ATTEMPTS  = 5      # follow-up OCR reads tried after a raw detection bef
 # everything else OCR/auto-locate related so far this project. Rate-limited so a sustained streak of
 # garbled reads doesn't flood the folder; saves both the raw crop and what the mask did to it, since
 # both are useful for diagnosing which stage actually failed.
+LOG_FILE               = _BASE_DIR / "log.txt"   # every line both tabs print, kept across restarts
 DEBUG_CAPTURE_DIR      = _BASE_DIR / "debug_captures"
 DEBUG_CAPTURE_COOLDOWN = 3.0
 
@@ -3544,6 +3546,8 @@ UPDATE_LOG = (
         "Cubes: the wait for the stale repaint is Bright only - Glowing does not repaint the old lines, so it no longer pays for a wait it never needed.",
         "Cubes: the app no longer looks at the panel for the first 0.3s after a roll - the game repaints the PREVIOUS roll's lines there, and they read perfectly as the wrong roll.",
         "Cubes: the app learns a line the moment it reads it cleanly twice - line by line, so the good lines beside a garbled one are learned too, and never on the strength of a single reading.",
+        "Cubes: a run no longer stops for nothing when the game is still refusing presses - after a roll it ignores the next one for about a second, and each retry now waits longer than the last instead of all three landing inside that window.",
+        "Log: everything both tabs print is now also written to log.txt next to the app, so a run can be looked at after the window is closed.",
         "Cubes: stat lines are recognised by their picture instead of read letter by letter - the game draws them in a fixed font, so a line the app has seen before is a lookup that takes no time and cannot be misread. Anything new still goes to the OCR and joins the table afterwards.",
         "Cubes: the roll loop is the one from the build that was fast - press, wait for the picture to change, wait for it to hold still, read, check. Everything piled on top of it that cost time per roll is gone; the checks that only mark a bad read, the pictures and the log stay.",
         "Cubes: the roll loop is back to its simple shape - press, wait for the picture to change, wait for it to hold still, read, check. The blink detector, repeat check, icon gate, overlapped read and press pause are gone: each was fixing a symptom of the one before, and together they cost more than they saved. The checks that catch bad reads stay.",
@@ -3689,6 +3693,11 @@ def build_log_tab(host):
     text.pack(fill="both", expand=True, padx=(14, 0), pady=(0, 10))
 
     def append(line):
+        try:                        # the window keeps 500 lines; the file keeps the lot
+            with io.open(LOG_FILE, "a", encoding="utf-8") as fh:
+                fh.write(line + chr(10))   # chr(10): one newline, written as it comes
+        except Exception:
+            pass                    # a log that cannot be written must not stop a run
         if not text.winfo_exists():
             return
         text.config(state="normal")
@@ -4912,12 +4921,17 @@ class CubesApp:
                     if attempt:
                         repressed = attempt
                         self._requests.put(lambda a=attempt: self._set_status(
-                            f"No change in {self._change_wait():.2f}s - pressing again "
+                            f"No change in {self._change_wait() * attempt:.2f}s - pressing again "
                             f"({a}/{CUBES_SEQUENCE_RETRIES}). A dropped press, or the game was slow "
                             f"(then this spends another cube)."))
                     self._press_sequence()
                     t1 = time.perf_counter()
-                    deadline = time.perf_counter() + self._change_wait()
+                    # Each retry waits longer than the last. After a roll the game
+                    # refuses the next press for about 1.2s (measured at 60fps), and
+                    # on a fast client the learned wait is short enough that all three
+                    # presses could land inside that window - the panel never changes
+                    # and a run with cubes left stops for nothing.
+                    deadline = time.perf_counter() + self._change_wait() * (1 + attempt)
                     while self.looping and self._running and time.perf_counter() < deadline:
                         time.sleep(CUBES_CHANGE_POLL)
                         cur_img = _grab(self.region)
