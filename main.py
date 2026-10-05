@@ -361,6 +361,8 @@ CUBES_ROW_H_RATIO   = 38 / 15       # highlight height (the row of slots)
 CUBES_ROW_X0_RATIO  = -4 / 50       # search strip starts just left of the label's x
 CUBES_ROW_W_RATIO   = 400 / 50      # ...and spans the whole slot row
 CUBES_HIGHLIGHT_MIN_PX = 300        # cyan pixels needed to count as a highlighted slot (a full one is ~1400)
+CUBES_EMPTY_CONFIRM = 0.18          # ...and the highlight pulses, so "empty" is only believed if it is
+                                    # still empty this long later - caught at ~660px mid-pulse in play
 POTENTIAL_TARGET_HEIGHT = 210    # ~30px per stat line after upscaling (3 lines in the block)
 # EACH stat line has its own small lettered square (R/E/U/L) at its left, coloured by that
 # line's tier - an item can be L / U / U. Measured: 10x9 px at x 99..108, y 310..318 for
@@ -3546,6 +3548,7 @@ UPDATE_LOG = (
         "Cubes: the wait for the stale repaint is Bright only - Glowing does not repaint the old lines, so it no longer pays for a wait it never needed.",
         "Cubes: the app no longer looks at the panel for the first 0.3s after a roll - the game repaints the PREVIOUS roll's lines there, and they read perfectly as the wrong roll.",
         "Cubes: the app learns a line the moment it reads it cleanly twice - line by line, so the good lines beside a garbled one are learned too, and never on the strength of a single reading.",
+        "Cubes: a run no longer stops saying there are no cubes left when there are - the highlight on the selected slot pulses, and catching it dim read as nothing selected. It is now checked twice before a run stops.",
         "Cubes: a run no longer stops for nothing when the game is still refusing presses - after a roll it ignores the next one for about a second, and each retry now waits longer than the last instead of all three landing inside that window.",
         "Log: everything both tabs print is now also written to log.txt next to the app, so a run can be looked at after the window is closed.",
         "Cubes: stat lines are recognised by their picture instead of read letter by letter - the game draws them in a fixed font, so a line the app has seen before is a lookup that takes no time and cannot be misread. Anything new still goes to the OCR and joins the table afterwards.",
@@ -4901,7 +4904,16 @@ class CubesApp:
         self._redraws = []               # recent redraw times; the re-press wait is learned from them
         while self.looping and self._running:
             if not first:
-                if not self._cubes_left_cached():
+                # The highlight on the selected slot pulses: a single sample can
+                # catch it dim and read as "no cube selected" while the stack is
+                # still full. Only a reading that survives a second look stops a
+                # run. Costs nothing on a normal roll - it runs only when the
+                # first check already said empty.
+                empty = not self._cubes_left_cached()
+                if empty:
+                    time.sleep(CUBES_EMPTY_CONFIRM)
+                    empty = not self._cubes_left_cached()
+                if empty:
                     n = max(1, len(self.panels))
                     why = (f"fewer than the {n} cubes a Reset x{n} needs" if n > 1
                            else "no cubes left (no cube selected in the material row)")
