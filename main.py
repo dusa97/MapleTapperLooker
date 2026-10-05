@@ -427,7 +427,12 @@ class CubeProfile:
 CUBE_PROFILES = {
     # Glowing rolls on one click + one Enter; the second is a spare in case one
     # gets dropped. Bright needs two, so it sends three.
-    "glowing": CubeProfile("Glowing", POTENTIAL_LABEL_PATH, enters=2),
+    # The wait before reading is NOT only about a stale repaint: it also holds the
+    # next press back. Removing it for Glowing made the game refuse 75-92% of
+    # presses (measured over 963 logged rolls; Bright, which kept its wait,
+    # refuses 1-2%), and each refusal costs ~0.9s. Put back to measure.
+    "glowing": CubeProfile("Glowing", POTENTIAL_LABEL_PATH, enters=2,
+                           stale_window=CUBES_STALE_WINDOW),
     # Bright cubes use the game's Reset dialog: BEFORE and AFTER cards side by side, the new
     # roll shown BEFORE you commit, "Reset x1" to roll again (which makes AFTER the new
     # BEFORE). Measured on assets/reference/bright_example.png: Flames' own "Combat Power
@@ -3548,6 +3553,7 @@ UPDATE_LOG = (
         "Cubes: the wait for the stale repaint is Bright only - Glowing does not repaint the old lines, so it no longer pays for a wait it never needed.",
         "Cubes: the app no longer looks at the panel for the first 0.3s after a roll - the game repaints the PREVIOUS roll's lines there, and they read perfectly as the wrong roll.",
         "Cubes: the app learns a line the moment it reads it cleanly twice - line by line, so the good lines beside a garbled one are learned too, and never on the strength of a single reading.",
+        "Cubes: Glowing waits before reading again, as it used to. Without it the game refused most presses and nearly every roll cost a second press - 75-92% of rolls, against 1-2% on Bright.",
         "Cubes: a run no longer stops saying there are no cubes left when there are - the highlight on the selected slot pulses, and catching it dim read as nothing selected. It is now checked twice before a run stops.",
         "Cubes: a run no longer stops for nothing when the game is still refusing presses - after a roll it ignores the next one for about a second, and each retry now waits longer than the last instead of all three landing inside that window.",
         "Log: everything both tabs print is now also written to log.txt next to the app, so a run can be looked at after the window is closed.",
