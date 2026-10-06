@@ -125,6 +125,86 @@
    "8dcf44d5f29c3ca82e53ad77183014eb": [
     "STR",
     "+13%"
+   ],
+   "c1159b9019983677301c3647adf3e1be": [
+    "Magic Attack",
+    "+32"
+   ],
+   "227bee01f2bb3247ac8328eaadb94438": [
+    "Boss Damage",
+    "+35%"
+   ],
+   "99478b90ffaf9f4ceb5a90efc5887d8e": [
+    "Attack Power",
+    "+10%"
+   ],
+   "20e99881d5a3bcf74880e2230de64868": [
+    "Ignore Defense",
+    "+30%"
+   ],
+   "c02c5d814685701776fb25442ae8bd9f": [
+    "Ignore Defense",
+    "+35%"
+   ],
+   "2c3c756cf8c71b7f19b19c2a341443de": [
+    "Damage",
+    "+10%"
+   ],
+   "6913eee1752908f8978ba8d95ebaf651": [
+    "Damage",
+    "+13%"
+   ],
+   "55681e72559333acc235fa4b5224524d": [
+    "Magic Attack",
+    "+10%"
+   ],
+   "d2577ae5b0f05708cfbcf74fb1190013": [
+    "Damage",
+    "+10%"
+   ],
+   "afbfff2ed5f677673799b524e7926bb4": [
+    "Critical Rate",
+    "+12%"
+   ],
+   "3f8438a9c83e52c6706b7d34b5efb084": [
+    "Attack Power",
+    "+32"
+   ],
+   "39bbea78ce5955704bbde5447ecb1adb": [
+    "Magic Attack",
+    "+10%"
+   ],
+   "bf73a272fa7fef1c3559d582e9b6c679": [
+    "Critical Rate",
+    "+10%"
+   ],
+   "ffb3845b8b35e8c403b6363e109d82a1": [
+    "Magic Attack",
+    "+13%"
+   ],
+   "155a3a4888b650ce8f60199fea41b34e": [
+    "Critical Rate",
+    "+10%"
+   ],
+   "0739e9eabcae4541848657b269d4b55f": [
+    "LUK",
+    "+13%"
+   ],
+   "2d7d06c392c32869c8c8afe2d8b0f5b8": [
+    "Boss Damage",
+    "+30%"
+   ],
+   "be43df4b9dd2e89169eb369da8462496": [
+    "Attack Power",
+    "+10%"
+   ],
+   "6684e2de71857a9c7333eeb275a08ff8": [
+    "Ignore Defense",
+    "+40%"
+   ],
+   "d3a973c2791dfa4daf7f6ee86ac764ce": [
+    "Boss Damage",
+    "+40%"
    ]
   },
   "glowing:270x92": {
@@ -381,6 +461,142 @@
    "532584bc413f18a5866958152dada881": [
     "Boss Damage",
     "+30%"
+   ],
+   "e799df94cf94058341dea370a4ec530b": [
+    "Attack Power",
+    "+9%"
+   ],
+   "8197ef538079a3facab25a2576be9a59": [
+    "Max MP",
+    "+10%"
+   ],
+   "9c82fcda171dee191aed2971fda2a72b": [
+    "Max HP",
+    "+13%"
+   ],
+   "e86173869afc1038020be1e788c8f472": [
+    "Max HP",
+    "+10%"
+   ],
+   "aeaf2f41d8d95de771712b243ee804ad": [
+    "Max HP",
+    "+10%"
+   ],
+   "feb0fb945f45ede70e16d6c2196a5ce7": [
+    "Mesos Obtained",
+    "+20%"
+   ],
+   "f9e91e12c3e3515940c2739b85984718": [
+    "Max MP",
+    "+10%"
+   ],
+   "21cef4e7f5daf322f8dae6e959ccbe6d": [
+    "Skill MP Cost",
+    "-35%"
+   ],
+   "d6a3b9fc09a966387ecd24f811081191": [
+    "Max MP",
+    "+13%"
+   ],
+   "1a033bca2f09be31441b36b1586f6467": [
+    "Skill MP Cost",
+    "-17%"
+   ],
+   "1410ea6c65b97d2e5073487dad8da008": [
+    "Max MP",
+    "+12%"
+   ],
+   "68df0b768a812843e54a8b310245317d": [
+    "All Stats",
+    "+6%"
+   ],
+   "f7a8f1811628e6fd18abe49fbcb00c05": [
+    "Item Drop Rate",
+    "+20%"
+   ],
+   "7da3220c32bef7d663a5b73d99138d93": [
+    "STR",
+    "+9%"
+   ],
+   "40ca5c7596576a797770ebd9fbb8c330": [
+    "Max HP",
+    "+12%"
+   ],
+   "25caf02d3376dac5b6995178aae20ace": [
+    "Max HP",
+    "+9%"
+   ],
+   "cb857520d0a27b06f638d65caa4e319b": [
+    "INT",
+    "+9%"
+   ],
+   "51cdecbb955884f6605ec492be24d7a1": [
+    "All Stats",
+    "+9%"
+   ],
+   "3f43085d02bd53f02b80a72625140dcb": [
+    "DEX",
+    "+12%"
+   ],
+   "02530d6ffd235ea26c75c4134d107dfa": [
+    "Max HP",
+    "+9%"
+   ],
+   "2972aa091d898e788aed13e1f46afc56": [
+    "INT",
+    "+9%"
+   ],
+   "b66a84736aaaa56aa91f4872c54d16f0": [
+    "LUK",
+    "+9%"
+   ],
+   "f7d18a5359102422790ed5e803cdf9fc": [
+    "INT",
+    "+12%"
+   ],
+   "135e3c1812977569494f6929ee54cea6": [
+    "Max MP",
+    "+9%"
+   ],
+   "c69615289ed8a0450e06786ad011c086": [
+    "LUK",
+    "+12%"
+   ],
+   "2bb102069e2e6ea364b9de7a0f44c88a": [
+    "Max MP",
+    "+9%"
+   ],
+   "90f5b376b41824ad42fcb45636ce49c2": [
+    "STR",
+    "+9%"
+   ],
+   "90f9a19cb6af1411301512ebe13ba229": [
+    "All Stats",
+    "+6%"
+   ],
+   "7f124c2043f556a6cbe7564e50740d3d": [
+    "LUK",
+    "+9%"
+   ],
+   "a1d04ed1a23e0e95692e81b03f700b29": [
+    "DEX",
+    "+9%"
+   ],
+   "5c4f4d6937b13775de18af1c11c85b8c": [
+    "Skill MP Cost",
+    "-30%"
+   ],
+   "658efbe256487ae0b436ed03b8cdeeb6": [
+    "Max MP",
+    "+9%"
+   ],
+   "69fcef016a32df2abbe9f880b70af6a4": [
+    "DEX",
+    "+9%"
+   ],
+   "cc19119f496af12b2fb450769a22d4f4": [
+    "Max MP",
+    "+9%"
    ]
   }
  }
