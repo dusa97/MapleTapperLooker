@@ -3301,6 +3301,27 @@ def load_mode():
         return None
 
 
+def load_window_pos():
+    """Where the window was when it was last closed, or None."""
+    try:
+        pos = json.loads(MODE_FILE.read_text(encoding="utf-8")).get("window_pos")
+        return int(pos[0]), int(pos[1])
+    except Exception:
+        return None
+
+
+def save_window_pos(x, y):
+    try:
+        data = json.loads(MODE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+    data["window_pos"] = [int(x), int(y)]
+    try:
+        MODE_FILE.write_text(json.dumps(data), encoding="utf-8")
+    except Exception:
+        pass
+
+
 def save_mode(mode):
     try:
         data = json.loads(MODE_FILE.read_text(encoding="utf-8"))
@@ -3548,6 +3569,7 @@ UPDATE_LOG = (
         "Cubes: the wait for the stale repaint is Bright only - Glowing does not repaint the old lines, so it no longer pays for a wait it never needed.",
         "Cubes: the app no longer looks at the panel for the first 0.3s after a roll - the game repaints the PREVIOUS roll's lines there, and they read perfectly as the wrong roll.",
         "Cubes: the app learns a line the moment it reads it cleanly twice - line by line, so the good lines beside a garbled one are learned too, and never on the strength of a single reading.",
+        "The window opens where you last closed it, instead of in the middle of the screen every time.",
         "Cubes: a run no longer stops saying there are no cubes left when there are - the highlight on the selected slot pulses, and catching it dim read as nothing selected. It is now checked twice before a run stops.",
         "Cubes: a run no longer stops for nothing when the game is still refusing presses - after a roll it ignores the next one for about a second, and each retry now waits longer than the last instead of all three landing inside that window.",
         "Log: everything both tabs print is now also written to log.txt next to the app, so a run can be looked at after the window is closed.",
@@ -5389,6 +5411,7 @@ def run_app(args):
             start(mode)
 
     def on_close():
+        save_window_pos(root.winfo_x(), root.winfo_y())
         if state["app"] is not None:
             state["app"].stop()
         discord.close()
@@ -5397,6 +5420,14 @@ def run_app(args):
 
     notebook.bind("<<NotebookTabChanged>>", on_tab_changed)
     root.protocol("WM_DELETE_WINDOW", on_close)
+    pos = load_window_pos()                           # ...and where it was left
+    if pos:
+        # Only if it still lands on a screen: a monitor that has been unplugged
+        # since must not leave the window somewhere you cannot reach it. The
+        # virtual root covers every monitor, so one box is enough for all.
+        w, h = root.winfo_vrootwidth(), root.winfo_vrootheight()
+        if -APP_WIDTH < pos[0] < w - 80 and -20 < pos[1] < h - 80:
+            root.geometry(f"+{pos[0]}+{pos[1]}")
     notebook.select(tabs[load_mode() or "flames"])    # reopen on the tab used last time
     if state["app"] is None:            # selecting the already-current tab fires no event
         start(modes[notebook.index("current")])
