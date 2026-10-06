@@ -327,6 +327,9 @@ CUBES_MIN_TEXT_INK   = 0.008 # fraction of OCR-mask ink that means "the stat lin
 # One cube is exactly one fixed input sequence - left click, Enter, Enter - with a short gap
 # between presses so the game registers each. No continuous spam: a fixed sequence can't
 # land a press mid-read, so there is nothing to freeze and no race with the change detector.
+CUBES_GLOWING_PRESS_DELAY = 0.10  # pause before Glowing's first press. Measured over 1225 rolls: only
+                                  # 8% of its presses landed first time (Bright: 98%), and each refusal
+                                  # cost ~0.9s. A landed press rolls in 0.65s, so the ceiling is there.
 CUBES_PRESS_GAP = 0.05       # seconds between the presses of one sequence (jittered +/-30%)
 CUBES_SEQUENCE_ENTERS = 3    # Enters after the click - the default; each cube type sets its own. A
                              # dropped press is
@@ -390,7 +393,7 @@ class CubeProfile:
                  icon_x=(9 / 210, 19 / 210), icon_y=(4 / 70, 13 / 70), line_step=25 / 70,
                  row=(-4 / 50, 192 / 15, 400 / 50, 38 / 15), target_height=210, calibrated=True,
                  pick_label="only", cubes_left="highlight", count_box=None, commit_on_match=True,
-                 enters=CUBES_SEQUENCE_ENTERS, stale_window=0.0):
+                 enters=CUBES_SEQUENCE_ENTERS, stale_window=0.0, press_delay=0.0):
         self.name = name
         self.label_path = label_path
         self.pick_label = pick_label          # "only": one label expected; "rightmost": AFTER card of a BEFORE/AFTER pair
@@ -398,6 +401,9 @@ class CubeProfile:
         self.count_box = count_box            # unused since the pill is anchored to the "Remaining" label (see REMAINING_COUNT_BOX)
         self.commit_on_match = commit_on_match  # False: the game shows the result before you commit, so a match means STOP, don't press
         self.enters = max(1, int(enters))     # Enters after the click; Glowing rolls on the first one
+        self.press_delay = press_delay        # a pause before the first press: the game refuses a press
+                                              # that comes too soon after the last roll (8% of Glowing
+                                              # presses landed first time, against 98% on Bright)
         self.stale_window = stale_window      # Bright repaints the PREVIOUS roll's lines for a moment
                                               # after the blank; Glowing does not, so it waits for nothing
         self.block_dx, self.block_dy, self.block_w, self.block_h = block
@@ -427,7 +433,8 @@ class CubeProfile:
 CUBE_PROFILES = {
     # Glowing rolls on one click + one Enter; the second is a spare in case one
     # gets dropped. Bright needs two, so it sends three.
-    "glowing": CubeProfile("Glowing", POTENTIAL_LABEL_PATH, enters=2),
+    "glowing": CubeProfile("Glowing", POTENTIAL_LABEL_PATH, enters=2,
+                           press_delay=CUBES_GLOWING_PRESS_DELAY),
     # Bright cubes use the game's Reset dialog: BEFORE and AFTER cards side by side, the new
     # roll shown BEFORE you commit, "Reset x1" to roll again (which makes AFTER the new
     # BEFORE). Measured on assets/reference/bright_example.png: Flames' own "Combat Power
@@ -3569,6 +3576,7 @@ UPDATE_LOG = (
         "Cubes: the wait for the stale repaint is Bright only - Glowing does not repaint the old lines, so it no longer pays for a wait it never needed.",
         "Cubes: the app no longer looks at the panel for the first 0.3s after a roll - the game repaints the PREVIOUS roll's lines there, and they read perfectly as the wrong roll.",
         "Cubes: the app learns a line the moment it reads it cleanly twice - line by line, so the good lines beside a garbled one are learned too, and never on the strength of a single reading.",
+        "Cubes: Glowing pauses for a moment before its first press. The game was refusing almost every first press (8% landed, against 98% on Bright), and each refusal cost about a second.",
         "The window opens where you last closed it, instead of in the middle of the screen every time.",
         "Cubes: a run no longer stops saying there are no cubes left when there are - the highlight on the selected slot pulses, and catching it dim read as nothing selected. It is now checked twice before a run stops.",
         "Cubes: a run no longer stops for nothing when the game is still refusing presses - after a roll it ignores the next one for about a second, and each retry now waits longer than the last instead of all three landing inside that window.",
@@ -4958,6 +4966,8 @@ class CubesApp:
                             f"No change in {self._change_wait() * attempt:.2f}s - pressing again "
                             f"({a}/{CUBES_SEQUENCE_RETRIES}). A dropped press, or the game was slow "
                             f"(then this spends another cube)."))
+                    if not attempt and self.profile.press_delay:
+                        time.sleep(self.profile.press_delay)   # only the first; retries already wait
                     self._press_sequence()
                     t1 = time.perf_counter()
                     # Each retry waits longer than the last. After a roll the game
