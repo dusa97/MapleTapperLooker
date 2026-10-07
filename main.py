@@ -702,7 +702,7 @@ POTENTIAL_LINE_VALUES = {
     ("STR", "legendary", "%"): (12, 13),
     ("STR", "unique", "%"): (9, 10),
     ("Skill Cooldowns", "legendary", "sec"): (-2, -1),
-    ("Skill MP Cost", "legendary", "%"): (-35, -17),
+    ("Skill MP Cost", "legendary", "%"): (-35, -30, -17, -15),
 }
 
 
@@ -3586,6 +3586,7 @@ UPDATE_LOG = (
         "Cubes: the wait for the stale repaint is Bright only - Glowing does not repaint the old lines, so it no longer pays for a wait it never needed.",
         "Cubes: the app no longer looks at the panel for the first 0.3s after a roll - the game repaints the PREVIOUS roll's lines there, and they read perfectly as the wrong roll.",
         "Cubes: the app learns a line the moment it reads it cleanly twice - line by line, so the good lines beside a garbled one are learned too, and never on the strength of a single reading.",
+        "Cubes: a legendary Skill MP Cost line of -15% or -30% is no longer refused as impossible. Both are real - they turn up on items of a different level, alongside 9% stat lines where -17%/-35% come with 10% ones - and they were being thrown away 46 times in one log.",
         "Cubes: Glowing works out for itself how long to pause before pressing. A fixed pause could not win - it is paid on every roll, including the ones that would have landed anyway - so it now starts at nothing, grows whenever a press is refused and creeps back down whenever one lands.",
         "Cubes: Glowing pauses for a moment before its first press. The game was refusing almost every first press (8% landed, against 98% on Bright), and each refusal cost about a second.",
         "The window opens where you last closed it, instead of in the middle of the screen every time.",

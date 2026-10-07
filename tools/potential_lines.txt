@@ -50,7 +50,9 @@ Item Drop Rate  | %   | legendary | 20
 Mesos Obtained  | %   | legendary | 20
 Max HP          | %   | legendary | 12, 13      (guess)
 Max MP          | %   | legendary | 12, 13      (guess)
-Skill MP Cost   | %   | legendary | -17, -35         (seen)
+Skill MP Cost   | %   | legendary | -15, -17, -30, -35   (all four seen in play: -15/-30 come
+#                                    with 9% stat lines and -17/-35 with 10%, so they are the same
+#                                    tier on items of a different level)
 Skill Cooldowns | sec | legendary | -1, -2
 
 # ------------------------------------------------------ legendary-only lines
