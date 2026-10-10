@@ -205,6 +205,10 @@
    "d3a973c2791dfa4daf7f6ee86ac764ce": [
     "Boss Damage",
     "+40%"
+   ],
+   "ae426bb05cf51fb1b9b39572e41a04ea": [
+    "Skill MP Cost",
+    "-17%"
    ]
   },
   "glowing:270x92": {
@@ -597,6 +601,46 @@
    "cc19119f496af12b2fb450769a22d4f4": [
     "Max MP",
     "+9%"
+   ],
+   "204f7b161c8bb7ef51daaf1abafe7b84": [
+    "Skill MP Cost",
+    "-30%"
+   ],
+   "fd685372e70d49c86cd4baab09fcb24e": [
+    "HPRecoveryItemsandSkills",
+    null
+   ],
+   "0c669078507f8c3eb0f2b5dbb1df495f": [
+    "Max HP",
+    "+9%"
+   ],
+   "950775e3e5d94224d9a1a1d9e08c99b2": [
+    "Max HP",
+    "+9%"
+   ],
+   "fe9dacdbb91d5a9689cd0b1476603303": [
+    "Skill MP Cost",
+    "-15%"
+   ],
+   "e4ac952fa64faeecd5aae2afa09c8ce6": [
+    "HPRecoveryItemsandSkills",
+    null
+   ],
+   "8ba132cb8456d0d04832b8653fd3b2de": [
+    "Skill MP Cost",
+    "-15%"
+   ],
+   "66726a2faae6db1dff844cea66712632": [
+    "Skill MP Cost",
+    "-30%"
+   ],
+   "02017839e1ecc6156581d66fe2246fbf": [
+    "HPRecoveryItemsandSkills",
+    null
+   ],
+   "6fcd30789c8d83f2bd93edbf99d200be": [
+    "HPRecoveryItemsandSkills",
+    null
    ]
   }
  }
