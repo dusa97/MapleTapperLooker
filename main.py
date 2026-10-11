@@ -627,6 +627,22 @@ def locate_label(full_gray, tmpl_gray, max_peaks=4):
     return best_val, peaks, best_shape
 
 
+def _stretched_value(hsv):
+    """The V channel of an HSV crop, stretched to the full 0-255 range.
+
+    Both the OCR mask and the template key binarise on this rather than on the
+    raw brightness: the game draws a freshly rolled card dimmer for about half
+    a second, and a monitor darker than the one a template was built on shifts
+    every stroke the same way. A fixed cut against raw V erodes the thin
+    antialiased edges, so the same line binarises differently and hashes to a
+    different key - the table fills with duplicates that never match again."""
+    value = hsv[..., 2]
+    lo, hi = int(value.min()), int(value.max())
+    if hi - lo > 20:                       # a flat crop would only amplify noise
+        return (value - lo) * 255 // (hi - lo)
+    return value
+
+
 def _ocr_mask(img):
     """The text of a crop, as black on white, ready for the OCR.
 
@@ -636,11 +652,8 @@ def _ocr_mask(img):
     a bright one both read - measured on a recording, it takes the time to a
     correct read from 0.86 s down to 0.36 s."""
     hsv = np.array(img.convert("HSV")).astype(int)
-    value = hsv[..., 2]
-    lo, hi = int(value.min()), int(value.max())
-    if hi - lo > 20:                       # a flat crop would only amplify noise
-        value = (value - lo) * 255 // (hi - lo)
-    ink = (value > OCR_MASK_VALUE_MIN) & (hsv[..., 1] < OCR_MASK_SATURATION_MAX)
+    ink = ((_stretched_value(hsv) > OCR_MASK_VALUE_MIN)
+           & (hsv[..., 1] < OCR_MASK_SATURATION_MAX))
     return Image.fromarray(np.where(ink, 0, 255).astype("uint8"), mode="L"), ink
 
 
@@ -780,7 +793,8 @@ def line_band_key(crop, profile, line):
         return None, None
     band = crop.crop((x0, y0, w, y1))
     hsv = np.array(band.convert("HSV")).astype(int)
-    ink = (hsv[..., 2] > OCR_MASK_VALUE_MIN) & (hsv[..., 1] < OCR_MASK_SATURATION_MAX)
+    ink = ((_stretched_value(hsv) > OCR_MASK_VALUE_MIN)
+           & (hsv[..., 1] < OCR_MASK_SATURATION_MAX))
     if ink.sum() < 20:
         return None, None                      # an empty line
     return hashlib.blake2b(ink.tobytes(), digest_size=16).hexdigest(), band
