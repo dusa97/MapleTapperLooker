@@ -5045,7 +5045,7 @@ class CubesApp:
                 del self._redraws[:-20]
                 # A goal that needs legendary lines can be ruled out from the icon
                 # colours alone (0.6 ms), so don't pay for a read that cannot match.
-                skip = bool(need_legendary) and not self._tiers_could_match(img, need_legendary)
+                skip = bool(need_legendary) and not self._tiers_could_match(img, need_legendary)[0]
                 early = (None if skip or not self._has_text(img)
                          else _OCR_POOL.submit(self._read_panels, img))
                 settled = self._settle(img)
@@ -5054,16 +5054,18 @@ class CubesApp:
                 else:
                     results = None
                 img = settled
-                if skip and not self._tiers_could_match(img, need_legendary):
-                    results = "skip"                  # no read at all: the tiers cannot satisfy the goal
+                skipped_tiers = None
+                if skip:
+                    could, skipped_tiers = self._tiers_could_match(img, need_legendary)
+                    if not could:
+                        results = "skip"              # no read at all: the tiers cannot satisfy the goal
                 t3 = time.perf_counter()
                 self.rolls += 1
             else:
                 results = None
             first = False
             if results == "skip":
-                self._requests.put(lambda r=self.rolls: self._set_status(
-                    f"Roll {r}: not enough legendary lines - skipped the read."))
+                self._requests.put(lambda t=skipped_tiers, r=self.rolls: self._show_skipped(t, r))
                 continue
             if results is None:
                 results = self._read_panels(img)
@@ -5207,17 +5209,31 @@ class CubesApp:
 
     def _tiers_could_match(self, img, need):
         """Could any panel in this grab have *need* legendary lines? Read from
-        the icon colours only - no OCR."""
+        the icon colours only - no OCR.
+
+        Returns (could_match, the tiers of each panel). The tiers come back so
+        that a roll skipped on this answer can still show something: without
+        them the display keeps the last read's text and the run looks stuck."""
         ox, oy = self.region[0], self.region[1]
+        seen = []
         for px, py, pw, ph in (self.panels or [self.region]):
             crop = img.crop((px - ox, py - oy, px - ox + pw, py - oy + ph))
             try:
-                tiers = read_potential_tiers(crop, self.profile)
+                seen.append(read_potential_tiers(crop, self.profile)[:3])
             except Exception:
-                return True                       # can't tell - never skip on a guess
-            if sum(1 for t in tiers[:3] if t == "legendary") >= need:
-                return True
-        return False
+                return True, seen                 # can't tell - never skip on a guess
+        return any(sum(1 for t in p if t == "legendary") >= need for p in seen), seen
+
+    def _show_skipped(self, tiers, roll):
+        """A roll the icons already ruled out: no read happened, so show the
+        icons on their own. Leaving the previous roll's text up instead is what
+        makes a long skipping run look like the app has stopped working."""
+        self.results = [(p, []) for p in tiers]
+        self.tiers = tiers[0] if tiers else [None] * 3
+        self.lines = []
+        self._shown_panel = 0
+        self._show_lines()
+        self._set_status(f"Roll {roll}: not enough legendary lines - skipped the read.")
 
     def _cubes_left_cached(self):
         """Is there another cube to spend? The Remaining count costs a Tesseract
