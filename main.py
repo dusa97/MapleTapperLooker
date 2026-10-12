@@ -800,6 +800,21 @@ def line_band_key(crop, profile, line):
     return hashlib.blake2b(ink.tobytes(), digest_size=16).hexdigest(), band
 
 
+def line_band_legacy_key(band):
+    """The digest a table built before the brightness fix is keyed by.
+
+    Those keys came off the raw brightness, so they only answer when the line
+    is drawn as brightly as it was when it was learned. They are still worth
+    trying: everything learned up to v1.32 is keyed this way, and no saved
+    picture exists to work out the new key from, so dropping them would throw
+    away 57 lines the app already knew."""
+    hsv = np.array(band.convert("HSV")).astype(int)
+    ink = (hsv[..., 2] > OCR_MASK_VALUE_MIN) & (hsv[..., 1] < OCR_MASK_SATURATION_MAX)
+    if ink.sum() < 20:
+        return None
+    return hashlib.blake2b(ink.tobytes(), digest_size=16).hexdigest()
+
+
 def _load_line_templates():
     """The shipped table plus anything this machine has learned since."""
     table = {}
@@ -4721,13 +4736,23 @@ class CubesApp:
                 tiers = read_potential_tiers(crop, self.profile)
                 geometry = f"{self.profile.name.lower()}:{crop.width}x{crop.height}"
                 known = self._templates.setdefault(geometry, {})
-                keys = [key for key, _band in
-                        (line_band_key(crop, self.profile, i) for i in range(3)) if key]
+                bands = [line_band_key(crop, self.profile, i) for i in range(3)]
+                keys = [key for key, _band in bands if key]
                 # Every line already recognised: no OCR at all, and a match is a
-                # lookup rather than a reading, so it cannot come out wrong.
-                if keys and all(key in known for key in keys):
+                # lookup rather than a reading, so it cannot come out wrong. A
+                # line the current key misses is tried again under the old one,
+                # which is how the table reads what older builds learned.
+                found = []
+                for key, band in bands:
+                    if not key:
+                        continue
+                    pair = known.get(key)
+                    if pair is None and band is not None:
+                        pair = known.get(line_band_legacy_key(band))
+                    found.append(pair)
+                if found and all(pair is not None for pair in found):
                     self._cache_hits += 1
-                    return tiers, [known[key] for key in keys]
+                    return tiers, found
                 lines = _drop_impossible(read_potential_lines(crop, self.profile), tiers)
                 self._cache_misses += 1
                 self._learn_lines(known, keys, lines)

@@ -11,7 +11,7 @@ import unittest
 import numpy as np
 from PIL import Image
 
-from main import CUBE_PROFILES, line_band_key
+from main import CUBE_PROFILES, line_band_key, line_band_legacy_key
 
 
 def panel(brightness=1.0):
@@ -41,6 +41,17 @@ class LineBandKeyTest(unittest.TestCase):
         other.paste(Image.new("RGB", (40, 8), (210, 210, 210)), (100, 20))
         self.assertNotEqual(line_band_key(panel(), profile, 0)[0],
                             line_band_key(other, profile, 0)[0])
+
+    def test_the_legacy_key_still_answers_at_the_brightness_it_was_learned(self):
+        """Tables up to v1.32 are keyed this way and there is no picture to
+        work the new key out from, so the lookup falls back to it."""
+        profile = CUBE_PROFILES["glowing"]
+        band = line_band_key(panel(), profile, 0)[1]
+        self.assertEqual(line_band_legacy_key(band),
+                         line_band_legacy_key(line_band_key(panel(), profile, 0)[1]))
+        dim = line_band_key(panel(0.85), profile, 0)[1]
+        self.assertNotEqual(line_band_legacy_key(band), line_band_legacy_key(dim),
+                            "the old key is brightness-bound - that is why it is only a fallback")
 
 
 if __name__ == "__main__":
