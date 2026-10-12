@@ -3944,7 +3944,10 @@ class CubesApp:
         self._goals_box.pack(fill="x", padx=14, pady=(0, 4))
         self._add_goal_button = OverlayApp._button(goal, "+ Add a goal", lambda: self._add_goal(), UI_BUTTON, UI_TEXT)
         self._add_goal_button.pack(anchor="w", padx=14, pady=(2, 6))
-        self._target_label = tk.Label(goal, text="", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9), anchor="w")
+        # Wrapped: a handful of goals makes a sentence far wider than the
+        # window, and an unwrapped label just loses the end of it.
+        self._target_label = tk.Label(goal, text="", fg=UI_MUTED, bg=UI_SURFACE, font=("Segoe UI", 9),
+                                      anchor="w", justify="left", wraplength=APP_WIDTH - 110)
         self._target_label.pack(fill="x", padx=14, pady=(0, 10))
         for item in self._goals_from_saved(saved):
             self._add_goal(item)
