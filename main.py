@@ -466,8 +466,11 @@ CUBE_PROFILES = {
                           icon_x=(9 / 202, 19 / 202), icon_y=(6 / 70, 16 / 70), line_step=24 / 70,
                           pick_label="rightmost", cubes_left="count",
                           count_box=(-258 / 146, 213 / 10, 58 / 146, 20 / 10),
-                          commit_on_match=False, enters=3, stale_window=CUBES_STALE_WINDOW,
-                          learn_press_delay=True),
+                          # No learned pause: tried in v1.37.0 and it only cost time. It climbed
+                          # to the 0.60s cap and the refusals stayed at 0.84 a roll, taking the
+                          # cube from 1.56s to 2.11s. Bright's repeat is not a press sent too
+                          # early - waiting longer does not stop it. Glowing's is, and keeps it.
+                          commit_on_match=False, enters=3, stale_window=CUBES_STALE_WINDOW),
 }
 CUBE_TYPE_DEFAULT = "glowing"
 # The Cubes tab is tinted with the chosen cube's colour: the Glowing cube's cyan
