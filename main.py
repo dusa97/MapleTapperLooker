@@ -314,6 +314,14 @@ CUBES_TEXT_SETTLE_CAP = 0.35  # once the text is up, wait at most this long for 
                              # still. Something in the panel always animates a little, and a run must
                              # not pay the full settle timeout on every roll because of it
 CUBES_INK_SETTLED    = 0.0005 # two frames whose text masks differ by less than this are the same text.
+CUBES_SAME_ROLL_INK  = 0.01   # ...and this much looser cut answers a different question: not "has it
+                              # finished drawing" but "is this the same roll I already counted". A
+                              # refused press brings the previous panel back whole, so the masks differ
+                              # only by shimmer; a real roll rewrites whole lines. The roll log carries
+                              # the measured figure ("ink 0.004") so the gap between the two can be seen.
+                              # Measured on synthetic panels: a repeat differs by at most 0.0008, a new
+                              # roll by at least 0.0496. Err tight - missing a repeat only leaves the old
+                              # double count, while dropping a real roll would stop it being read at all.
                               # Tight on purpose: a panel 95% drawn still reads wrong (it drops a line),
                               # and its mask is ten times further off than this
 CUBES_STILL_MAX      = 0.25  # once the text is back, wait at most this long for it to hold still - the Glowing
@@ -4989,7 +4997,8 @@ class CubesApp:
         self._redraws = []               # recent redraw times; the re-press wait is learned from them
         self._press_delay = 0.0          # ...and the pause before the first press, from whether it lands
         self._press_streak = 0           # clean presses in a row, before the pause is shaved again
-        self._last_settled = None        # the panel the last counted roll ended on, to spot a repeat
+        self._last_ink = None            # card text of the last counted roll, to spot a repeat
+        self._ink_diff = 1.0             # how different this roll's text was - logged, to tune the cut
         self._repeats = 0                # presses the game refused, seen as the same panel coming back
         while self.looping and self._running:
             if not first:
@@ -5087,14 +5096,17 @@ class CubesApp:
                 # old animation, which looks like a change: without this check
                 # one cube is counted, read and displayed twice. Nearly half of
                 # every Bright run was these.
-                if self._last_settled is not None and self._same_frame(img, self._last_settled):
+                ink = self._cards_ink(img)
+                self._ink_diff = (1.0 if self._last_ink is None or self._last_ink.shape != ink.shape
+                                  else float((self._last_ink != ink).mean()))
+                if self._ink_diff < CUBES_SAME_ROLL_INK:
                     if self.profile.learn_press_delay:
                         self._press_delay = min(CUBES_PRESS_DELAY_MAX,
                                                 self._press_delay + CUBES_PRESS_DELAY_UP)
                         self._press_streak = 0
                     self._repeats += 1
                     continue
-                self._last_settled = img
+                self._last_ink = ink
                 skipped_tiers = None
                 if skip:
                     could, skipped_tiers = self._tiers_could_match(img, need_legendary)
@@ -5119,6 +5131,7 @@ class CubesApp:
                 extra = f" (+{repressed} re-press)" if repressed else ""
                 waited = f", wait {self._press_delay:.2f}" if self._press_delay else ""
                 waited += f", {self._repeats} refused" if self._repeats else ""
+                waited += f", ink {self._ink_diff:.3f}"
                 timing = (f"{t4 - t0:.1f}s: press {t1 - t0:.2f}{extra}, redraw {t2 - t1:.2f}, "
                           f"settle {t3 - t2:.2f}, read {t4 - t3:.2f}"
                           f", known {100 * self._cache_hits // max(1, self._cache_hits + self._cache_misses)}%"
