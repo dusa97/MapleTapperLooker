@@ -458,7 +458,8 @@ CUBE_PROFILES = {
                           icon_x=(9 / 202, 19 / 202), icon_y=(6 / 70, 16 / 70), line_step=24 / 70,
                           pick_label="rightmost", cubes_left="count",
                           count_box=(-258 / 146, 213 / 10, 58 / 146, 20 / 10),
-                          commit_on_match=False, enters=3, stale_window=CUBES_STALE_WINDOW),
+                          commit_on_match=False, enters=3, stale_window=CUBES_STALE_WINDOW,
+                          learn_press_delay=True),
 }
 CUBE_TYPE_DEFAULT = "glowing"
 # The Cubes tab is tinted with the chosen cube's colour: the Glowing cube's cyan
@@ -4988,6 +4989,8 @@ class CubesApp:
         self._redraws = []               # recent redraw times; the re-press wait is learned from them
         self._press_delay = 0.0          # ...and the pause before the first press, from whether it lands
         self._press_streak = 0           # clean presses in a row, before the pause is shaved again
+        self._last_settled = None        # the panel the last counted roll ended on, to spot a repeat
+        self._repeats = 0                # presses the game refused, seen as the same panel coming back
         while self.looping and self._running:
             if not first:
                 # The highlight on the selected slot pulses: a single sample can
@@ -5079,6 +5082,19 @@ class CubesApp:
                 else:
                     results = None
                 img = settled
+                # The very same panel again. The game refuses a press for about
+                # 1.2s after a roll (measured at 60fps) and then finishes the
+                # old animation, which looks like a change: without this check
+                # one cube is counted, read and displayed twice. Nearly half of
+                # every Bright run was these.
+                if self._last_settled is not None and self._same_frame(img, self._last_settled):
+                    if self.profile.learn_press_delay:
+                        self._press_delay = min(CUBES_PRESS_DELAY_MAX,
+                                                self._press_delay + CUBES_PRESS_DELAY_UP)
+                        self._press_streak = 0
+                    self._repeats += 1
+                    continue
+                self._last_settled = img
                 skipped_tiers = None
                 if skip:
                     could, skipped_tiers = self._tiers_could_match(img, need_legendary)
@@ -5102,6 +5118,7 @@ class CubesApp:
                 # gap to t0 holds the failed attempt and its wait - say so.
                 extra = f" (+{repressed} re-press)" if repressed else ""
                 waited = f", wait {self._press_delay:.2f}" if self._press_delay else ""
+                waited += f", {self._repeats} refused" if self._repeats else ""
                 timing = (f"{t4 - t0:.1f}s: press {t1 - t0:.2f}{extra}, redraw {t2 - t1:.2f}, "
                           f"settle {t3 - t2:.2f}, read {t4 - t3:.2f}"
                           f", known {100 * self._cache_hits // max(1, self._cache_hits + self._cache_misses)}%"
