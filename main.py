@@ -354,6 +354,13 @@ CUBES_SEQUENCE_ENTERS = 3    # Enters after the click - the default; each cube t
                              # dropped press is
                              # covered by the re-send below, not by extra presses (each is 50 ms per roll)
 CUBES_SEQUENCE_RETRIES = 2   # re-send the sequence this many times if the panel doesn't change
+CUBES_STUCK_SECONDS = 20     # ...but a refused press is NOT "no change": the panel comes back whole and
+                             # something always shimmers, so the retry count above restarts and the run
+                             # presses forever. Seen on a friend's Reset x3 with fewer than 3 cubes left:
+                             # it clicked until he stopped it by hand. So bound it in time instead - no
+                             # counted roll for this long and the run is over. The longest real gap
+                             # between two counted rolls across every logged session (9,500 rolls, both
+                             # machines, Bright/Glowing, x1/x3) is 4 s, so this sits 5x clear of it.
 CUBES_SNAP_COOLDOWN = 0.3    # seconds between saved panel pictures of the SAME kind; hits and vanished
                              # matches are never skipped - they are the ones worth having
 CUBES_SNAP_CONTEXT_PAD = 260 # pixels of screen kept around the box in the "_game" picture, so a bad
@@ -4997,12 +5004,15 @@ class CubesApp:
         img = _grab(self.region)
         first = True
         self._left_guess, self._left_since = None, 0   # Remaining count, tracked between reads
+        self._count_warned = False                    # ...and whether this run already said it can't read it
         self._redraws = []               # recent redraw times; the re-press wait is learned from them
         self._press_delay = 0.0          # ...and the pause before the first press, from whether it lands
         self._press_streak = 0           # clean presses in a row, before the pause is shaved again
         self._last_ink = None            # card text of the last counted roll, to spot a repeat
         self._ink_diff = 1.0             # how different this roll's text was - logged, to tune the cut
         self._repeats = 0                # presses the game refused, seen as the same panel coming back
+        self._last_roll_at = time.perf_counter()   # ...and when one last got through, so a run that
+                                                   # only refuses can be ended (CUBES_STUCK_SECONDS)
         while self.looping and self._running:
             if not first:
                 # The highlight on the selected slot pulses: a single sample can
@@ -5108,6 +5118,17 @@ class CubesApp:
                                                 self._press_delay + CUBES_PRESS_DELAY_UP)
                         self._press_streak = 0
                     self._repeats += 1
+                    # Every one of these restarts the re-press count above, so on
+                    # its own it is an unbounded press loop - out of cubes (or
+                    # fewer than a Reset xN needs) looks exactly like this.
+                    if self._stuck_too_long():
+                        n = max(1, len(self.panels))
+                        why = (f"out of cubes for a Reset x{n}, or the game stopped taking the press"
+                               if n > 1 else "out of cubes, or the game stopped taking the press")
+                        self._requests.put(lambda why=why: self._stop_loop(
+                            f"Stopped after {self.rolls} roll(s): the same panel came back for "
+                            f"{CUBES_STUCK_SECONDS}s ({why})."))
+                        return
                     continue
                 self._last_ink = ink
                 skipped_tiers = None
@@ -5117,6 +5138,7 @@ class CubesApp:
                         results = "skip"              # no read at all: the tiers cannot satisfy the goal
                 t3 = time.perf_counter()
                 self.rolls += 1
+                self._last_roll_at = t3
             else:
                 results = None
             first = False
@@ -5293,6 +5315,15 @@ class CubesApp:
         self._show_lines()
         self._set_status(f"Roll {roll}: not enough legendary lines - skipped the read.")
 
+    def _stuck_too_long(self):
+        """Has this run gone CUBES_STUCK_SECONDS without a roll it could count?
+
+        Only the refused-press path asks. Out of cubes - or fewer than a Reset
+        xN needs - looks exactly like a very slow game from inside the loop:
+        the press goes out, the same panel comes back. The difference is that a
+        slow game eventually rolls, and an empty one never does."""
+        return time.perf_counter() - self._last_roll_at > CUBES_STUCK_SECONDS
+
     def _cubes_left_cached(self):
         """Is there another cube to spend? The Remaining count costs a Tesseract
         spawn, so read it only every CUBES_COUNT_EVERY rolls (or once the running
@@ -5308,6 +5339,15 @@ class CubesApp:
             return True
         count = self._remaining_count()
         self._left_guess, self._left_since = count, 0
+        if count is None and not getattr(self, "_count_warned", False):
+            # An unreadable count is treated as "carry on", which is right (a
+            # missed digit must not end a good run) but silent - and silent is
+            # how a misplaced count box turns into a run that never stops on
+            # its own. Say it once, so the log explains the next such run.
+            self._count_warned = True
+            self._requests.put(lambda: self._set_status(
+                "Can't read the Remaining count - the run will not stop on it. "
+                "Re-pick the count box if this keeps up."))
         return count is None or count >= per_roll
 
     def _remaining_count(self):
