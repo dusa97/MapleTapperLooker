@@ -1,7 +1,10 @@
 __pycache__/
 *.pyc
 build/
+build-folder/
 dist/
+dist-folder/
+MapleTapperLooker-folder.zip
 _internal/
 *.exe
 .idea/

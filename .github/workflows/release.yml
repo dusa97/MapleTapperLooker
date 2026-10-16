@@ -44,14 +44,26 @@ jobs:
           "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append
           "Stamped $tag"
 
-      - name: Build executable
+      - name: Build the single-file executable
         run: python -m PyInstaller --clean --noconfirm MapleTapperLooker.spec
 
-      - name: Check executable
+      - name: Build the unpacked folder version
+        env:
+          MTL_ONEDIR: '1'
+        run: python -m PyInstaller --clean --noconfirm --distpath dist-folder --workpath build-folder MapleTapperLooker.spec
+
+      - name: Check both builds
         shell: pwsh
         run: |
-          $exe = Get-Item dist/MapleTapperLooker.exe
-          if ($exe.Length -eq 0) { throw 'Executable is empty.' }
+          $single = Get-Item dist/MapleTapperLooker.exe
+          if ($single.Length -eq 0) { throw 'Single-file executable is empty.' }
+          $folder = Get-Item dist-folder/MapleTapperLooker/MapleTapperLooker.exe
+          if ($folder.Length -eq 0) { throw 'Folder build executable is empty.' }
+          $loose = (Get-ChildItem dist-folder/MapleTapperLooker -Recurse -File).Count
+          if ($loose -lt 50) { throw "Folder build has only $loose files - the packages did not come out." }
+          Compress-Archive -Path dist-folder/MapleTapperLooker -DestinationPath MapleTapperLooker-folder.zip -Force
+          $zip = Get-Item MapleTapperLooker-folder.zip
+          "single file: {0:n0} MB   folder: $loose files, zipped {1:n0} MB" -f ($single.Length / 1MB), ($zip.Length / 1MB)
 
       - name: Publish release
         shell: pwsh
@@ -66,6 +78,11 @@ jobs:
           $changes = git log --no-merges --format='- %s (%h)' $range
           if ($LASTEXITCODE -ne 0) { throw 'Could not read release changes.' }
           if (-not $changes) { $changes = '- Rebuild; no new changes.' }
-          @("## Changes in this version", "", $changes, "", "Built from commit $env:GITHUB_SHA. Requires Tesseract OCR installed separately.") |
+          @("## Changes in this version", "", $changes, "",
+            "## Which download", "",
+            "- **MapleTapperLooker.exe** - one file, nothing to extract. Double-click and go.",
+            "- **MapleTapperLooker-folder.zip** - the same app with the Python packages left unpacked. Extract the folder anywhere and run MapleTapperLooker.exe from inside it. Keep the folder together. Starts faster and some antivirus setups are happier with it.", "",
+            "Both are the same build; pick whichever one behaves on your machine.", "",
+            "Built from commit $env:GITHUB_SHA. Requires Tesseract OCR installed separately.") |
             Set-Content -Path release-notes.md -Encoding utf8
-          gh release create $tag dist/MapleTapperLooker.exe --target $env:GITHUB_SHA --title $tag --generate-notes --notes-file release-notes.md
+          gh release create $tag dist/MapleTapperLooker.exe MapleTapperLooker-folder.zip --target $env:GITHUB_SHA --title $tag --generate-notes --notes-file release-notes.md

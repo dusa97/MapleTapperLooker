@@ -265,17 +265,28 @@ python -m pip install -r requirements.txt
 
 ### Build and releases
 
-Each push to `main` runs tests, builds the executable with `MapleTapperLooker.spec`, and publishes a release only after success.
+Each push to `main` runs tests, builds both versions with `MapleTapperLooker.spec`, and publishes a release only after success.
 You can also run **Windows release** manually from the repository's **Actions** tab on `main`.
+
+Every release carries the same build twice, because the single file does not suit every machine:
+
+| Asset | What it is |
+| --- | --- |
+| `MapleTapperLooker.exe` | One file. Unpacks ~320 files into `%TEMP%` on every launch. |
+| `MapleTapperLooker-folder.zip` | The same app with the Python packages left unpacked next to the exe. Extract the folder, keep it together, run the exe from inside it. Nothing to unpack at launch, and antivirus sees a 6 MB exe instead of a 50 MB one. |
 
 To build locally after installing dependencies:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install pyinstaller==6.16.0
 .\.venv\Scripts\python.exe -m PyInstaller --clean --noconfirm MapleTapperLooker.spec
+$env:MTL_ONEDIR = '1'
+.\.venv\Scripts\python.exe -m PyInstaller --clean --noconfirm --distpath dist-folder --workpath build-folder MapleTapperLooker.spec
+Remove-Item Env:\MTL_ONEDIR
 ```
 
-The executable is written to `dist/MapleTapperLooker.exe`. Tesseract must still be installed separately.
+The single file is written to `dist/MapleTapperLooker.exe` and the folder to `dist-folder/MapleTapperLooker/`.
+`MTL_ONEDIR` is the only difference between them - the spec reads it and swaps `EXE(..., exclude_binaries=True)` plus `COLLECT` in for the one-file `EXE`. Tesseract must still be installed separately.
 
 ### Repository layout
 

@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -85,13 +86,15 @@ _STORE_UNCOMPRESSED = {'EXTENSION': False, 'DATA': False, 'BINARY': False,
                        'EXECUTABLE': False, 'PYSOURCE': False, 'PYMODULE': False,
                        'SPLASH': False, 'PYZ': False, 'SYMLINK': False}
 
-exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.datas,
-    [],
-    cdict=_STORE_UNCOMPRESSED,
+# Two builds come out of this one spec, because the single file does not suit
+# every machine: MTL_ONEDIR=1 builds the folder version - the exe with every
+# Python package, DLL and data file left loose beside it, so launching unpacks
+# nothing and antivirus has one small exe to look at instead of a 150 MB one
+# that writes 320 files into %TEMP% on every start. Anything else builds the
+# single file. The release workflow runs both and ships both.
+_ONEDIR = os.environ.get('MTL_ONEDIR') == '1'
+
+_SHARED = dict(
     name='MapleTapperLooker',
     icon='assets/logo.ico',
     debug=False,
@@ -99,7 +102,6 @@ exe = EXE(
     strip=False,
     upx=True,
     upx_exclude=[],
-    runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -108,3 +110,22 @@ exe = EXE(
     entitlements_file=None,
     uac_admin=True,
 )
+
+if _ONEDIR:
+    # exclude_binaries leaves the DLLs and data out of the exe; COLLECT then
+    # writes them next to it. cdict and runtime_tmpdir are single-file options
+    # and have nothing to do here - there is no embedded archive to unpack.
+    exe = EXE(pyz, a.scripts, [], exclude_binaries=True, **_SHARED)
+    coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=True, upx_exclude=[],
+                   name='MapleTapperLooker')
+else:
+    exe = EXE(
+        pyz,
+        a.scripts,
+        a.binaries,
+        a.datas,
+        [],
+        cdict=_STORE_UNCOMPRESSED,
+        runtime_tmpdir=None,
+        **_SHARED,
+    )
