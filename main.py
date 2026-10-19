@@ -480,6 +480,14 @@ CUBE_PROFILES = {
                           commit_on_match=False, enters=3, stale_window=CUBES_STALE_WINDOW),
 }
 CUBE_TYPE_DEFAULT = "glowing"
+# Which item the cubes are going into. Nothing in a run reads this - it only
+# goes in the log, so the rolls can be split by slot later: every slot has its
+# own potential pool, and mixing two slots' rolls into one table makes both
+# wrong. "not set" keeps it optional - an unlabelled session is still a valid
+# session, just not one the per-slot statistics can use.
+CUBE_ITEM_NONE = "not set"
+CUBE_ITEMS = (CUBE_ITEM_NONE, "accessories", "belt", "weapon", "secondary", "emblem",
+              "heart", "boots", "gloves", "cape", "hat", "top", "bottom")
 # The Cubes tab is tinted with the chosen cube's colour: the Glowing cube's cyan
 # glow (#50C4D9 in the game) and the Bright cube's magenta (#A032A8), both
 # darkened so the cards and text stay readable.
@@ -3941,6 +3949,21 @@ class CubesApp:
         goal = OverlayApp._card(outer)
         goal.pack(fill="x", pady=(12, 0))
         saved = self._load_target()
+        # Labels the run, nothing more - see CUBE_ITEMS.
+        item_row = tk.Frame(goal, bg=UI_SURFACE)
+        item_row.pack(fill="x", padx=14, pady=(10, 0))
+        tk.Label(item_row, text="ITEM", fg=UI_MUTED, bg=UI_SURFACE,
+                 font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 10))
+        self._item_var = tk.StringVar(
+            value=saved["item"] if saved.get("item") in CUBE_ITEMS else CUBE_ITEM_NONE)
+        self._item_menu = ttk.OptionMenu(item_row, self._item_var, self._item_var.get(),
+                                         *CUBE_ITEMS, style="Cubes.TMenubutton")
+        self._item_menu.pack(side="left", fill="x", expand=True)
+        self._item_menu["menu"].config(bg=UI_SURFACE, fg=UI_TEXT, activebackground=UI_BUTTON,
+                                       activeforeground=UI_TEXT, font=("Segoe UI", 10), bd=0)
+        # Added after the menu is built, so constructing it does not fire a parse
+        # against goal rows that do not exist yet.
+        self._item_var.trace_add("write", lambda *_: self._parse_target())
         self._all_stats_var = tk.BooleanVar(value=bool(saved.get("all_stats", True)))
         tk.Checkbutton(goal, text="All Stats counts as STR / DEX / INT / LUK", variable=self._all_stats_var,
                        bg=UI_SURFACE, fg=UI_MUTED, selectcolor=UI_BG, activebackground=UI_SURFACE,
@@ -4244,13 +4267,16 @@ class CubesApp:
     def _target_dict(self):
         """Everything in 'Looking for' as plain data (a preset)."""
         return {"cube_type": self._cube_var.get(), "goals": self._goal_list(),
-                "all_stats": bool(self._all_stats_var.get())}
+                "all_stats": bool(self._all_stats_var.get()),
+                "item": self._item_var.get()}
 
     def _apply_target(self, data):
         """Set every 'Looking for' control (and the cube type) from a dict."""
         if data.get("cube_type") in CUBE_PROFILES:
             self._cube_var.set(data["cube_type"])
         self._all_stats_var.set(bool(data.get("all_stats", True)))
+        if data.get("item") in CUBE_ITEMS:
+            self._item_var.set(data["item"])
         for entry in list(self._goal_rows):
             entry["frame"].destroy()
         self._goal_rows.clear()
@@ -4612,7 +4638,8 @@ class CubesApp:
             self._target_label.config(text="Stop when: " + self.target.describe(), fg=UI_ACCENT)
         try:
             CUBES_TARGET_FILE.write_text(json.dumps({"goals": self._goal_list(),
-                                                     "all_stats": ALL_STATS_COUNTS}), encoding="utf-8")
+                                                     "all_stats": ALL_STATS_COUNTS,
+                                                     "item": self._item_var.get()}), encoding="utf-8")
         except Exception:
             pass
 
@@ -4959,6 +4986,7 @@ class CubesApp:
         self._log(f"--- Start: {APP_VERSION}, {self.profile.name} cube, {len(self.panels or [1])} card(s)")
         self._log(f"    box {tuple(int(v) for v in self.region)}  cards {boxes}"
                   f"  count box {tuple(int(v) for v in self.count_box) if self.count_box else 'none'}")
+        self._log(f"    item: {self._item_var.get()}")
         self._log(f"    goal: {self._describe(self.target)}")
         self._log(f"    All Stats counts as base stats: {bool(self._all_stats_var.get())}"
                   f"  |  needs {_min_legendary(self.target)} legendary line(s)")
