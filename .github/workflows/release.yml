@@ -86,3 +86,21 @@ jobs:
             "Built from commit $env:GITHUB_SHA. Requires Tesseract OCR installed separately.") |
             Set-Content -Path release-notes.md -Encoding utf8
           gh release create $tag dist/MapleTapperLooker.exe MapleTapperLooker-folder.zip --target $env:GITHUB_SHA --title $tag --generate-notes --notes-file release-notes.md
+      # The webhook is a repo secret (Settings > Secrets > Actions > DISCORD_WEBHOOK),
+      # never a file: anyone holding the URL can post to the channel.
+      - name: Announce on Discord
+        shell: pwsh
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          if (-not $env:DISCORD_WEBHOOK) { 'No DISCORD_WEBHOOK secret - not announcing.'; exit 0 }
+          $tag = $env:RELEASE_TAG
+          $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$tag"
+          $changes = ((Get-Content release-notes.md -Raw) -split '## Which download')[0]
+          $changes = $changes.Replace('## Changes in this version', '').Trim()
+          $text = "**MapleTapperLooker $tag is out**`n$changes`n$url"
+          if ($text.Length -gt 1990) { $text = $text.Substring(0, 1850) + "`n...`n$url" }   # Discord's 2000-char cap
+          $body = @{ content = $text; allowed_mentions = @{ parse = @() } } | ConvertTo-Json -Compress
+          Invoke-RestMethod -Uri $env:DISCORD_WEBHOOK -Method Post -ContentType 'application/json; charset=utf-8' `
+            -Body ([Text.Encoding]::UTF8.GetBytes($body))
+          "Announced $tag on Discord."
