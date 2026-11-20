@@ -526,6 +526,14 @@ NUMBER_HEIGHT_RATIO      = 22 / 10
 # own height on each side.
 NUMBER_VERTICAL_PAD_RATIO = 0.6
 
+
+def cp_number_box(ax, ay, sw, sh):
+    """The Combat Power number field under a "Combat Power Change" label found
+    at (ax, ay) with size (sw, sh) - padded top and bottom (see above)."""
+    pad = round(sh * NUMBER_VERTICAL_PAD_RATIO)
+    return (round(ax + LABEL_TO_NUMBER_DX_RATIO * sw), round(ay + LABEL_TO_NUMBER_DY_RATIO * sh) - pad,
+            round(sw * NUMBER_WIDTH_RATIO), round(sh * NUMBER_HEIGHT_RATIO) + pad * 2)
+
 # Same idea for the Reset button(s) beneath the panels — measured the same way (BEFORE label
 # top-left to button top-left), so the cursor can be moved onto the actual button (center of this
 # rect) instead of onto the number field. The button row is centered under the WHOLE dialog rather
@@ -1026,13 +1034,21 @@ def _line_is_stat(line, words, unit="%"):
             and "all" in haystack and "stat" in haystack)
 
 
-def _progress_rows(goal, lines, tiers):
+def _progress_rows(goal, lines, tiers, cp=None):
     """A goal's progress as [(text, met)] - one row per goal, so the display can
     highlight the one that is actually satisfied."""
     rows = getattr(goal, "progress_rows", None)
     if rows is not None:
-        return rows(lines, tiers)
-    return [(goal.progress(lines, tiers), bool(goal.check(lines, tiers)))]
+        return rows(lines, tiers, cp)
+    return [(goal.progress(lines, tiers, cp), bool(goal.check(lines, tiers, cp)))]
+
+
+def _uses_cp(goal):
+    """Does this target (or any goal inside it) need the Combat Power read?"""
+    if isinstance(goal, CPGoal):
+        return True
+    inner = [goal.goal] if hasattr(goal, "goal") else getattr(goal, "goals", [])
+    return any(_uses_cp(g) for g in inner)
 
 
 def _min_legendary(goal):
@@ -1057,14 +1073,14 @@ class TotalGoal:
     def min_legendary():
         return 0
 
-    def check(self, lines, tiers):
+    def check(self, lines, tiers, cp=None):
         total = potential_total_for(lines, tiers, self.tuple)
         if total < self.minimum:
             return None
         u = self.unit if self.unit == "%" else " " + self.unit
         return f"{self.name} total {total}{u} (goal {self.minimum}{u})"
 
-    def progress(self, lines, tiers):
+    def progress(self, lines, tiers, cp=None):
         total = potential_total_for(lines, tiers, self.tuple)
         u = self.unit if self.unit == "%" else " " + self.unit
         return f"{self.name.upper()} counted: {total}{u}  (need {self.minimum}{u})"
@@ -1089,11 +1105,11 @@ class ComboGoal:
     def min_legendary():
         return 0
 
-    def check(self, lines, tiers):
+    def check(self, lines, tiers, cp=None):
         n = sum(self._matching(lines)[:3])
         return f"{n} of 3 lines are {' / '.join(self.names)}" if n >= self.count else None
 
-    def progress(self, lines, tiers):
+    def progress(self, lines, tiers, cp=None):
         n = sum(self._matching(lines)[:3])
         return f"{n} of 3 lines are {' / '.join(self.names)}  (need {self.count})"
 
@@ -1136,7 +1152,7 @@ class PerStatGoal:
     def min_legendary():
         return 0
 
-    def check(self, lines, tiers):
+    def check(self, lines, tiers, cp=None):
         have, from_all = self._have(lines)
         if not all(have[n] >= c for n, c in self.needs.items()):
             return None
@@ -1146,9 +1162,31 @@ class PerStatGoal:
             parts.append(f"{c} x {n}" + (f" ({via} from All Stats)" if via else ""))
         return " + ".join(parts)
 
-    def progress(self, lines, tiers):
+    def progress(self, lines, tiers, cp=None):
         have, _from_all = self._have(lines)
         return "  ".join(f"{n}: {have[n]}/{c}" for n, c in self.needs.items())
+
+
+class CPGoal:
+    """Stop when the card's Combat Power Change shows a '+<number>' - the
+    Flames rule (any increase, however small). *cp* is that card's read: the
+    '+<number>' string, or None for a negative / zero / unreadable box. Only
+    the Bright Reset dialog has the box under each card."""
+    @staticmethod
+    def describe():
+        return "Combat Power goes up"
+
+    @staticmethod
+    def min_legendary():
+        return 0
+
+    @staticmethod
+    def check(lines, tiers, cp=None):
+        return f"Combat Power {cp}" if cp else None
+
+    @staticmethod
+    def progress(lines, tiers, cp=None):
+        return f"Combat Power {cp}" if cp else "Combat Power: no increase"
 
 
 def _is_all_stats(line):
@@ -1173,17 +1211,17 @@ class LegendaryOnly:
     def min_legendary(self):
         return max(self.need, _min_legendary(self.goal))
 
-    def check(self, lines, tiers):
+    def check(self, lines, tiers, cp=None):
         if sum(1 for t in tiers[:3] if t == "legendary") < self.need:
             return None
-        return self.goal.check(lines, tiers)
+        return self.goal.check(lines, tiers, cp)
 
-    def progress(self, lines, tiers):
+    def progress(self, lines, tiers, cp=None):
         n = sum(1 for t in tiers[:3] if t == "legendary")
-        return self.goal.progress(lines, tiers) + f"  [{n}/3 legendary, need {self.need}]"
+        return self.goal.progress(lines, tiers, cp) + f"  [{n}/3 legendary, need {self.need}]"
 
-    def progress_rows(self, lines, tiers):
-        return [(self.progress(lines, tiers), bool(self.check(lines, tiers)))]
+    def progress_rows(self, lines, tiers, cp=None):
+        return [(self.progress(lines, tiers, cp), bool(self.check(lines, tiers, cp)))]
 
 
 class CombinedGoal:
@@ -1223,21 +1261,21 @@ class CombinedGoal:
         them); any group will do (so the target needs the easiest group)."""
         return min(max(_min_legendary(g) for g in grp) for grp in self.groups())
 
-    def check(self, lines, tiers):
+    def check(self, lines, tiers, cp=None):
         # A group holds only if every goal in it does; any group holding is a hit.
         met = []
         for grp in self.groups():
-            found = [g.check(lines, tiers) for g in grp]
+            found = [g.check(lines, tiers, cp) for g in grp]
             if all(found):
                 met.extend(found)
         # Name every goal that was met - "why did it stop" is exactly what the
         # ping has to answer.
         return "  +  ".join(met) if met else None
 
-    def progress(self, lines, tiers):
-        return "\n\u2192 ".join(text for text, _met in self.progress_rows(lines, tiers))
+    def progress(self, lines, tiers, cp=None):
+        return "\n\u2192 ".join(text for text, _met in self.progress_rows(lines, tiers, cp))
 
-    def progress_rows(self, lines, tiers):
+    def progress_rows(self, lines, tiers, cp=None):
         """One row per goal, each saying whether it is met, with brackets round
         a group of ANDs so it is clear which have to hold together. A goal only
         counts as met when its whole group is - half an AND is not a match."""
@@ -1246,15 +1284,15 @@ class CombinedGoal:
         for i, grp in enumerate(groups):
             if i:
                 out.append(("OR", False))
-            whole_group = all(g.check(lines, tiers) for g in grp)
+            whole_group = all(g.check(lines, tiers, cp) for g in grp)
             for k, g in enumerate(grp):
-                met = bool(g.check(lines, tiers)) and whole_group
+                met = bool(g.check(lines, tiers, cp)) and whole_group
                 if len(grp) > 1 and len(groups) > 1:
                     lead = "  ( " if k == 0 else "  AND "
                     tail = " )" if k == len(grp) - 1 else ""
-                    out.append((lead + g.progress(lines, tiers) + tail, met))
+                    out.append((lead + g.progress(lines, tiers, cp) + tail, met))
                 else:
-                    out.append((("AND  " if k else "") + g.progress(lines, tiers), met))
+                    out.append((("AND  " if k else "") + g.progress(lines, tiers, cp), met))
         return out
 
 
@@ -3043,16 +3081,7 @@ class OverlayApp:
 
         number_rects = []
         for (px, py) in after_peaks:
-            ax = px + desktop["left"]
-            ay = py + desktop["top"]
-            nx = round(ax + LABEL_TO_NUMBER_DX_RATIO * sw)
-            ny = round(ay + LABEL_TO_NUMBER_DY_RATIO * sh)
-            nw = round(sw * NUMBER_WIDTH_RATIO)
-            nh = round(sh * NUMBER_HEIGHT_RATIO)
-            pad = round(sh * NUMBER_VERTICAL_PAD_RATIO)
-            ny -= pad
-            nh += pad * 2
-            number_rects.append((nx, ny, nw, nh))
+            number_rects.append(cp_number_box(px + desktop["left"], py + desktop["top"], sw, sh))
 
         left = min(r[0] for r in number_rects)
         top = min(r[1] for r in number_rects)
@@ -3838,6 +3867,8 @@ class CubesApp:
         if self.profile.pick_label != "rightmost":     # several cards only exist on the Bright reset dialog
             self.panels = self.panels[:1]
         self.count_box = self._load_box("count")      # the Remaining pill, located by F7 (Bright)
+        self.cp_boxes = []                            # Combat Power number per AFTER card, located by F7 (Bright)
+        self.cps = []                                 # ...and what each said last read ('+123' or None)
         self._settle_capped = 0                       # rolls where the panel never fully stopped moving
         self._templates = _load_line_templates()      # line picture -> the (stat, value) it says
         self._new_templates = 0
@@ -4154,6 +4185,10 @@ class CubesApp:
         if self.profile.pick_label != "rightmost" and len(self.panels) > 1:
             self.panels = [tuple(self.region)] if self.region else []
             self.results = []
+        if self.profile.pick_label != "rightmost":
+            self.cp_boxes = []
+        if hasattr(self, "_target_label"):
+            self._parse_target()         # the Combat Power goal is Bright-only
         if hasattr(self, "_cols"):
             self._layout_columns()
         self._tint(CUBE_TINTS.get(key, UI_BG))
@@ -4310,7 +4345,8 @@ class CubesApp:
         if self._preset_var.get() not in presets:
             self._preset_var.set("(none)" if presets else "(no presets yet)")
 
-    GOAL_KINDS = (("total", "Reach a total"), ("combo", "Combination of stats"), ("perstat", "Lines per stat"))
+    GOAL_KINDS = (("total", "Reach a total"), ("combo", "Combination of stats"), ("perstat", "Lines per stat"),
+                  ("cp", "Combat Power increase"))
 
     @staticmethod
     def _goals_from_saved(saved):
@@ -4455,6 +4491,10 @@ class CubesApp:
                                                                            padx=(0, 12), pady=1)
                     var.trace_add("write", lambda *_: self._parse_target())
             entry["count_var"], entry["combo_vars"] = count_var, combo_vars
+        elif kind == "cp":
+            tk.Label(body, text="Stops on any '+' in an AFTER card's Combat Power Change, like Flames.\n"
+                                "Bright cube only.", fg=UI_MUTED, bg=UI_SURFACE, justify="left",
+                     font=("Segoe UI", 10)).pack(anchor="w")
         else:
             tk.Label(body, text="Lines required:", fg=UI_MUTED, bg=UI_SURFACE,
                      font=("Segoe UI", 10)).pack(anchor="w", pady=(0, 4))
@@ -4531,6 +4571,8 @@ class CubesApp:
             elif entry["kind"] == "combo":
                 item.update(count=int(entry["count_var"].get()),
                             combo=[n for n, v in entry["combo_vars"].items() if v.get()])
+            elif entry["kind"] == "cp":
+                pass                             # nothing to set: any increase
             else:
                 needs = {}
                 for _r, stat_var, count_var in entry["perstat_rows"]:
@@ -4610,6 +4652,11 @@ class CubesApp:
                     made = ComboGoal(chosen, int(entry["count_var"].get()))
                 else:
                     problems.append("tick the stats for the combination")
+            elif kind == "cp":
+                if self.profile.pick_label == "rightmost":
+                    made = CPGoal()
+                else:
+                    problems.append("Combat Power increase needs the Bright cube (its Reset dialog shows the number)")
             else:
                 needs = {}
                 for _r, stat_var, count_var in entry["perstat_rows"]:
@@ -4656,6 +4703,7 @@ class CubesApp:
             self.region = tuple(int(v) for v in region)
             self.panels = [self.region]
             self.results = []
+            self.cp_boxes = []
             self._layout_columns()
             self.label_box = None      # hand-placed: the cube-row check can't locate the row, so it stays off
             self._save_region()
@@ -4722,6 +4770,10 @@ class CubesApp:
                        for px, py in afters]
         self.region = self._union(self.panels)
         self.results = []
+        # Bright's label IS "Combat Power Change": the number sits right under it,
+        # the same field Flames reads. The Glowing panel's label is "Potential".
+        self.cp_boxes = ([cp_number_box(desktop["left"] + px, desktop["top"] + py, sw, sh) for px, py in afters]
+                         if self.profile.pick_label == "rightmost" else [])
         self.count_box = None
         if self.profile.cubes_left == "count":
             try:
@@ -4768,6 +4820,19 @@ class CubesApp:
         x2 = max(b[0] + b[2] for b in boxes)
         y2 = max(b[1] + b[3] for b in boxes)
         return (x1, y1, x2 - x1, y2 - y1)
+
+    def _read_cps(self):
+        """Each AFTER card's Combat Power Change: '+<number>' or None (negative,
+        zero, or unreadable), through the exact Flames reader. A '+' only counts
+        when a second, fresh grab says '+' too - Flames' confirm read, since a
+        stray OCR frame stopping a run would cost the roll. [] without boxes."""
+        def once():
+            return [read_delta_from_image(_grab(box), save_debug=False) for box in self.cp_boxes]
+        cps = once()
+        if any(cps):
+            again = once()
+            cps = [a if a and b else None for a, b in zip(cps, again)]
+        return cps
 
     def _read_panels(self, img):
         """Read every panel out of one grab of the union box: each card's
@@ -4859,8 +4924,9 @@ class CubesApp:
             img = _grab(self.region)
             results = self._read_panels(img)
             self.results = results
+            self.cps = self._read_cps()
             self._shown_panel = next((i for i, (t, l) in enumerate(results)
-                                      if self.target is not None and self.target.check(l, t)), 0)
+                                      if self.target is not None and self.target.check(l, t, self._cp(i))), 0)
             self.tiers, self.lines = results[self._shown_panel]
         except Exception as error:
             self._set_status(f"Read failed: {error}")
@@ -4868,6 +4934,11 @@ class CubesApp:
         finally:
             self._sync_overlay()
         self._show_lines()
+
+    def _cp(self, i, cps=None):
+        """Card *i*'s Combat Power read, or None when there isn't one."""
+        cps = self.cps if cps is None else cps
+        return cps[i] if i < len(cps) else None
 
     def _layout_columns(self):
         """Show one column per panel: a single card gets the full width and
@@ -4908,8 +4979,11 @@ class CubesApp:
             good_total += len(good)
             totals = total_potential_lines(good)
             text = "\n".join(f"{stat}  {value}" for stat, value in totals) if totals else "-"
-            matched = self.target is not None and good and self.target.check(lines, tiers)
-            rows = _progress_rows(self.target, lines, tiers) if (self.target is not None and good) else []
+            cp = self._cp(k)
+            if self.cp_boxes:
+                text += f"\nCP {cp}" if cp else "\nCP no increase"
+            matched = self.target is not None and good and self.target.check(lines, tiers, cp)
+            rows = _progress_rows(self.target, lines, tiers, cp) if (self.target is not None and good) else []
             self._show_steps(col, rows)
             col["total"].config(text=text, fg=UI_ACCENT if matched else UI_TEXT)
             col["head"].config(fg=UI_ACCENT if matched else UI_MUTED)
@@ -4961,6 +5035,9 @@ class CubesApp:
             self._auto_locate(near=self.region)
             if not self.results:
                 return                       # auto-locate said what went wrong
+        if _uses_cp(self.target) and not self.cp_boxes:
+            self._set_status("The Combat Power goal needs the Bright Reset dialog found - press F7 on it first.")
+            return
         self.looping = True
         self.rolls = 0
         self._loop_button.config(text="Stop (F9)")
@@ -4983,7 +5060,11 @@ class CubesApp:
     def _log_run_details(self):
         """Everything needed to make sense of the rolls that follow."""
         boxes = " ".join("[%d,%d %dx%d]" % tuple(int(v) for v in b) for b in (self.panels or [self.region]))
-        self._log(f"--- Start: {APP_VERSION}, {self.profile.name} cube, {len(self.panels or [1])} card(s)")
+        # The date, because every other line carries only a clock: a log read
+        # weeks later cannot otherwise tell which day a session belongs to, and
+        # the incremental statistics in tools/cube_stats.py key sessions by it.
+        self._log(f"--- Start: {APP_VERSION}, {self.profile.name} cube, "
+                  f"{len(self.panels or [1])} card(s), {time.strftime('%Y-%m-%d')}")
         self._log(f"    box {tuple(int(v) for v in self.region)}  cards {boxes}"
                   f"  count box {tuple(int(v) for v in self.count_box) if self.count_box else 'none'}")
         self._log(f"    item: {self._item_var.get()}")
@@ -5028,6 +5109,7 @@ class CubesApp:
         UI-facing goes back to the Tk thread through the request queue."""
         target = self.target
         need_legendary = _min_legendary(target)
+        needs_cp = _uses_cp(target)
         time.sleep(0.1)                  # let the overlay's hide land on screen before the first grab
         img = _grab(self.region)
         first = True
@@ -5191,18 +5273,26 @@ class CubesApp:
                           f" of {sum(len(e) for e in self._templates.values())}{waited}")
             else:
                 timing = ""
+            # Read on the settled frame, after the lines: the number redraws with the card.
+            cps = self._read_cps() if needs_cp else []
             hit, which = None, 0
             for i, (tiers, lines) in enumerate(results):     # each card judged on its own 3 lines
-                found = target.check(lines, tiers)
+                found = target.check(lines, tiers, self._cp(i, cps))
                 if found:
                     hit, which = (found, ""), i
                     break
             tiers, lines = results[which]
             self._shown_panel = which
-            self._requests.put(lambda tiers=tiers, lines=lines, results=results: (
+            self._requests.put(lambda tiers=tiers, lines=lines, results=results, cps=cps: (
                 setattr(self, "tiers", tiers), setattr(self, "lines", lines),
-                setattr(self, "results", results), self._show_lines()))
+                setattr(self, "results", results), setattr(self, "cps", cps), self._show_lines()))
             if hit is not None:
+                # Log the card BEFORE the hit handler. Every losing roll records
+                # its lines below, but a hit returns early, so the one roll worth
+                # keeping was the one roll never written down - the 2026-10-20
+                # hit survives only in its Discord ping. Same formatter, so it
+                # reads like every other card line.
+                self._requests.put(lambda cards=self._describe_cards(results): self._log("    " + cards))
                 self._requests.put(lambda hit=hit: self._on_hit(hit))
                 return
             self._requests.put(lambda timing=timing: self._set_status(
@@ -5337,6 +5427,7 @@ class CubesApp:
         icons on their own. Leaving the previous roll's text up instead is what
         makes a long skipping run look like the app has stopped working."""
         self.results = [(p, []) for p in tiers]
+        self.cps = []
         self.tiers = tiers[0] if tiers else [None] * 3
         self.lines = []
         self._shown_panel = 0
