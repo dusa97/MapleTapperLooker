@@ -7,8 +7,9 @@ from types import SimpleNamespace
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, call
 
 from discord_alerts import (DiscordNotifier, DiscordSettings, DiscordSettingsStore,
                             WindowTarget, _Job, capture_entry, send_webhook, validate_settings)
@@ -138,6 +139,51 @@ class CaptureBoundaryTest(unittest.TestCase):
             self.assertNotIn("private native error text", messages[0])
             context.Process.return_value.join.assert_called_once()
 
+    def test_a_slow_helper_start_does_not_eat_the_frame_budget(self):
+        """The 2026-10-20 hit lost its image to this.
+
+        One shared 5s budget covered spawning the helper, and inside the onefile
+        exe that means unpacking 52 MB first. The unpack ran long, the frame
+        never got a chance, and the log called it a capture timeout. A helper
+        that is slow to start but captures fine has to still deliver the image.
+        """
+        from io import BytesIO
+        from PIL import Image
+        from discord_alerts import capture_window
+        jpeg = BytesIO()
+        Image.new("RGB", (8, 8)).save(jpeg, format="JPEG")
+        slow = [(0.0, None)] * 8 + [(0.0, b"ready"), (0.0, jpeg.getvalue())]
+
+        receiver, sender = Mock(), Mock()
+        receiver.poll.side_effect = [item[1] is not None for item in slow]
+        receiver.recv_bytes.side_effect = [item[1] for item in slow if item[1] is not None]
+        context = Mock()
+        context.Pipe.return_value = receiver, sender
+        messages = []
+        with patch("discord_alerts.target_is_current", return_value=True):
+            got = capture_window(WindowTarget(1, 2, 3), timeout=5.0, startup=20.0,
+                                 context=context, report=messages.append)
+        self.assertEqual(jpeg.getvalue(), got)
+        self.assertEqual([], messages)
+
+    def test_a_helper_that_never_signals_ready_is_named_as_such(self):
+        from discord_alerts import capture_window
+        receiver, sender = Mock(), Mock()
+        receiver.poll.return_value = False
+        context = Mock()
+        context.Pipe.return_value = receiver, sender
+        messages = []
+        with patch("discord_alerts.target_is_current", return_value=True):
+            began = time.monotonic()
+            self.assertIsNone(capture_window(WindowTarget(1, 2, 3), timeout=0.01, startup=0.4,
+                                             context=context, report=messages.append))
+            waited = time.monotonic() - began
+        self.assertIn("did not finish starting", messages[0])
+        self.assertIn("gave up after", messages[0])
+        # It waited out `startup`, not `timeout`. One shared budget would have
+        # given up after 0.01s and blamed the game for a helper that never woke.
+        self.assertGreaterEqual(waited, 0.3)
+
     def test_helper_uses_only_the_explicit_hwnd(self):
         created = []
 
@@ -161,7 +207,10 @@ class CaptureBoundaryTest(unittest.TestCase):
             capture_entry(connection, WindowTarget(101, 202, 303))
         self.assertEqual(created[0].kwargs,
                          {"cursor_capture": False, "secondary_window": False, "window_hwnd": 101})
-        connection.send_bytes.assert_called_once_with(b"closed")
+        # b"ready" first: the parent starts its frame clock there, so the helper
+        # must announce itself before capture rather than after.
+        self.assertEqual([call(b"ready"), call(b"closed")],
+                         connection.send_bytes.call_args_list)
 
 
 class WindowsLifecycleTest(unittest.TestCase):

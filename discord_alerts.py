@@ -34,15 +34,17 @@ CAPTURE_FAILURES = {
     b"identity": "the target is closed, hidden, minimized, or its identity cannot be verified.",
     b"blank": "Windows returned a blank or unsupported frame.",
     b"closed": "Windows closed capture before an image arrived.",
-    b"timeout": "capture exceeded the five-second limit.",
+    b"timeout": "the window did not hand over a frame in time.",
+    b"startup": "the capture helper did not finish starting.",
     b"invalid-image": "the returned image failed validation.",
     b"helper-failed": "the Windows capture helper failed.",
 }
 
 
-def _capture_failure(report, reason):
+def _capture_failure(report, reason, detail=""):
     if report is not None:
-        report("Discord image unavailable: " + CAPTURE_FAILURES.get(reason, CAPTURE_FAILURES[b"helper-failed"]))
+        report("Discord image unavailable: "
+               + CAPTURE_FAILURES.get(reason, CAPTURE_FAILURES[b"helper-failed"]) + detail)
     return None
 
 
@@ -357,6 +359,10 @@ def capture_entry(connection, target: WindowTarget) -> None:
             connection.send_bytes(b"identity")
             return
         capture = WindowsCapture(cursor_capture=False, secondary_window=False, window_hwnd=target.hwnd)
+        # Everything expensive is done: the interpreter is up, windows_capture and
+        # PIL are imported, the HWND is verified. Only now does the clock the
+        # parent keeps on the game itself have anything to measure.
+        connection.send_bytes(b"ready")
         sent = False
 
         @capture.event
@@ -389,10 +395,21 @@ def capture_entry(connection, target: WindowTarget) -> None:
         connection.close()
 
 
-def capture_window(target: WindowTarget | None, timeout: float = 5.0,
+def capture_window(target: WindowTarget | None, timeout: float = 5.0, startup: float = 20.0,
                    cancelled: threading.Event | None = None, context=None, report=None) -> bytes | None:
-    """Capture only a verified HWND in a bounded spawned helper."""
-    deadline = time.monotonic() + min(timeout, 5.0)
+    """Capture only a verified HWND in a bounded spawned helper.
+
+    Two budgets, not one. `startup` covers getting the helper up: with a spawn
+    context that is a fresh interpreter, and inside the PyInstaller onefile exe
+    it re-launches the 52 MB exe and unpacks the whole bundle first. That costs
+    seconds and has nothing to do with the game. `timeout` is then what it says
+    it is - how long the window gets to hand over a frame once the helper has
+    signalled b"ready".
+
+    One shared 5s budget is what dropped the image on the 2026-10-20 hit: the
+    unpack ate it, and the log blamed the capture. From source the same spawn
+    costs 0.29s, which is why it never reproduced outside the exe.
+    """
     if cancelled is not None and cancelled.is_set():
         return None
     if target is None:
@@ -411,11 +428,20 @@ def capture_window(target: WindowTarget | None, timeout: float = 5.0,
             process.start()
             started = True
         child.close()
+        began = time.monotonic()
+        deadline, ready = began + startup, False
         while time.monotonic() < deadline:
             if cancelled is not None and cancelled.is_set():
                 return None
             if parent.poll(0.05):
                 result = parent.recv_bytes(MAX_IMAGE_BYTES)
+                if result == b"ready":
+                    # Honour the first one only: a child stuck in a loop must not
+                    # be able to push the deadline out forever.
+                    if ready:
+                        return _capture_failure(report, b"helper-failed")
+                    ready, deadline = True, time.monotonic() + timeout
+                    continue
                 if time.monotonic() >= deadline:
                     return _capture_failure(report, b"timeout")
                 if not target_is_current(target):
@@ -433,7 +459,9 @@ def capture_window(target: WindowTarget | None, timeout: float = 5.0,
                 except Exception:
                     return _capture_failure(report, b"invalid-image")
                 return result
-        return _capture_failure(report, b"timeout")
+        waited = time.monotonic() - began
+        return _capture_failure(report, b"timeout" if ready else b"startup",
+                                " (gave up after %.1fs)" % waited)
     except (EOFError, OSError):
         return _capture_failure(report, b"helper-failed")
     finally:
