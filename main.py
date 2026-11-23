@@ -47,6 +47,7 @@ if __name__ == "__main__":
     multiprocessing.freeze_support()
 
 import io
+import os
 import re
 import sys
 import time
@@ -1963,6 +1964,62 @@ def load_region() -> tuple | None:
     return None
 
 
+MAPLE_PROCESS = "maplestory.exe"
+
+
+def maple_window_rect():
+    """The MapleStory client area as an mss monitor dict, in screen pixels -
+    or None when the game isn't running / visible. Found by its process, not
+    by what is drawn: a stream of someone else's game shows the very same
+    dialog, and a picture search can't tell the two apart. Several game
+    windows (multi-client): the largest one."""
+    if os.name != "nt":
+        return None
+    from ctypes import wintypes
+    user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    found = []
+
+    def is_maple(hwnd):
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        handle = kernel32.OpenProcess(0x1000, False, pid.value)      # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            buf, size = ctypes.create_unicode_buffer(1024), wintypes.DWORD(1024)
+            ok = kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size))
+            return bool(ok) and os.path.basename(buf.value).lower() == MAPLE_PROCESS
+        finally:
+            kernel32.CloseHandle(handle)
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def visit(hwnd, _lparam):
+        if user32.IsWindowVisible(hwnd) and not user32.IsIconic(hwnd) and is_maple(hwnd):
+            rect, corner = wintypes.RECT(), wintypes.POINT(0, 0)
+            if user32.GetClientRect(hwnd, ctypes.byref(rect)) and user32.ClientToScreen(hwnd, ctypes.byref(corner)):
+                if rect.right > 0 and rect.bottom > 0:
+                    found.append({"left": corner.x, "top": corner.y, "width": rect.right, "height": rect.bottom})
+        return True
+
+    user32.EnumWindows(visit, 0)
+    return max(found, key=lambda r: r["width"] * r["height"]) if found else None
+
+
+def search_area(sct):
+    """Where F7 looks: the MapleStory window clipped to the desktop, or the
+    whole desktop when the game can't be found. Returns (area, is_maple)."""
+    desktop = sct.monitors[0]
+    game = maple_window_rect()
+    if game:
+        left, top = max(game["left"], desktop["left"]), max(game["top"], desktop["top"])
+        right = min(game["left"] + game["width"], desktop["left"] + desktop["width"])
+        bottom = min(game["top"] + game["height"], desktop["top"] + desktop["height"])
+        if right - left > 50 and bottom - top > 50:
+            return {"left": left, "top": top, "width": right - left, "height": bottom - top}, True
+    return desktop, False
+
+
 def default_region() -> tuple:
     """A harmless starting box for first launch (nothing saved yet), so the
     control window opens immediately instead of blocking behind a full-screen
@@ -3050,8 +3107,10 @@ class OverlayApp:
             self._detail_label.update_idletasks()
 
         with mss.MSS() as sct:
-            desktop = sct.monitors[0]
+            desktop, in_game = search_area(sct)      # only the game window: a stream shows the same dialog
             shot = sct.grab(desktop)
+        if not in_game:
+            self._log("Auto-locate: MapleStory window not found - searching the whole screen.")
         full_gray = np.array(Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX").convert("L"))
         try:
             # Every distinct match at the best scale, not just the global best, so
@@ -4720,10 +4779,10 @@ class CubesApp:
         self.overlay.withdraw()
         try:
             with mss.MSS() as sct:
-                desktop = sct.monitors[0]
+                desktop, in_game = search_area(sct)  # only the game window: a stream shows the same dialog
                 shot = sct.grab(desktop)
             full_gray = np.array(Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX").convert("L"))
-            want = 4 if self.profile.pick_label == "rightmost" else 1
+            want =4 if self.profile.pick_label == "rightmost" else 1
             peaks = []
             if near:
                 # Full width (Reset x1 / x3 lay the cards out differently) but only
@@ -4802,7 +4861,8 @@ class CubesApp:
             dbg.save(DEBUG_CAPTURE_DIR / "cubes_autolocate.png", compress_level=1)   # 80 ms, not 250
         except Exception:
             pass
-        self._set_status(f"Found {len(self.panels)} Potential panel(s) (match {best:.2f}). Press F9 to read.")
+        where = "in the MapleStory window" if in_game else "on screen (MapleStory window not found)"
+        self._set_status(f"Found {len(self.panels)} Potential panel(s) {where} (match {best:.2f}). Press F9 to read.")
         self._read()
 
     _remaining_cache = None
