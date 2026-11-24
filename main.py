@@ -2468,7 +2468,7 @@ class OverlayApp:
                          cursor="hand2", font=("Segoe UI", 10, "bold"), takefocus=True)
 
     def _log(self, message):
-        self._activity_pending.put(f"{time.strftime('%H:%M:%S')}  {message}")
+        self._activity_pending.put(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {message}")
 
     def _request_selection(self):
         self._selection_requested.set()
@@ -3004,7 +3004,7 @@ class OverlayApp:
             if self.status_text != "paused":
                 detail = self.status_text
             elif self._activity_lines:
-                detail = self._activity_lines[-1][10:]      # latest log line, minus its timestamp
+                detail = self._activity_lines[-1][21:]      # latest log line, minus its timestamp
             else:
                 detail = "Press Start or F9 to watch the selected region."
             if self.enter_spam_enabled and active:
@@ -4208,7 +4208,7 @@ class CubesApp:
     def _log(self, message):
         """Append to the activity list (UI thread only - the loop thread
         already routes everything through _set_status via the request queue)."""
-        line = f"{time.strftime('%H:%M:%S')}  {message}"
+        line = f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {message}"
         self._mirror(line)
         widget = getattr(self, "_log_list", None)
         if widget is None or not widget.winfo_exists():
@@ -5716,7 +5716,7 @@ def run_app(args):
     log_append = build_log_tab(tabs["log"])
     build_help_tab(tabs["help"])
     build_sections_tab(tabs["updates"], UPDATE_LOG)
-    mirrors = {m: (lambda line, m=m: log_append(f"{line[:10]}[{m.capitalize()}] {line[10:]}")) for m in ("flames", "cubes")}
+    mirrors = {m: (lambda line, m=m: log_append(f"{line[:21]}[{m.capitalize()}] {line[21:]}")) for m in ("flames", "cubes")}
     build_settings(tabs["settings"], discord, discord_flags, audio, lambda msg: shell_log["fn"](msg))
 
     state = {"mode": None, "app": None}

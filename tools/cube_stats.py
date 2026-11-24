@@ -132,6 +132,7 @@ def read_sessions(text):
     done, live, live_at, offset = [], None, None, 0
     for raw in text.splitlines(keepends=True):
         started_at, offset = offset, offset + len(raw.encode("utf-8"))
+        raw = re.sub(r"^\d{4}-\d\d-\d\d ", "", raw)     # lines since v1.44 also carry the date
         body = raw[10:].replace("[Cubes] ", "", 1).strip()
         head = START.search(body)
         if head:
